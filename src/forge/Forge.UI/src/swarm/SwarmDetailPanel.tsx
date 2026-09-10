@@ -1,3 +1,4 @@
+import { operatorFetch } from '@/api/operatorSession';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse, IterationPromptDto } from '@/api/forgeApi';
@@ -426,7 +427,7 @@ function SwarmGridPane({ mode, detail, artifacts, selection }: SwarmGridProps) {
     let cancelled = false;
     async function load() {
       try {
-        const r = await fetch('/api/agents', { credentials: 'include' });
+        const r = await operatorFetch('/api/agents', { credentials: 'include' });
         if (!r.ok) return;
         const json = await r.json();
         if (!cancelled && Array.isArray(json)) setAgents(json as AgentRow[]);
@@ -1099,7 +1100,7 @@ function AttachmentBadges({ attachments }: { attachments?: StoryAttachment[] }) 
   async function handleClick(a: StoryAttachment) {
     setLoading(true);
     try {
-      const res = await fetch(
+      const res = await operatorFetch(
         `/api/stories/attachments/${encodeURIComponent(a.id)}/${encodeURIComponent(a.fileName)}`,
       );
       if (!res.ok) throw new Error(`${res.status}`);
@@ -1275,7 +1276,7 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/agents', { credentials: 'include' })
+    operatorFetch('/api/agents', { credentials: 'include' })
       .then((r) => r.ok ? r.json() : [])
       .then((arr: Array<{ id: string; name: string }>) => {
         if (cancelled || !Array.isArray(arr)) return;

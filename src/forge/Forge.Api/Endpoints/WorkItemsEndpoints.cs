@@ -1009,9 +1009,7 @@ public static class WorkItemsEndpoints
                 AgentIdsJson = JsonSerializer.Serialize(ParseAgentIds(row.AssignedAgentJson), JsonOpts),
                 FromExecutionStatus = previous,
                 ToExecutionStatus = target,
-                AssignedBy = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u)
-                    ? u.ToString()
-                    : "operator",
+                AssignedBy = ForgeUser.UserId(ctx) ?? "anonymous",
                 Reason = authoritative.Reason,
                 At = DateTimeOffset.UtcNow,
             });

@@ -1,3 +1,4 @@
+import { operatorFetch } from '@/api/operatorSession';
 import { useEffect, useMemo, useState } from 'react';
 import type { AgentDetail, Crew, ModelInfo, SoulPayload } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
@@ -82,7 +83,7 @@ function AgentEditModal({ agentId, onClose }: {
           forgeApi.getAgent(agentId),
           forgeApi.listCrews().catch(() => [] as Crew[]),
           forgeApi.listModels().catch(() => [] as ModelInfo[]),
-          fetch('/api/settings/backend-policy', { credentials: 'include' })
+          operatorFetch('/api/settings/backend-policy', { credentials: 'include' })
             .then((r) => (r.ok ? r.json() : null))
             .catch(() => null),
         ]);

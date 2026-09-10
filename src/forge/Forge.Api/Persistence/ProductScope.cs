@@ -52,6 +52,21 @@ public static class ProductScope
     /// </remarks>
     public static async Task<ResolvedScope> ResolveAsync(HttpContext ctx, ControlDbContext db, CancellationToken ct = default)
     {
+        // HTTP aggregate scopes are always intersected with the current actor's
+        // explicit product grants; "all" never means unfiltered data.
+        if (ctx.Items[Forge.Api.Auth.ForgeEndpointCapabilityMiddleware.ReadableProductsKey] is IReadOnlySet<string> readable)
+        {
+            var slugs = readable.ToList();
+            if (slugs.Count == 0) return new ResolvedScope(Read(ctx) ?? AllScope, Array.Empty<string>());
+            var selected = Read(ctx);
+            var query = db.RepoRegistry.AsNoTracking().Where(r => r.DeletedAt == null && slugs.Contains(r.ProductSlug));
+            if (!string.IsNullOrWhiteSpace(selected) && !string.Equals(selected, AllScope, StringComparison.OrdinalIgnoreCase))
+                query = query.Where(r => r.ProductId == selected || r.ProductSlug == selected);
+            var repo = RepoScope.Read(ctx);
+            if (!string.IsNullOrWhiteSpace(repo) && repo != RepoScope.AllScope) query = query.Where(r => r.Id == repo);
+            return new ResolvedScope(selected ?? AllScope, await query.Select(r => r.Id).ToListAsync(ct));
+        }
+
         // Phase 80.E — an explicit repo scope (X-Forge-Repo-Id) is NARROWER than
         // product scope and wins: scope to that one repo + its owning product.
         // A repo id alone therefore both filters the lists AND identifies the

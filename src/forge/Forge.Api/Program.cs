@@ -19,6 +19,13 @@ using Forge.Api.Services;
 using Forge.Api.Services.Git;
 using Microsoft.EntityFrameworkCore;
 
+// Host identity commands must never start/reap/reconcile the running workload.
+if (args.Contains("--operator", StringComparer.Ordinal))
+{
+    await HostOperatorCommand.RunAsync(args);
+    return;
+}
+
 // Pin every descendant of this process to a Windows JobObject with
 // KILL_ON_JOB_CLOSE before any agent code runs. If Forge.Api dies unclean,
 // the OS reaps every child copilot.exe / claude.exe / git.exe with us, so
@@ -157,6 +164,8 @@ if (Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL") != "1")
 }
 
 builder.WebHost.UseUrls("http://localhost:5180");
+builder.Services.AddOperatorAuthentication(builder.Configuration);
+builder.Services.AddScoped<StoryOperatorActionService>();
 
 // JSON: camelCase + ISO-8601 timestamps.
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -331,6 +340,8 @@ builder.Services.AddSwaggerGen(options =>
 
 // SignalR.
 builder.Services.AddSignalR();
+builder.Services.AddSingleton<OperatorHubAccess>();
+builder.Services.AddSingleton<Microsoft.AspNetCore.SignalR.HubLifetimeManager<ForgeHub>, OperatorHubLifetimeManager>();
 
 // Background-services kill switch. Tests set FORGE_TEST_GUARDRAIL=1 in the
 // test factory's constructor (which runs BEFORE WebApplicationBuilder
@@ -1063,7 +1074,12 @@ app.UseStatusCodePages();
 
 // Phase 7.6 — auth gate runs before idempotency/audit so unauthorized writes
 // never enter the cache and never produce an audit row.
-app.UseMiddleware<ForgeSecretMiddleware>();
+app.UseRouting();
+app.UseMiddleware<OperatorOriginMiddleware>();
+if (app.Environment.IsDevelopment()) app.UseCors(DevCorsPolicy);
+app.UseAuthentication();
+app.UseMiddleware<OperatorRequestMiddleware>();
+app.UseAuthorization();
 
 // Phase D — resolves X-Forge-Product-Id / ?productId= into a product slug
 // stashed on HttpContext.Items so the IProductDbContextFactory can pick
@@ -1079,6 +1095,7 @@ app.UseMiddleware<Forge.Api.Persistence.RepoScopeMiddleware>();
 // Phase 6.12 — replay cached responses on duplicate Idempotency-Key (writes only).
 // Phase 6.10 — audit every write to forge_actions.
 // Order matters: idempotency wraps audit so replays are NOT re-audited.
+app.UseMiddleware<ForgeEndpointCapabilityMiddleware>();
 app.UseMiddleware<IdempotencyMiddleware>();
 app.UseMiddleware<AuditMiddleware>();
 
@@ -1088,10 +1105,10 @@ app.UseSwagger(c => c.RouteTemplate = "{documentName}/openapi.json");
 
 if (app.Environment.IsDevelopment())
 {
-    app.UseCors(DevCorsPolicy);
     app.UseSwaggerUI(c => c.SwaggerEndpoint("/v1/openapi.json", "Forge API v1"));
 }
 
+app.MapOperatorSessionEndpoints();
 app.MapHealthEndpoints();
 app.MapStateEndpoints();
 app.MapCardsEndpoints();

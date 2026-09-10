@@ -1,3 +1,4 @@
+import { operatorFetch } from '@/api/operatorSession';
 // Phase 14 — bulk-dispatch modal: assign one or more work items to the
 // matching AI crew (default Architecture for `track=design` / Plan kind,
 // Engineering for `track=dev` / Coding kind), the lead becomes the
@@ -87,7 +88,7 @@ export function DispatchToAiModal({ open, onClose, items }: Props) {
         ? { workItemId: item.id }
         : { stepWorkItemId: item.id };
       try {
-        const r = await fetch(`/api/crews/${encodeURIComponent(crewId)}/${path}`, {
+        const r = await operatorFetch(`/api/crews/${encodeURIComponent(crewId)}/${path}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
           body: JSON.stringify(body),

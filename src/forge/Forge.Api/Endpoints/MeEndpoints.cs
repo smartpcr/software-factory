@@ -13,16 +13,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
-/// <summary>
-/// Phase 9.6 / 9.9 — <c>GET /api/me</c> aggregates the per-provider auth
-/// state into a single identity record and lazy-creates a <see cref="UserRow"/>
-/// the first time a provider sign-in surfaces a fresh email.
-///
-/// First-run rule (Phase 9.9): the very first user to register on a fresh control
-/// is auto-promoted to <c>product-owner</c>. The bootstrap email from
-/// <see cref="ForgeAuthOptions.BootstrapPoEmail"/> is also auto-promoted on
-/// any visit, so the operator who registered Forge keeps PO across control resets.
-/// </summary>
+/// <summary>Paired operator profile. GET never creates users; role mutations require a host administrator.</summary>
 public static class MeEndpoints
 {
     public static WebApplication MapMeEndpoints(this WebApplication app)
@@ -57,19 +48,17 @@ public static class MeEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
+        await ctx.RequestServices.GetRequiredService<ForgeActionContext>()
+            .RequireAsync(ForgeCapabilities.IdentityManage, new(), ct);
+
         if (string.IsNullOrWhiteSpace(req.Role) || !AllowedRoles.Contains(req.Role))
         {
             return Results.Problem(title: $"Unsupported role '{req.Role}'", statusCode: 400);
         }
 
-        // Resolve "me" from the X-Forge-User header. Fall back to the lone
-        // bootstrap user if the header doesn't match any row (single-user dev).
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var me = string.IsNullOrEmpty(caller)
-            ? null
-            : await control.Users.FirstOrDefaultAsync(
-                u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
-        me ??= (await control.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
+        // Profile identity is the paired stable ID, never a caller-supplied name.
+        var caller = ForgeUser.UserId(ctx);
+        var me = await control.Users.SingleOrDefaultAsync(u => u.Id == caller, ct);
         if (me is null)
         {
             return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
@@ -119,12 +108,8 @@ public static class MeEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var me = string.IsNullOrEmpty(caller)
-            ? null
-            : await control.Users.FirstOrDefaultAsync(
-                u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
-        me ??= (await control.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
+        var caller = ForgeUser.UserId(ctx);
+        var me = await control.Users.SingleOrDefaultAsync(u => u.Id == caller, ct);
         if (me is null)
             return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
 
@@ -156,12 +141,8 @@ public static class MeEndpoints
         if (string.IsNullOrWhiteSpace(req.DisplayName))
             return Results.Problem(title: "Display name cannot be empty", statusCode: 400);
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var me = string.IsNullOrEmpty(caller)
-            ? null
-            : await control.Users.FirstOrDefaultAsync(
-                u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
-        me ??= (await control.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
+        var caller = ForgeUser.UserId(ctx);
+        var me = await control.Users.SingleOrDefaultAsync(u => u.Id == caller, ct);
         if (me is null)
             return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
 
@@ -183,83 +164,22 @@ public static class MeEndpoints
         var ado = await StatusFor(authServices, "ado", ct);
         var github = await StatusFor(authServices, "github", ct);
 
-        // Pick whichever provider is connected first; ado wins ties because
-        // ADO sign-in delivers a verified work email which is the most useful
-        // identity. Fall back to github when only it's connected.
-        var primary = ado.Connected ? ado : github.Connected ? github : null;
-
-        if (primary is null)
+        var id = ForgeUser.UserId(ctx);
+        var row = await control.Users.AsNoTracking().SingleOrDefaultAsync(u => u.Id == id, ct);
+        if (row is null) return Results.Problem(title: "Needs operator enrollment", statusCode: 401);
+        var displayName = row.DisplayName;
+        var email = row.Email;
+        // No GET creates users or promotes roles. The host command owns enrollment.
+        var effectiveRole = "human";
+        if (!string.IsNullOrEmpty(productId) && productId != "all")
         {
-            // No provider connected yet — return a stable "unsigned" placeholder
-            // so the UI can render a Sign-in CTA without blowing up.
-            return Results.Ok(new CurrentUser(
-                Id: string.Empty,
-                DisplayName: "Sign in",
-                Email: null,
-                Login: null,
-                Initials: "·",
-                AvatarUrl: null,
-                Role: "human",
-                Providers: new CurrentUserProviders(
-                    Ado: ToContract(ado),
-                    GitHub: ToContract(github))));
-        }
-
-        var email = primary.Account; // both providers put email-ish handles in Account
-        var displayName = !string.IsNullOrWhiteSpace(primary.UserName) ? primary.UserName! : email ?? "Forge user";
-
-        // Lazy-create or refresh the user row.
-        var row = string.IsNullOrEmpty(email)
-            ? null
-            : await control.Users.FirstOrDefaultAsync(u => u.Email == email, ct);
-
-        if (row is null && !string.IsNullOrEmpty(email))
-        {
-            // First-run rule (9.9): no users yet → promote to product-owner.
-            // Bootstrap match: also promote even if other users already exist,
-            // so the operator who set up Forge keeps PO after a control reset.
-            var anyExisting = await control.Users.AnyAsync(ct);
-            var anyPo = await control.Users.AnyAsync(u => u.Role == "product-owner", ct);
-            var isBootstrap = string.Equals(email, authOptions.Value.BootstrapPoEmail, StringComparison.OrdinalIgnoreCase);
-            var role = (!anyExisting || (!anyPo && isBootstrap) || isBootstrap) ? "product-owner" : "human";
-
-            row = new UserRow
-            {
-                Id = $"user-{Guid.NewGuid():N}",
-                DisplayName = displayName,
-                Email = email,
-                Login = github.Connected ? github.UserName : null,
-                Role = role,
-                CreatedAt = DateTimeOffset.UtcNow,
-                LastSeenAt = DateTimeOffset.UtcNow,
-            };
-            control.Users.Add(row);
-            await control.SaveChangesAsync(ct);
-        }
-        else if (row is not null)
-        {
-            // Refresh display info on every call — cheap, avoids stale name on rename.
-            var updated = false;
-            if (row.DisplayName != displayName) { row.DisplayName = displayName; updated = true; }
-            if (github.Connected && row.Login != github.UserName) { row.Login = github.UserName; updated = true; }
-            row.LastSeenAt = DateTimeOffset.UtcNow;
-            if (updated) await control.SaveChangesAsync(ct);
-        }
-
-        // Phase 9.12 — product-scoped role override. Falls back to the user's
-        // global role when no override exists for the current product.
-        var effectiveRole = row?.Role ?? "human";
-        if (row is not null && !string.IsNullOrEmpty(productId) && productId != "all")
-        {
-            var override_ = await control.UserProductRoles.AsNoTracking()
+            effectiveRole = await control.UserProductRoles.AsNoTracking()
                 .Where(r => r.UserId == row.Id && r.ProductId == productId)
-                .Select(r => r.Role)
-                .FirstOrDefaultAsync(ct);
-            if (!string.IsNullOrEmpty(override_)) effectiveRole = override_;
+                .Select(r => r.Role).SingleOrDefaultAsync(ct) ?? "human";
         }
 
         var user = new CurrentUser(
-            Id: row?.Id ?? $"anon-{primary.Kind}",
+            Id: row.Id,
             DisplayName: row?.DisplayName ?? displayName,
             Email: row?.Email ?? email,
             Login: row?.Login ?? (github.Connected ? github.UserName : null),

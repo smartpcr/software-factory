@@ -1,3 +1,4 @@
+import { operatorFetch } from '@/api/operatorSession';
 import type {
   AgentDetail,
   AgentLevelHistoryEntry,
@@ -484,7 +485,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers: extraHeaders, ...rest } = init ?? {};
   // Phase 8.9 / 80.G — automatically scope every read to the active product
   // and (when selected) the active repo.
-  const res = await fetch(`${baseUrl}${path}`, {
+  const res = await operatorFetch(`${baseUrl}${path}`, {
     ...rest,
     headers: {
       Accept: 'application/json',
@@ -1078,7 +1079,7 @@ export const forgeApi = {
   async mergePr(id: string, opts?: { force?: boolean }): Promise<{ pr: Pr; queued: boolean; detail?: string }> {
     const qs = opts?.force ? '?force=true' : '';
     const url = `${baseUrl}/api/prs/${encodeURIComponent(id)}/merge${qs}`;
-    const res = await fetch(url, {
+    const res = await operatorFetch(url, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -1447,7 +1448,7 @@ export const forgeApi = {
   async uploadStoryAttachments(files: File[]): Promise<{ uploadId: string; files: StoryAttachment[] }> {
     const form = new FormData();
     for (const f of files) form.append('files', f);
-    const res = await fetch(`${baseUrl}/api/stories/attachments/upload`, {
+    const res = await operatorFetch(`${baseUrl}/api/stories/attachments/upload`, {
       method: 'POST',
       body: form,
       headers: {

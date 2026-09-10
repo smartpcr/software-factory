@@ -28,7 +28,9 @@ public class AuditMiddleware
 
     public async Task InvokeAsync(HttpContext ctx)
     {
-        if (HttpMethods.IsGet(ctx.Request.Method)
+        if (ctx.Request.Path.StartsWithSegments("/api/operator")
+            || ctx.Request.Path == "/api/chat/link-token"
+            || HttpMethods.IsGet(ctx.Request.Method)
             || HttpMethods.IsHead(ctx.Request.Method)
             || HttpMethods.IsOptions(ctx.Request.Method))
         {
@@ -50,7 +52,7 @@ public class AuditMiddleware
 
         await this.next(ctx);
 
-        var user = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "anonymous";
+        var user = ForgeUser.UserId(ctx) ?? "anonymous";
         var key = ctx.Request.Headers[HttpUserContext.IdempotencyHeader].FirstOrDefault();
         var control = ctx.RequestServices.GetRequiredService<ControlDbContext>();
         var db = ctx.RequestServices.GetRequiredService<ProductDbContext>();

@@ -36,7 +36,9 @@ public class IdempotencyMiddleware
 
     public async Task InvokeAsync(HttpContext ctx)
     {
-        if (HttpMethods.IsGet(ctx.Request.Method)
+        if (ctx.Request.Path.StartsWithSegments("/api/operator")
+            || ctx.Request.Path == "/api/chat/link-token"
+            || HttpMethods.IsGet(ctx.Request.Method)
             || HttpMethods.IsHead(ctx.Request.Method)
             || HttpMethods.IsOptions(ctx.Request.Method))
         {
@@ -51,7 +53,7 @@ public class IdempotencyMiddleware
             return;
         }
         // Scope by method + path so the same key on different endpoints is independent.
-        var scoped = $"{ctx.Request.Method} {ctx.Request.Path} {key}";
+        var scoped = $"{ForgeUser.UserId(ctx)} {ProductScope.Read(ctx)} {ctx.Request.Method} {ctx.Request.Path} {key}";
         var control = ctx.RequestServices.GetRequiredService<ControlDbContext>();
         var db = ctx.RequestServices.GetRequiredService<ProductDbContext>();
 

@@ -144,7 +144,7 @@ public static class PromotionEndpoints
 
         var oldLevel = agent.Level;
         var newLevel = oldLevel + 1;
-        var actor = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var at = DateTimeOffset.UtcNow;
 
         agent.Level = newLevel;
@@ -230,7 +230,7 @@ public static class PromotionEndpoints
             }
         }
 
-        var actor = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var at = DateTimeOffset.UtcNow;
 
         agent.Level = newLevel;
@@ -281,7 +281,7 @@ public static class PromotionEndpoints
         var agent = await control.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
         if (agent is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
 
-        var actor = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var at = DateTimeOffset.UtcNow;
 
         control.AgentLevelHistory.Add(new AgentLevelHistoryRow

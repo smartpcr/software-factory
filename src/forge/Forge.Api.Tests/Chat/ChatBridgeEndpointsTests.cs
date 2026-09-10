@@ -32,7 +32,7 @@ public class ChatBridgeEndpointsTests
         }));
 
     [Fact]
-    public async Task TestSend_As_ProductOwner_Sends_Via_Transport()
+    public async Task TestSend_As_HostAdmin_Sends_Via_Transport()
     {
         var fake = new FakeChatTransport();
         await using var factory = new ForgeWebApplicationFactory(new Dictionary<string, string?>
@@ -41,8 +41,9 @@ public class ChatBridgeEndpointsTests
             ["Forge:ChatBridge:Telegram:AllowedChatIds:0"] = "4242",
         });
 
-        var client = WithFakeTransport(factory, fake).CreateClient();
-        client.DefaultRequestHeaders.Add("X-Forge-User", "test-operator");
+        var app = WithFakeTransport(factory, fake);
+        await app.EnrollAsync("test-operator", admin: true);
+        using var client = await app.PairedClientAsync("test-operator");
 
         var resp = await client.PostAsJsonAsync("/api/chat/test-send", new { text = "ping" });
 
@@ -57,8 +58,8 @@ public class ChatBridgeEndpointsTests
     {
         // Default factory: appsettings has Forge:ChatBridge:Enabled=false.
         await using var factory = new ForgeWebApplicationFactory();
-        var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Forge-User", "test-operator");
+        await factory.EnrollAsync("test-operator", admin: true);
+        using var client = await factory.PairedClientAsync("test-operator");
 
         var resp = await client.PostAsJsonAsync("/api/chat/test-send", new { chatId = "1", text = "ping" });
 
@@ -89,8 +90,8 @@ public class ChatBridgeEndpointsTests
             await control.SaveChangesAsync();
         }
 
-        var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Forge-User", "eng@example.com");
+        await factory.EnrollAsync("u-eng");
+        using var client = await factory.PairedClientAsync("u-eng");
 
         var resp = await client.PostAsJsonAsync("/api/chat/test-send", new { chatId = "1", text = "ping" });
 

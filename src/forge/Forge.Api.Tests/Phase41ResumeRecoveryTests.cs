@@ -45,11 +45,10 @@ public class Phase41ResumeRecoveryTests
     {
         DeterministicStoryArtifactStrategy.Reset();
         var f = new ForgeWebApplicationFactory();
-        using var client = f.CreateClient();
-        // Resume is a writer-gated POST (ForgeUser.RequireWriter); supply a
-        // PO header so the test client clears the auth check the same way
-        // Phase28OrchestratorTests does.
-        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+        await f.EnrollAsync("po", productId: null);
+        using var client = await f.PairedClientAsync("po");
+        client.DefaultRequestHeaders.Add(ProductScope.HeaderName, "p");
+        // A paired operator and explicit fixture product grant authorize Resume.
 
         const string storyId = "WI-41001";
         const string spawnId = "spawn-WI-41001";
@@ -172,6 +171,7 @@ public class Phase41ResumeRecoveryTests
     private static async Task SeedStoryAndSpawnAsync(
         ForgeWebApplicationFactory f, string storyId, string spawnId)
     {
+        await f.SeedProductAsync();
         using var scope = f.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
@@ -179,7 +179,7 @@ public class Phase41ResumeRecoveryTests
         {
             db.WorkItems.Add(new WorkItemRow
             {
-                Id = storyId, Type = "feature", State = "active", Title = $"story {storyId}",
+                Id = storyId, RepoId = "repo-p", Type = "feature", State = "active", Title = $"story {storyId}",
                 Provider = "local", Track = "dev", Points = 5,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
@@ -190,6 +190,7 @@ public class Phase41ResumeRecoveryTests
             {
                 Id = spawnId,
                 StoryId = storyId,
+                RepoId = "repo-p",
                 StoryTitle = $"story {storyId}",
                 StoryDescription = "test",
                 StoryPoints = 5,
@@ -198,6 +199,8 @@ public class Phase41ResumeRecoveryTests
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
         }
+        if (await control.Users.AnyAsync(u => u.Id == "po") && !await control.UserProductRoles.AnyAsync(r => r.UserId == "po" && r.ProductId == "p"))
+            control.UserProductRoles.Add(new UserProductRoleRow { UserId = "po", ProductId = "p", Role = "product-owner" });
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 

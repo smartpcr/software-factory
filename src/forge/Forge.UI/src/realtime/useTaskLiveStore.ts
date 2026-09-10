@@ -1,3 +1,4 @@
+import { operatorCsrfHeaders } from '@/api/operatorSession';
 import { useEffect } from 'react';
 import { create } from 'zustand';
 import { HubConnectionBuilder, LogLevel, HubConnectionState, type HubConnection } from '@microsoft/signalr';
@@ -277,7 +278,7 @@ async function ensureTaskConnection(): Promise<HubConnection> {
   }
   if (!taskConnection) {
     taskConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl)
+      .withUrl(hubUrl, { withCredentials: true, headers: await operatorCsrfHeaders() })
       .withAutomaticReconnect()
       .configureLogging(LogLevel.Warning)
       .build();

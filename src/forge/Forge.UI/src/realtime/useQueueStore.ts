@@ -1,3 +1,4 @@
+import { operatorCsrfHeaders } from '@/api/operatorSession';
 // Phase 17 — Zustand store + SignalR plumbing for the task queue.
 //
 // Subscribes to the existing /hubs/forge connection (re-uses the singleton
@@ -90,7 +91,7 @@ async function ensureQueueConnection(): Promise<HubConnection> {
   if (queueStarting) { await queueStarting; return queueConnection!; }
   if (!queueConnection) {
     queueConnection = new HubConnectionBuilder()
-      .withUrl(hubUrl)
+      .withUrl(hubUrl, { withCredentials: true, headers: await operatorCsrfHeaders() })
       .withAutomaticReconnect()
       .configureLogging(LogLevel.Warning)
       .build();

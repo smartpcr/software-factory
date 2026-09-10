@@ -206,7 +206,7 @@ public static class AgentsEndpoints
         // Join the crew for real: dispatch + the crew roster key off crew_members
         // (CrewMemberRow), not AgentRow.CrewId. Without this the agent would be an
         // orphan — invisible in the crew and never dispatched.
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = req.CrewId,
@@ -438,7 +438,7 @@ public static class AgentsEndpoints
         var fromCrewId = row.CrewId;
         row.CrewId = newCrew.Id;
 
-        var actor = ctx.Request.Headers[Forge.Api.Auth.ForgeUser.HeaderName].FirstOrDefault();
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.AgentHistory.Add(new AgentHistoryRow
         {
             At = DateTimeOffset.UtcNow,

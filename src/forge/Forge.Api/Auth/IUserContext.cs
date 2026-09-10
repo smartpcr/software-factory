@@ -12,7 +12,7 @@ using Microsoft.AspNetCore.Http;
 /// <summary>
 /// Phase 6.11 — read the per-request user identity + optional per-user PAT.
 /// Headers:
-///   * <c>X-Forge-User</c>     — user id (already enforced by ForgeUser).
+///   * authenticated principal — stable enrolled user ID.
 ///   * <c>X-Forge-Ado-Pat</c>  — PAT used for ADO writes on this user's behalf.
 ///   * <c>X-Forge-GitHub-Pat</c> — PAT used for GitHub writes on this user's behalf.
 /// When neither header is set the server PAT (Forge:Ado:Pat / Forge:GitHub:Pat)
@@ -44,7 +44,7 @@ public sealed class HttpUserContext : IUserContext
     private HttpRequest? Req => this.accessor.HttpContext?.Request;
 
     public string? UserId =>
-        this.Req?.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        this.accessor.HttpContext is { } ctx ? ForgeUser.UserId(ctx) : null;
 
     public string? AdoPat =>
         this.Req?.Headers[AdoPatHeader].FirstOrDefault();

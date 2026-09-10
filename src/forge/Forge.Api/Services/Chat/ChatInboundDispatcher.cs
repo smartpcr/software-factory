@@ -7,6 +7,7 @@
 namespace Forge.Api.Services.Chat;
 
 using Common.Chat;
+using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +38,9 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
     /// <summary>Callback-data scheme for an open-question choice: <c>oq|{externalId}|{choiceIndex}</c>.</summary>
     public const string OpenQuestionCallbackPrefix = "oq";
 
+    private readonly HostIdentityStore identities;
+    private readonly ForgeActorResolver actors;
+    private readonly ForgeCapabilityAuthorizer authorizer;
     private readonly ControlDbContext control;
     private readonly IServiceScopeFactory scopeFactory;
     private readonly IChatTransport transport;
@@ -48,8 +52,14 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
         IServiceScopeFactory scopeFactory,
         IChatTransport transport,
         IOptionsMonitor<ChatBridgeOptions> options,
-        ILogger<ChatInboundDispatcher> logger)
+        ILogger<ChatInboundDispatcher> logger,
+        HostIdentityStore identities,
+        ForgeActorResolver actors,
+        ForgeCapabilityAuthorizer authorizer)
     {
+        this.identities = identities;
+        this.actors = actors;
+        this.authorizer = authorizer;
         this.control = control;
         this.scopeFactory = scopeFactory;
         this.transport = transport;
@@ -85,23 +95,14 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
                 return;
             }
 
-            // Part B — authorize by the sender's user id, not the chat id: in a
-            // shared supergroup every message carries the same chat id. The
-            // subscriber's ChatId column holds the user id (in a DM they're equal,
-            // so legacy rows already match).
+            var verified = await this.actors.FromProviderAsync(this.transport.Platform, update.ChatId, update.FromId, ct);
+            if (verified is null) return;
+            // The old subscriber row is only a preference record; it conveys no authority.
             var subscriber = await this.control.ChatSubscribers.FirstOrDefaultAsync(
-                s => s.Platform == this.transport.Platform && s.LinkedAt != null && s.ChatId == update.FromId, ct);
-            if (subscriber is null)
-            {
-                subscriber = await this.TryBootstrapAllowedUserAsync(update, ct);
-            }
-
-            if (subscriber is null)
-            {
-                // Hard allow-list: an unlinked user can't drive Forge.
-                this.logger.LogInformation("Chat inbound from unlinked user {UserId} (chat {ChatId}) ignored.", update.FromId, update.ChatId);
-                return;
-            }
+                s => s.Platform == this.transport.Platform && s.ChatId == update.FromId && s.ForgeUserId == verified.UserId, ct);
+            subscriber ??= new ChatSubscriberRow { ForgeUserId = verified.UserId, Platform = this.transport.Platform, ChatId = update.FromId };
+            using var actorScope = ForgeActorScope.Push(verified,
+                ForgeChatRoutes.TryParseSpawn(routeKey, out var routedProduct, out _) ? routedProduct : "");
 
             if (text.StartsWith("/", StringComparison.Ordinal))
             {
@@ -139,67 +140,24 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
     private async Task HandleLinkAsync(ChatInbound update, string text, CancellationToken ct)
     {
         var token = text.Length > 5 ? text[5..].Trim() : string.Empty;
-        if (string.IsNullOrWhiteSpace(token))
+        var pendingUser = this.identities.ChallengeUserId(token, "link");
+        if (pendingUser is null || !await this.control.Users.AnyAsync(u => u.Id == pendingUser, ct)) return;
+        var link = this.identities.RedeemLinkChallenge(token, this.transport.Platform, update.ChatId, update.FromId);
+        if (link is null) return;
+        var verified = await this.actors.FromProviderAsync(this.transport.Platform, update.ChatId, update.FromId, ct);
+        await this.authorizer.RequireAsync(verified, ForgeCapabilities.LinkSelf, new(), ct);
+        var row = await this.control.ChatSubscribers.FirstOrDefaultAsync(
+            s => s.Platform == this.transport.Platform && s.ChatId == update.FromId, ct);
+        if (row is null)
         {
-            await this.transport.SendAsync(update.ChatId, "Usage: /link <token> — get a token from Forge → Chat settings.", buttons: null, ct);
-            return;
+            row = new() { Id = Guid.NewGuid().ToString("N"), Platform = this.transport.Platform, ChatId = update.FromId, CreatedAt = DateTimeOffset.UtcNow };
+            this.control.ChatSubscribers.Add(row);
         }
-
-        var pending = await this.control.ChatSubscribers.FirstOrDefaultAsync(
-            s => s.Platform == this.transport.Platform && s.LinkToken == token && s.LinkedAt == null, ct);
-        if (pending is null)
-        {
-            await this.transport.SendAsync(update.ChatId, "❌ That link token is invalid or already used.", buttons: null, ct);
-            return;
-        }
-
-        // Bind this operator; the token is single-use. ChatId holds the sender's
-        // user id (the identity key) — in a DM it equals the chat id, in a
-        // supergroup it disambiguates operators sharing the group.
-        pending.ChatId = update.FromId;
-        pending.LinkedAt = DateTimeOffset.UtcNow;
-        pending.LinkToken = null;
+        row.ForgeUserId = link.UserId;
+        row.LinkedAt = DateTimeOffset.UtcNow;
+        row.LinkToken = null;
         await this.control.SaveChangesAsync(ct);
-
-        await this.transport.SendAsync(update.ChatId,
-            "✅ Linked. You'll get Forge alerts here and can answer questions by tapping a choice or replying.",
-            buttons: null, ct);
-    }
-
-    /// <summary>
-    /// Part B (group mode) — auto-link a sender whose user id is in the
-    /// <c>AllowedUserIds</c> bootstrap so an operator can drive Forge from the
-    /// supergroup without a per-user <c>/link</c> dance. No-op when the sender
-    /// isn't allow-listed. Idempotent: a second message just re-finds the row.
-    /// </summary>
-    private async Task<ChatSubscriberRow?> TryBootstrapAllowedUserAsync(ChatInbound update, CancellationToken ct)
-    {
-        if (!long.TryParse(update.FromId, out var fromId)) return null;
-        var allowed = this.options.CurrentValue.Telegram.AllowedUserIds;
-        if (allowed is null || !allowed.Contains(fromId)) return null;
-
-        var row = new ChatSubscriberRow
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Platform = this.transport.Platform,
-            ChatId = update.FromId, // identity key (see ChatSubscriberRow.ChatId).
-            LinkedAt = DateTimeOffset.UtcNow,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        this.control.ChatSubscribers.Add(row);
-        try
-        {
-            await this.control.SaveChangesAsync(ct);
-            this.logger.LogInformation("Bootstrapped allow-listed chat operator {UserId} from the group.", update.FromId);
-            return row;
-        }
-        catch (DbUpdateException)
-        {
-            // Raced another update (unique index on platform+chatid) — re-read.
-            this.control.Entry(row).State = EntityState.Detached;
-            return await this.control.ChatSubscribers.FirstOrDefaultAsync(
-                s => s.Platform == this.transport.Platform && s.ChatId == update.FromId, ct);
-        }
+        await this.transport.SendAsync(update.ChatId, "Linked to your enrolled Forge operator.", null, ct, update.ThreadId);
     }
 
     private async Task HandleCommandAsync(ChatInbound update, string text, string? routeKey, ChatSubscriberRow subscriber, CancellationToken ct)
@@ -219,22 +177,38 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
 
             case "/mute":
             case "/unmute":
+                await this.authorizer.RequireAsync(ForgeActorScope.Current?.Actor, ForgeCapabilities.LinkSelf, new(), ct);
+                if (string.IsNullOrEmpty(subscriber.Id)) return;
                 subscriber.Muted = cmd == "/mute";
                 await this.control.SaveChangesAsync(ct);
                 await this.transport.SendAsync(update.ChatId, subscriber.Muted ? "🔕 Muted." : "🔔 Unmuted.", buttons: null, ct);
                 break;
 
             case "/status":
-                // In a spawn topic the channel route pins the product — count in
-                // that product's DB; at the group root / in a DM stay ambient.
-                var hasRoute = ForgeChatRoutes.TryParseSpawn(routeKey, out var productId, out _);
-                int openCount;
-                using (ProductDbContextFactory.PushAsyncLocalSlug(hasRoute ? productId : null))
-                using (var pscope = this.scopeFactory.CreateScope())
+                var hasRoute = ForgeChatRoutes.TryParseSpawn(routeKey, out var productId, out var spawnId);
+                var actor = ForgeActorScope.Current?.Actor;
+                var productIds = hasRoute ? new[] { productId }
+                    : await this.authorizer.ReadableProductIdsAsync(actor, ct);
+                var openCount = 0;
+                foreach (var targetProduct in productIds)
                 {
-                    var db = pscope.ServiceProvider.GetRequiredService<ProductDbContext>();
-                    openCount = await db.WorkItems
-                        .CountAsync(w => w.ExecutionStatus == ExecutionStatuses.AwaitingAnswers, ct);
+                    await this.authorizer.RequireAsync(actor, ForgeCapabilities.SpawnRead,
+                        new(targetProduct, SpawnId: hasRoute ? spawnId : null), ct);
+                    var product = await this.authorizer.ResolveProductAsync(targetProduct, ct);
+                    using var productScope = ProductDbContextFactory.PushAsyncLocalSlug(product!.Slug);
+                    using var scope = this.scopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                    var repoIds = await db.Repos.Where(r => r.ProductId == product.Id).Select(r => r.Id).ToListAsync(ct);
+                    var pending = db.WorkItems.Where(w => w.RepoId != null && repoIds.Contains(w.RepoId)
+                        && w.ExecutionStatus == ExecutionStatuses.AwaitingAnswers);
+                    if (hasRoute)
+                    {
+                        var childIds = await db.Workstreams.Where(w => w.StorySpawnId == spawnId).Select(w => w.Id).ToListAsync(ct);
+                        var storyId = await db.StorySpawns.Where(s => s.Id == spawnId).Select(s => s.StoryId).SingleAsync(ct);
+                        var docPrefix = "plan-doc:" + spawnId + ":";
+                        pending = pending.Where(w => childIds.Contains(w.Id) || w.Id == storyId || w.Id == spawnId || w.Id.StartsWith(docPrefix));
+                    }
+                    openCount += await pending.CountAsync(ct);
                 }
 
                 await this.transport.SendAsync(update.ChatId,
@@ -255,15 +229,15 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
         var action = parts[1];
         var actor = subscriber.ForgeUserId ?? $"chat:{update.FromId}";
         var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
-            n => n.ChatMessageId == update.ReplyToMessageId, ct);
+            n => n.Platform == this.transport.Platform && n.ChatId == update.ChatId
+                && n.ChatMessageId == update.ReplyToMessageId && n.Status == ChatNotificationStatuses.Sent, ct);
 
-        // The workstream id comes from the correlated notification, not the
-        // callback payload — Telegram caps callback_data at 64 bytes, which long
-        // ws ids exceed. Fall back to a legacy 3-part payload (act|action|wsId)
-        // for any already-sent messages that still carry the id inline.
-        var wsId = notif?.WorkstreamId;
-        if (string.IsNullOrEmpty(wsId) && parts.Length >= 3) wsId = parts[2];
-        if (string.IsNullOrEmpty(wsId)) return; // can't correlate → ignore.
+        if (notif is null || string.IsNullOrEmpty(notif.WorkstreamId)) return;
+        var wsId = notif.WorkstreamId;
+        var capabilityAction = action is "restart" or "restart-confirm" or "restart-cancel" ? "restart" : action;
+        await this.authorizer.RequireAsync(ForgeActorScope.Current?.Actor, "workstream." + capabilityAction,
+            new(notif.ProductId, SpawnId: notif.SpawnId, WorkstreamId: wsId), ct);
+        var product = await this.authorizer.ResolveProductAsync(notif.ProductId, ct);
 
         // Restart is destructive → arm a second-tap confirm before executing.
         if (action == "restart")
@@ -289,7 +263,8 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
         // to the notification's product via the AsyncLocal slug so it opens the
         // right per-product ProductDbContext (else the lookup returns "not found").
         OperatorActionOutcome outcome;
-        using (ProductDbContextFactory.PushAsyncLocalSlug(notif?.ProductId))
+        using (ForgeActorScope.Push(ForgeActorScope.Current!.Value.Actor, product!.Id))
+        using (ProductDbContextFactory.PushAsyncLocalSlug(product.Slug))
         using (var pscope = this.scopeFactory.CreateScope())
         {
             var ops = pscope.ServiceProvider.GetRequiredService<IOperatorActionService>();
@@ -303,7 +278,7 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
             };
         }
 
-        if (notif is not null)
+        if (outcome.Ok)
         {
             notif.Status = ChatNotificationStatuses.Acted;
             notif.RespondedAt = DateTimeOffset.UtcNow;
@@ -331,14 +306,18 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
     /// </summary>
     private async Task HandleAckActionAsync(ChatInbound update, CancellationToken ct)
     {
+        await this.authorizer.RequireAsync(ForgeActorScope.Current?.Actor, ForgeCapabilities.HostAlertManage, new(), ct);
         var parts = (update.CallbackData ?? string.Empty).Split('|');
         if (parts.Length < 2) return;
         var kind = parts[0];
         var action = parts[1];
 
         var notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
-            n => n.ChatMessageId == update.ReplyToMessageId, ct);
-        if (notif is not null && action != "snooze")
+            n => n.Platform == this.transport.Platform && n.ChatId == update.ChatId
+                && n.ChatMessageId == update.ReplyToMessageId && n.Status == ChatNotificationStatuses.Sent, ct);
+        if (notif is null || (kind == "hi" && notif.Kind != "human-interaction")
+            || (kind == "strain" && notif.Kind != "queue-strain")) return;
+        if (action != "snooze")
         {
             notif.Status = ChatNotificationStatuses.Acted;
             notif.RespondedAt = DateTimeOffset.UtcNow;
@@ -362,17 +341,19 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
         if (!string.IsNullOrEmpty(update.ReplyToMessageId))
         {
             notif = await this.control.ChatNotifications.FirstOrDefaultAsync(
-                n => n.ChatMessageId == update.ReplyToMessageId, ct);
+                n => n.Platform == this.transport.Platform && n.ChatId == update.ChatId
+                && n.ChatMessageId == update.ReplyToMessageId && n.Status == ChatNotificationStatuses.Sent, ct);
         }
 
         // Channel-route fallback: a plain (non-reply) message typed inside a
         // spawn's forum topic targets that spawn's outstanding open-questions
         // alert — the topic IS the spawn's channel, so no reply is needed.
-        if (notif is null && ForgeChatRoutes.TryParseSpawn(routeKey, out _, out var spawnId))
+        if (notif is null && ForgeChatRoutes.TryParseSpawn(routeKey, out var routeProductId, out var spawnId))
         {
             var candidates = await this.control.ChatNotifications
                 .Where(n => n.Kind == "open-questions"
-                    && n.SpawnId == spawnId
+                    && n.Platform == this.transport.Platform && n.ChatId == update.ChatId
+                    && n.ProductId == routeProductId && n.SpawnId == spawnId
                     && n.Status == ChatNotificationStatuses.Sent)
                 .ToListAsync(ct);
             // Client-side order — SQLite can't ORDER BY DateTimeOffset.
@@ -389,7 +370,11 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
         // Questions + the answer/resume core live in the notification's product
         // DB — scope a fresh provider to it via the AsyncLocal slug (the same
         // idiom the workstream-action path uses).
-        using (ProductDbContextFactory.PushAsyncLocalSlug(notif.ProductId))
+        await this.authorizer.RequireAsync(ForgeActorScope.Current?.Actor, ForgeCapabilities.QuestionAnswer,
+            new(notif.ProductId, SpawnId: notif.SpawnId, WorkItemId: notif.WorkItemId), ct);
+        var product = await this.authorizer.ResolveProductAsync(notif.ProductId, ct);
+        using (ForgeActorScope.Push(ForgeActorScope.Current!.Value.Actor, product!.Id))
+        using (ProductDbContextFactory.PushAsyncLocalSlug(product.Slug))
         using (var pscope = this.scopeFactory.CreateScope())
         {
             var db = pscope.ServiceProvider.GetRequiredService<ProductDbContext>();

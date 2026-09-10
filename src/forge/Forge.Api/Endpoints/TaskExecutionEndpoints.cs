@@ -494,7 +494,7 @@ public static class TaskExecutionEndpoints
         if (req?.ExternalIds is null || req.ExternalIds.Count == 0)
             return Results.Problem(title: "externalIds[] is required", statusCode: 400);
 
-        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "anonymous";
         // Phase 95.3 — delegate to the shared IOpenQuestionService so the chat
         // inbound path and this endpoint drive one implementation.
         var result = await questions.DismissAsync(id, req.ExternalIds, actor, ct);
@@ -543,7 +543,7 @@ public static class TaskExecutionEndpoints
         if (req?.Answers is null || req.Answers.Count == 0)
             return Results.Problem(title: "answers[] is required", statusCode: 400);
 
-        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "anonymous";
         // Phase 95.3 — delegate to the shared IOpenQuestionService (the same core
         // the chat-bridge inbound path calls) so there is one answer/resume impl.
         var mapped = req.Answers
@@ -1137,7 +1137,7 @@ public static class TaskExecutionEndpoints
         if (wi is not null)
         {
             var agentIds = Forge.Api.Endpoints.WorkItemsEndpoints.ParseAgentIds(wi.AssignedAgentJson);
-            var userId = ctx.Request.Headers.TryGetValue("X-Forge-User", out var uv) ? uv.FirstOrDefault() : null;
+            var userId = Forge.Api.Auth.ForgeUser.UserId(ctx);
             db.AgentAssignments.Add(new AgentAssignmentRow
             {
                 WorkItemId = id,

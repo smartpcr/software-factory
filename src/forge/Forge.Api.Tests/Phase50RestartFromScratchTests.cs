@@ -61,8 +61,10 @@ public class Phase50RestartFromScratchTests
     {
         DeterministicStoryArtifactStrategy.Reset();
         var f = new ForgeWebApplicationFactory();
-        using var client = f.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+        await f.EnrollAsync("po", productId: null);
+        using var client = await f.PairedClientAsync("po");
+        client.DefaultRequestHeaders.Add(ProductScope.HeaderName, "p");
+
 
         const string storyId = "WI-50001";
         const string spawnId = "spawn-WI-50001";
@@ -99,8 +101,10 @@ public class Phase50RestartFromScratchTests
     {
         DeterministicStoryArtifactStrategy.Reset();
         var f = new ForgeWebApplicationFactory();
-        using var client = f.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+        await f.EnrollAsync("po", productId: null);
+        using var client = await f.PairedClientAsync("po");
+        client.DefaultRequestHeaders.Add(ProductScope.HeaderName, "p");
+
 
         const string storyId = "WI-50002";
         const string spawnId = "spawn-WI-50002";
@@ -344,6 +348,7 @@ public class Phase50RestartFromScratchTests
     private static async Task SeedStoryAndSpawnAsync(
         ForgeWebApplicationFactory f, string storyId, string spawnId)
     {
+        await f.SeedProductAsync();
         using var scope = f.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
@@ -351,7 +356,7 @@ public class Phase50RestartFromScratchTests
         {
             db.WorkItems.Add(new WorkItemRow
             {
-                Id = storyId, Type = "feature", State = "active", Title = $"story {storyId}",
+                Id = storyId, RepoId = "repo-p", Type = "feature", State = "active", Title = $"story {storyId}",
                 Provider = "local", Track = "dev", Points = 5,
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
@@ -362,6 +367,7 @@ public class Phase50RestartFromScratchTests
             {
                 Id = spawnId,
                 StoryId = storyId,
+                RepoId = "repo-p",
                 StoryTitle = $"story {storyId}",
                 StoryDescription = "test",
                 StoryPoints = 5,
@@ -370,6 +376,8 @@ public class Phase50RestartFromScratchTests
                 UpdatedAt = DateTimeOffset.UtcNow,
             });
         }
+        if (await control.Users.AnyAsync(u => u.Id == "po") && !await control.UserProductRoles.AnyAsync(r => r.UserId == "po" && r.ProductId == "p"))
+            control.UserProductRoles.Add(new UserProductRoleRow { UserId = "po", ProductId = "p", Role = "product-owner" });
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
     }
 

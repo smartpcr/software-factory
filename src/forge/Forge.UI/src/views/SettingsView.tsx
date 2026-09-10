@@ -1,3 +1,4 @@
+import { OperatorSessionSettings } from '@/auth/OperatorGate';
 import { useEffect, useState } from 'react';
 import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
 import { useCurrentUserStore } from '@/state/useCurrentUserStore';
@@ -469,6 +470,7 @@ export function SettingsView() {
 
   return (
     <section className="view active" id="view-settings">
+      <OperatorSessionSettings />
       <div className="page-head">
         <div className="page-head-left">
           <div className="page-eyebrow">

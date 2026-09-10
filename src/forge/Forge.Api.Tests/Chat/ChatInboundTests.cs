@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests.Chat;
 
 using Common.Chat;
+using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Services.Chat;
 using Forge.Api.Tests.Infrastructure;
@@ -43,31 +44,19 @@ public class ChatInboundTests
         var app = WithFakeTransport(f, fake);
         using (app.CreateClient()) { }
 
-        using (var scope = app.Services.CreateScope())
-        {
-            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            control.ChatSubscribers.Add(new ChatSubscriberRow
-            {
-                Id = "sub-1",
-                Platform = "telegram",
-                ChatId = "pending:TOK123",
-                ForgeUserId = "user-1",
-                LinkToken = "TOK123",
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-            await control.SaveChangesAsync();
-        }
+        await app.EnrollAsync("user-1");
+        var token = app.Services.GetRequiredService<HostIdentityStore>().IssueLinkChallenge("user-1", "telegram", "555", "555");
 
         using (var scope = app.Services.CreateScope())
         {
             var dispatcher = scope.ServiceProvider.GetRequiredService<ChatInboundDispatcher>();
-            await dispatcher.DispatchAsync(TextUpdate(1, "555", "/link TOK123"), default);
+            await dispatcher.DispatchAsync(TextUpdate(1, "555", "/link " + token), default);
         }
 
         using (var scope = app.Services.CreateScope())
         {
             var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            var sub = await control.ChatSubscribers.AsNoTracking().SingleAsync(s => s.Id == "sub-1");
+            var sub = await control.ChatSubscribers.AsNoTracking().SingleAsync(s => s.ChatId == "555");
             Assert.Equal("555", sub.ChatId);
             Assert.NotNull(sub.LinkedAt);
             Assert.Null(sub.LinkToken);
@@ -90,7 +79,7 @@ public class ChatInboundTests
             await dispatcher.DispatchAsync(TextUpdate(1, "555", "/link NOPE"), default);
         }
 
-        Assert.Contains(fake.Sent, m => m.Text.Contains("invalid", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(fake.Sent);
         using var s2 = app.Services.CreateScope();
         var control = s2.ServiceProvider.GetRequiredService<ControlDbContext>();
         Assert.Equal(0, await control.ChatSubscribers.CountAsync(x => x.ChatId == "555"));
@@ -122,6 +111,10 @@ public class ChatInboundTests
         var app = WithFakeTransport(f, fake);
         using (app.CreateClient()) { }
 
+        await app.SeedProductAsync();
+        await app.EnrollAsync("user-1", productId: "p");
+        app.Link("user-1", tenant: "123");
+
         const string Wi = "wi-inbound-answer";
         using (var scope = app.Services.CreateScope())
         {
@@ -138,7 +131,7 @@ public class ChatInboundTests
                 DedupeKey = $"oq:{Wi}:1", Title = "Pick a backend", Status = ChatNotificationStatuses.Sent,
                 Platform = "telegram", ChatId = "123", ChatMessageId = "m1", CreatedAt = DateTimeOffset.UtcNow,
             });
-            db.WorkItems.Add(new WorkItemRow { Id = Wi, ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
+            db.WorkItems.Add(new WorkItemRow { Id = Wi, RepoId = "repo-p", ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
             db.DeliverableQuestions.Add(new DeliverableQuestionRow
             {
                 WorkItemId = Wi, ExternalId = "persistence", Iter = 1, Text = "Which backend?",
@@ -179,6 +172,10 @@ public class ChatInboundTests
         var app = WithFakeTransport(f, fake);
         using (app.CreateClient()) { }
 
+        await app.SeedProductAsync();
+        await app.EnrollAsync("user-1", productId: "p");
+        app.Link("user-1", tenant: "42");
+
         const string Wi = "wi-topic-answer";
         const string Spawn = "spawn-route-5";
         using (var scope = app.Services.CreateScope())
@@ -196,7 +193,9 @@ public class ChatInboundTests
                 DedupeKey = $"oq:{Wi}", Title = "Pick a backend", Status = ChatNotificationStatuses.Sent,
                 Platform = "telegram", ChatId = "42", ChatMessageId = "m9", CreatedAt = DateTimeOffset.UtcNow,
             });
-            db.WorkItems.Add(new WorkItemRow { Id = Wi, ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
+            db.StorySpawns.Add(new StorySpawnRow { Id = Spawn, StoryId = "story-topic", RepoId = "repo-p" });
+            db.Workstreams.Add(new WorkstreamRow { Id = Wi, StorySpawnId = Spawn, RepoId = "repo-p", Status = "stalled" });
+            db.WorkItems.Add(new WorkItemRow { Id = Wi, RepoId = "repo-p", ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
             db.DeliverableQuestions.Add(new DeliverableQuestionRow
             {
                 WorkItemId = Wi, ExternalId = "persistence", Iter = 1, Text = "Which backend?",
@@ -262,13 +261,11 @@ public class ChatInboundTests
         using (var scope = app.Services.CreateScope())
         {
             var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-            var sub = await control.ChatSubscribers.AsNoTracking().SingleAsync();
-            Assert.Equal("777", sub.ChatId); // identity keyed on the user id, not the group chat.
-            Assert.NotNull(sub.LinkedAt);
+            Assert.False(await control.ChatSubscribers.AnyAsync());
         }
 
         // Authorized → /help was answered.
-        Assert.Contains(fake.Sent, m => m.Text.Contains("chat bridge", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(fake.Sent);
     }
 
     [Fact]

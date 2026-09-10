@@ -312,7 +312,7 @@ public static class WorkstreamsEndpoints
     }
 
     // GET /api/workstreams
-    private static async Task<IResult> GetAll(HttpContext ctx, ControlDbContext control, ProductDbContext db, IGitWorktreeService git)
+    private static async Task<IResult> GetAll(HttpContext ctx, ControlDbContext control, ProductDbContext db, IGitWorktreeService git, ProductFanout fanout)
     {
         var scope = await ProductScope.ResolveAsync(ctx, control);
         var q = db.Workstreams.AsNoTracking().AsQueryable();
@@ -321,7 +321,22 @@ public static class WorkstreamsEndpoints
             var ids = scope.RepoIds!;
             q = q.Where(w => w.RepoId != null && ids.Contains(w.RepoId));
         }
-        var rows = await q.OrderBy(w => w.Sort).ToListAsync();
+        List<WorkstreamRow> rows;
+        var requested = ProductScope.Read(ctx);
+        if (string.IsNullOrEmpty(requested) || requested == ProductScope.AllScope)
+        {
+            var perProduct = await fanout.CollectAsync(async (registry, productDb, slug, ct) =>
+            {
+                var productId = await registry.Products.Where(p => p.Slug == slug).Select(p => p.Id).SingleAsync(ct);
+                var repoIds = await productDb.Repos.Where(r => r.ProductId == productId).Select(r => r.Id).ToListAsync(ct);
+                var query = productDb.Workstreams.AsNoTracking().Where(w => w.RepoId != null && repoIds.Contains(w.RepoId));
+                var repo = RepoScope.Read(ctx);
+                if (!string.IsNullOrEmpty(repo) && repo != "all") query = query.Where(w => w.RepoId == repo);
+                return await query.ToListAsync(ct);
+            }, ctx.RequestAborted);
+            rows = perProduct.Values.SelectMany(value => value).OrderBy(w => w.Sort).ToList();
+        }
+        else rows = await q.OrderBy(w => w.Sort).ToListAsync();
         var list = rows.Select(WorkstreamMapper.ToContract).ToList();
         // Best-effort live ahead/behind/conflicts when a git checkout is configured.
         // We do not block the response on git errors.
@@ -1152,7 +1167,7 @@ public static class WorkstreamsEndpoints
         if (auth is not null) return auth;
 
         // Phase 95.3 — delegate to the shared IOperatorActionService.
-        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "anonymous";
         var outcome = await actions.RetryAsync(id, actor, ct);
         return outcome.Ok
             ? Results.Ok(outcome.Payload)
@@ -1212,7 +1227,7 @@ public static class WorkstreamsEndpoints
 
         // Phase 95.3 — delegate to the shared IOperatorActionService so the chat
         // inbound path and this endpoint drive one implementation.
-        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var actor = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "anonymous";
         var outcome = await actions.AcceptAsync(id, actor, ct);
         return outcome.Ok
             ? Results.Ok(outcome.Payload)

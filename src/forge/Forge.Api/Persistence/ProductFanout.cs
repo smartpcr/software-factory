@@ -43,16 +43,19 @@ public sealed class ProductFanout
     private readonly IProductDbContextFactory factory;
     private readonly IServiceScopeFactory scopeFactory;
     private readonly int maxConcurrent;
+    private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor? http;
 
     public ProductFanout(
         ControlDbContext control,
         IProductDbContextFactory factory,
         IServiceScopeFactory scopeFactory,
-        Microsoft.Extensions.Configuration.IConfiguration config)
+        Microsoft.Extensions.Configuration.IConfiguration config,
+        Microsoft.AspNetCore.Http.IHttpContextAccessor? http = null)
     {
         this.control = control;
         this.factory = factory;
         this.scopeFactory = scopeFactory;
+        this.http = http;
         var raw = config["Forge:Db:MaxConcurrentProductDbs"];
         this.maxConcurrent = (int.TryParse(raw, out var v) && v > 0) ? v : 8;
     }
@@ -87,6 +90,7 @@ public sealed class ProductFanout
         Func<ControlDbContext, ProductDbContext, string, CancellationToken, Task> action,
         CancellationToken ct = default)
     {
+        productSlugs = this.FilterRequestProducts(productSlugs);
         if (productSlugs.Count == 0) return 0;
 
         var errors = new List<Exception>();
@@ -149,6 +153,7 @@ public sealed class ProductFanout
             .Select(p => p.Slug)
             .ToListAsync(ct);
 
+        products = this.FilterRequestProducts(products).ToList();
         var results = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
         var errors = new List<Exception>();
         using var semaphore = new SemaphoreSlim(this.maxConcurrent, this.maxConcurrent);
@@ -190,5 +195,12 @@ public sealed class ProductFanout
         }
 
         return results;
+    }
+
+    private IReadOnlyList<string> FilterRequestProducts(IReadOnlyList<string> slugs)
+    {
+        if (this.http?.HttpContext is not { } ctx) return slugs;
+        var readable = ctx.Items[Forge.Api.Auth.ForgeEndpointCapabilityMiddleware.ReadableProductsKey] as IReadOnlySet<string>;
+        return readable is null ? Array.Empty<string>() : slugs.Where(readable.Contains).ToArray();
     }
 }

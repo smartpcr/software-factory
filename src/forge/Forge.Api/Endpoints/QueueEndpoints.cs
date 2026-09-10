@@ -94,7 +94,7 @@ public static class QueueEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var row = await queue.AcknowledgeAsync(id, caller, auto: false, ct);
         if (row is null) return Results.Problem(title: $"Queue row {id} not in awaiting-ack", statusCode: 409);
         await BroadcastChangedAsync(hub, row, "acked", ct);
@@ -115,7 +115,7 @@ public static class QueueEndpoints
         {
             return Results.Problem(title: "crewId required", statusCode: 400);
         }
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var row = await queue.RouteToCrewAsync(id, req.CrewId, caller, ct);
         if (row is null) return Results.Problem(title: $"Queue row {id} not in awaiting-route", statusCode: 409);
         await BroadcastChangedAsync(hub, row, "routed", ct);
@@ -144,7 +144,7 @@ public static class QueueEndpoints
         var gateError = await CheckLeadOrPoForCrewAsync(ctx, control, db, existing.RoutedToCrewId, ct);
         if (gateError is not null) return gateError;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "system";
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "system";
         var row = await queue.ReassignAsync(id, req.NewCrewId, caller, ct);
         if (row is null) return Results.Problem(title: $"Queue row {id} not in a reassignable state", statusCode: 409);
         await BroadcastChangedAsync(hub, row, "reassigned", ct);
@@ -168,7 +168,7 @@ public static class QueueEndpoints
         var gateError = await CheckLeadOrPoForCrewAsync(ctx, control, db, existing.RoutedToCrewId, ct);
         if (gateError is not null) return gateError;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "system";
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "system";
         var row = await queue.CancelAsync(id, caller, req?.Reason, ct);
         if (row is null) return Results.Problem(title: $"Queue row {id} already closed", statusCode: 409);
         await BroadcastChangedAsync(hub, row, "cancelled", ct);
@@ -195,7 +195,7 @@ public static class QueueEndpoints
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "system";
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "system";
         var row = await queue.ConfirmStrainAsync(id, caller, ct);
         return row is null
             ? Results.Problem(title: $"Queue row {id} not found", statusCode: 404)

@@ -16,12 +16,18 @@ using Microsoft.Extensions.Options;
 
 /// <summary>
 /// Legacy chat smoke-test and account-link endpoints.
-/// All endpoints are <see cref="RequireRole.ProductOwner"/>-gated.
+/// Test sends require a host administrator; linking requires the paired operator.
 /// </summary>
 public static class ChatBridgeEndpoints
 {
     public static WebApplication MapChatBridgeEndpoints(this WebApplication app)
     {
+        app.MapGet("/api/chat/availability", () => Results.Ok(new
+        {
+            interactiveAvailable = ChatPluginInteractiveGate.IsAvailable,
+            reason = ChatPluginInteractiveGate.Reason,
+        })).WithName("ChatPluginAvailability");
+
         // POST /api/chat/test-send — prove an outbound round-trip to the chat
         // platform. Body: { chatId?, text? }. chatId defaults to the first
         // configured AllowedChatId.
@@ -33,7 +39,8 @@ public static class ChatBridgeEndpoints
             IOptionsMonitor<ChatBridgeOptions> options,
             CancellationToken ct) =>
         {
-            if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
+            await ctx.RequestServices.GetRequiredService<ForgeActionContext>()
+                .RequireAsync(ForgeCapabilities.ConnectionManage, new(), ct);
 
             var opt = options.CurrentValue;
             if (!opt.Enabled)
@@ -69,44 +76,29 @@ public static class ChatBridgeEndpoints
 
         // POST /api/chat/link-token — mint a one-time token for the current user.
         // The operator then sends `/link <token>` from the chat app to bind their
-        // chat account to this Forge user (Phase 4). Role-gated product-owner.
+        // chat account to this authenticated Forge user.
         app.MapPost("/api/chat/link-token", async (
-            HttpContext ctx,
-            ControlDbContext control,
-            IOptionsMonitor<ChatBridgeOptions> options,
-            CancellationToken ct) =>
+            HttpContext ctx, ChatLinkRequest req, ForgeActionContext action, HostIdentityStore identities,
+            IOptionsMonitor<ChatBridgeOptions> options, CancellationToken ct) =>
         {
-            if (RequireRole.Check(ctx, control, RequireRole.ProductOwner) is { } gate) return gate;
-
+            var actor = await action.RequireAsync(ForgeCapabilities.LinkSelf, new(), ct);
             var opt = options.CurrentValue;
             if (!opt.Enabled || !opt.AllowRemoteActions)
-            {
-                return Results.Problem(
-                    title: "Chat remote actions disabled",
-                    detail: "Account linking is unavailable in notification-only mode. Use Forge to respond to alerts.",
-                    statusCode: StatusCodes.Status409Conflict);
-            }
-
-            var user = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
-            var token = Guid.NewGuid().ToString("N")[..8];
-
-            control.ChatSubscribers.Add(new ChatSubscriberRow
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Platform = opt.Platform,
-                // Placeholder keeps the (Platform, ChatId) unique index happy until
-                // /link swaps in the real chat id.
-                ChatId = $"pending:{token}",
-                ForgeUserId = user,
-                LinkToken = token,
-                CreatedAt = DateTimeOffset.UtcNow,
-            });
-            await control.SaveChangesAsync(ct);
-
-            return Results.Ok(new { token, instructions = $"In the chat app, send: /link {token}" });
-        })
-            .WithTags("ChatBridge")
-            .WithName("ChatBridgeLinkToken");
+                return Results.Problem(title: "Chat remote actions disabled", statusCode: 409);
+            if (req.Provider != "telegram" || !long.TryParse(req.TenantId, out var chatId) || chatId == 0
+                || !long.TryParse(req.ProviderUserId, out var userId) || userId <= 0
+                || !opt.Telegram.AllowedChatIds.Contains(chatId))
+                return Results.Problem(title: "Select a configured destination and exact provider user ID", statusCode: 400);
+            ctx.Response.Headers.CacheControl = "no-store";
+            var token = identities.IssueLinkChallenge(actor.UserId, req.Provider, req.TenantId, req.ProviderUserId);
+            return Results.Ok(new { token, expiresInSeconds = 120, instructions = "Send /link followed by this token from the selected provider user in the selected destination." });
+        }).WithTags("ChatBridge").WithName("ChatBridgeLinkToken");
+        app.MapDelete("/api/chat/link", async (ForgeActionContext action, HostIdentityStore identities, CancellationToken ct) =>
+        {
+            var actor = await action.RequireAsync(ForgeCapabilities.LinkSelf, new(), ct);
+            identities.RevokeLinks(actor.UserId);
+            return Results.NoContent();
+        }).WithTags("ChatBridge").WithName("ChatBridgeRevokeLink");
 
         return app;
     }
@@ -114,3 +106,5 @@ public static class ChatBridgeEndpoints
 
 /// <summary>Body for <c>POST /api/chat/test-send</c>.</summary>
 public sealed record ChatTestSendRequest(string? ChatId, string? Text);
+
+public sealed record ChatLinkRequest(string Provider, string TenantId, string ProviderUserId);

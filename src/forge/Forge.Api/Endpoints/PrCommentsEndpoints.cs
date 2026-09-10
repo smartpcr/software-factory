@@ -119,7 +119,7 @@ public static class PrCommentsEndpoints
         if (!await db.Prs.AnyAsync(p => p.Id == prId))
             return Results.Problem(title: $"PR {prId} not found", statusCode: 404);
 
-        var userId = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "unknown";
+        var userId = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "unknown";
         var now = DateTimeOffset.UtcNow;
         var threadId = req.ParentCommentId.HasValue
             ? (await db.PrComments.AsNoTracking().FirstOrDefaultAsync(c => c.Id == req.ParentCommentId.Value))?.ThreadId ?? Guid.NewGuid().ToString()
@@ -212,7 +212,7 @@ public static class PrCommentsEndpoints
         if (comment is null)
             return Results.Problem(title: $"Comment {commentId} not found on PR {prId}", statusCode: 404);
 
-        var userId = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "unknown";
+        var userId = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "unknown";
 
         var oldBody = comment.Body;
         comment.Body = req.Body;
@@ -245,7 +245,7 @@ public static class PrCommentsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var userId = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "unknown";
+        var userId = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "unknown";
         if (IsAgent(userId))
             return Results.Problem(title: "Agents may not resolve comments", statusCode: 403);
 
@@ -291,7 +291,7 @@ public static class PrCommentsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var userId = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "unknown";
+        var userId = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "unknown";
         if (IsAgent(userId))
             return Results.Problem(title: "Agents may not reopen comments", statusCode: 403);
 

@@ -413,7 +413,7 @@ public static class CrewsEndpoints
         var gate = RequireRole.CheckForProduct(ctx, control, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
 
         // 2026-06-22 — block re-pinning to a model the runner can't serve.
         if (registry.ValidateAssignable(req.Model) is { } modelErr)
@@ -611,7 +611,7 @@ public static class CrewsEndpoints
             {
                 peer.PairRole = "standalone";
                 peer.PairedWithCrewId = null;
-                var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+                var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
                 control.CrewHistory.Add(new CrewHistoryRow { CrewId = peer.Id, Kind = "crew-unpaired", FromValue = row.Id, ByUserId = caller });
             }
         }
@@ -641,9 +641,9 @@ public static class CrewsEndpoints
         // RequireRole returns null and we allow both the gate and the
         // ?force=true path — matches the convention in Check / CheckForProduct
         // so dev / contract tests can drive writes.
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var role = RequireRole.ResolveRoleForProduct(ctx, control, null);
-        var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
+        var isPo = string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
             var callerUser = string.IsNullOrEmpty(caller) ? null
@@ -781,7 +781,7 @@ public static class CrewsEndpoints
             return Results.Ok(await MapCrewAsync(crew, control, db, ct)); // idempotent
         }
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
 
         // Phase 13b — adding an agent is a *move*: an agent can be a roster
         // member of at most one crew at a time. Remove any prior membership
@@ -865,7 +865,7 @@ public static class CrewsEndpoints
         if (string.IsNullOrWhiteSpace(req.Role)) return Results.Problem(title: "role required", statusCode: 400);
         if (member.Role == req.Role) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "member-role", FromValue = $"{agentId}:{member.Role}", ToValue = $"{agentId}:{req.Role}", ByUserId = caller });
         member.Role = req.Role;
         await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
@@ -888,7 +888,7 @@ public static class CrewsEndpoints
         var member = await control.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
         if (member is null) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
         control.CrewMembers.Remove(member);
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "member-remove", FromValue = agentId, ByUserId = caller });
 
         // If this agent was the default generator/evaluator, clear it so the
@@ -915,7 +915,7 @@ public static class CrewsEndpoints
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var actions = await ApplyAutoAssignAsync(control, db, caller, ct);
         return Results.Ok(new AutoAssignResult(
             Inspected: await control.Agents.CountAsync(ct),
@@ -1292,7 +1292,7 @@ public static class CrewsEndpoints
         if (caps.Contains(req.ContentId)) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
         caps.Add(req.ContentId);
         crew.CapabilitiesJson = SerialiseCaps(caps);
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "capability-add", ToValue = req.ContentId, ByUserId = caller });
         await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         return Results.Ok(await MapCrewAsync(crew, control, db, ct));
@@ -1314,7 +1314,7 @@ public static class CrewsEndpoints
         var caps = ParseCapsJson(crew.CapabilitiesJson);
         if (!caps.Remove(req.ContentId)) return Results.Ok(await MapCrewAsync(crew, control, db, ct));
         crew.CapabilitiesJson = SerialiseCaps(caps);
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "capability-remove", FromValue = req.ContentId, ByUserId = caller });
         await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
         return Results.Ok(await MapCrewAsync(crew, control, db, ct));
@@ -1393,7 +1393,7 @@ public static class CrewsEndpoints
         other.PairRole = "evaluator";
         other.PairedWithCrewId = crew.Id;
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         control.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id,  Kind = "crew-paired", ToValue = other.Id, ByUserId = caller });
         control.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-paired", ToValue = crew.Id,  ByUserId = caller });
         await control.SaveChangesAsync(ct); await db.SaveChangesAsync(ct);
@@ -1423,7 +1423,7 @@ public static class CrewsEndpoints
         }
 
         var other = await control.Crews.FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
 
         var formerOtherId = crew.PairedWithCrewId;
         crew.PairRole = "standalone";
@@ -1607,9 +1607,9 @@ public static class CrewsEndpoints
         }
 
         // Override requested — require lead OR product-scoped PO.
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var role = RequireRole.ResolveRoleForProduct(ctx, control, null);
-        var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
+        var isPo = string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
             var callerUser = string.IsNullOrEmpty(caller) ? null

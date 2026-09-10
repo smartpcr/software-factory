@@ -7,6 +7,7 @@
 namespace Forge.Api.Services;
 
 using Forge.Api.Endpoints;
+using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
 using Forge.Api.Services.Stories;
@@ -21,7 +22,7 @@ using Microsoft.EntityFrameworkCore;
 /// — no behaviour fork. The HTTP endpoints are now thin wrappers over this.
 ///
 /// <para>Deliberately free of <c>HttpContext</c>: the caller resolves the actor
-/// (X-Forge-User header for HTTP, linked subscriber for chat) and passes it in.</para>
+/// (paired browser session or verified provider link) and passes it in.</para>
 /// </summary>
 public interface IOpenQuestionService
 {
@@ -52,6 +53,7 @@ public sealed class OpenQuestionService : IOpenQuestionService
 {
     private const string DismissSentinel = "(dismissed by operator)";
 
+    private readonly ForgeActionContext actionContext;
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly IHubContext<ForgeHub> hub;
@@ -63,8 +65,10 @@ public sealed class OpenQuestionService : IOpenQuestionService
         ProductDbContext db,
         IHubContext<ForgeHub> hub,
         IServiceScopeFactory scopeFactory,
-        IStoryArtifactStrategy strategy)
+        IStoryArtifactStrategy strategy,
+        ForgeActionContext actionContext)
     {
+        this.actionContext = actionContext;
         this.control = control;
         this.db = db;
         this.hub = hub;
@@ -76,6 +80,7 @@ public sealed class OpenQuestionService : IOpenQuestionService
     public async Task<OpenQuestionAnswerResult> AnswerAsync(
         string workItemId, IReadOnlyList<OpenQuestionAnswer> answers, string actor, CancellationToken ct)
     {
+        actor = (await this.actionContext.RequireAsync(ForgeCapabilities.QuestionAnswer, new(WorkItemId: workItemId), ct)).UserId;
         var byExtId = await this.LatestByExternalIdAsync(workItemId, ct);
         var now = DateTimeOffset.UtcNow;
         foreach (var a in answers)
@@ -96,6 +101,7 @@ public sealed class OpenQuestionService : IOpenQuestionService
     public async Task<OpenQuestionAnswerResult> DismissAsync(
         string workItemId, IReadOnlyList<string> externalIds, string actor, CancellationToken ct)
     {
+        actor = (await this.actionContext.RequireAsync(ForgeCapabilities.QuestionAnswer, new(WorkItemId: workItemId), ct)).UserId;
         var byExtId = await this.LatestByExternalIdAsync(workItemId, ct);
         var now = DateTimeOffset.UtcNow;
         foreach (var extId in externalIds)

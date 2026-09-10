@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests.Chat;
 
 using Forge.Api.Persistence;
+using Forge.Api.Auth;
 using Forge.Api.Services;
 using Forge.Api.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -25,6 +26,9 @@ public class OpenQuestionServiceTests
     {
         var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* triggers boot + migrations */ }
+        await f.SeedProductAsync();
+        await f.EnrollAsync("operator", productId: "p");
+        f.Link("operator");
         return f;
     }
 
@@ -34,13 +38,14 @@ public class OpenQuestionServiceTests
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         var now = DateTimeOffset.UtcNow;
-        db.WorkItems.Add(new WorkItemRow { Id = id, ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
+        db.WorkItems.Add(new WorkItemRow { Id = id, RepoId = "repo-p", ExecutionStatus = ExecutionStatuses.AwaitingAnswers });
         db.Workstreams.Add(new WorkstreamRow
         {
             Id = id,
+            RepoId = "repo-p",
             Status = "stalled",
             StallReason = stallReason,
-            StorySpawnId = "spawn-none",
+            StorySpawnId = null,
         });
         var iter = 1;
         foreach (var ext in externalIds)
@@ -66,6 +71,8 @@ public class OpenQuestionServiceTests
         const string Id = "ws-oq-svc-resume";
         await SeedWorkstreamWithQuestionsAsync(f, Id, "Sloppy-3-attempts: mis-counted", "q1");
 
+        using var actor = ForgeActorScope.Push(await f.ProviderActorAsync(), "p");
+        using var productScope = ProductDbContextFactory.PushAsyncLocalSlug("p");
         OpenQuestionAnswerResult result;
         using (var scope = f.Services.CreateScope())
         {
@@ -95,6 +102,8 @@ public class OpenQuestionServiceTests
         const string Id = "ws-oq-svc-partial";
         await SeedWorkstreamWithQuestionsAsync(f, Id, "Sloppy-3-attempts: mis-counted", "q1", "q2");
 
+        using var actor = ForgeActorScope.Push(await f.ProviderActorAsync(), "p");
+        using var productScope = ProductDbContextFactory.PushAsyncLocalSlug("p");
         OpenQuestionAnswerResult result;
         using (var scope = f.Services.CreateScope())
         {
@@ -121,6 +130,8 @@ public class OpenQuestionServiceTests
         const string Id = "ws-oq-svc-dismiss";
         await SeedWorkstreamWithQuestionsAsync(f, Id, "Sloppy-3-attempts: mis-counted", "q1");
 
+        using var actor = ForgeActorScope.Push(await f.ProviderActorAsync(), "p");
+        using var productScope = ProductDbContextFactory.PushAsyncLocalSlug("p");
         OpenQuestionAnswerResult result;
         using (var scope = f.Services.CreateScope())
         {

@@ -35,6 +35,9 @@ public class ChatActionTests
 
     private static async Task SeedStalledAsync(WebApplicationFactory<Program> app, string wsId)
     {
+        await app.SeedProductAsync();
+        await app.EnrollAsync("user-1", productId: "p");
+        app.Link("user-1");
         using var scope = app.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
@@ -49,8 +52,8 @@ public class ChatActionTests
             DedupeKey = $"stall:{wsId}:x", Title = "⚠ Workstream stalled", Status = ChatNotificationStatuses.Sent,
             Platform = "telegram", ChatId = "123", ChatMessageId = "m1", CreatedAt = DateTimeOffset.UtcNow,
         });
-        db.Workstreams.Add(new WorkstreamRow { Id = wsId, Status = "stalled", StallReason = "idle" });
-        db.WorkItems.Add(new WorkItemRow { Id = wsId, ExecutionStatus = ExecutionStatuses.Live });
+        db.Workstreams.Add(new WorkstreamRow { Id = wsId, RepoId = "repo-p", Status = "stalled", StallReason = "idle" });
+        db.WorkItems.Add(new WorkItemRow { Id = wsId, RepoId = "repo-p", ExecutionStatus = ExecutionStatuses.Live });
         await control.SaveChangesAsync();
         await db.SaveChangesAsync();
     }

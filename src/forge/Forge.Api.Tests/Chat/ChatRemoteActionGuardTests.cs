@@ -53,7 +53,7 @@ public class ChatRemoteActionGuardTests
         // logger also catches the dispatcher's catch-and-log error path.
         var logger = new Mock<Microsoft.Extensions.Logging.ILogger<ChatInboundDispatcher>>(MockBehavior.Strict);
         var dispatcher = new ChatInboundDispatcher(null!, scopes.Object, transport.Object,
-            new StaticOptionsMonitor<ChatBridgeOptions>(opt), logger.Object);
+            new StaticOptionsMonitor<ChatBridgeOptions>(opt), logger.Object, null!, null!, null!);
 
         await dispatcher.HandleAsync(new ChatInboundMessage(
             new ChatInbound(1, "42", "123", text, callback, "m1", ThreadId: "88"),
@@ -113,8 +113,8 @@ public class ChatRemoteActionGuardTests
             ["Forge:ChatBridge:Enabled"] = enabled.ToString(),
             ["Forge:ChatBridge:AllowRemoteActions"] = allowRemoteActions.ToString(),
         });
-        using var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Forge-User", "test-operator");
+        await factory.EnrollAsync("test-operator");
+        using var client = await factory.PairedClientAsync("test-operator");
         using var response = await client.PostAsJsonAsync("/api/chat/link-token", new { });
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         using var scope = factory.Services.CreateScope();

@@ -1,3 +1,4 @@
+import { operatorFetch } from '@/api/operatorSession';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
@@ -96,7 +97,7 @@ export function SwarmView() {
     let cancelled = false;
     void Promise.all([
       forgeApi.listProducts().catch(() => []),
-      fetch('/api/repos').then((r) => r.ok ? r.json() : []).catch(() => []),
+      operatorFetch('/api/repos').then((r) => r.ok ? r.json() : []).catch(() => []),
     ]).then(([prods, rps]) => {
       if (cancelled) return;
       setProducts((prods as Array<{ id: string; name: string }>).map((p) => ({ id: p.id, name: p.name })));

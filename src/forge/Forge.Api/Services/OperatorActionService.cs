@@ -7,6 +7,7 @@
 namespace Forge.Api.Services;
 
 using Forge.Api.Agents;
+using Forge.Api.Auth;
 using Forge.Api.Endpoints;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
@@ -21,8 +22,8 @@ using Microsoft.EntityFrameworkCore;
 /// both the HTTP endpoints AND the chat-bridge inbound path (Phase 5) drive one
 /// implementation — no behaviour fork.
 ///
-/// <para>HttpContext-free: the caller resolves the actor (X-Forge-User header for
-/// HTTP, linked subscriber for chat) and passes it in. Each method returns an
+/// <para>HttpContext-free: the caller resolves the actor (paired session for
+/// HTTP, verified provider link for chat) and passes it in. Each method returns an
 /// <see cref="OperatorActionOutcome"/> that the endpoint maps to an
 /// <c>IResult</c> and the chat dispatcher maps to a reply message.</para>
 ///
@@ -86,6 +87,7 @@ public sealed record OperatorActionOutcome(
 /// <inheritdoc/>
 public sealed class OperatorActionService : IOperatorActionService
 {
+    private readonly ForgeActionContext actionContext;
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
     private readonly IAgentRunner runner;
@@ -109,8 +111,10 @@ public sealed class OperatorActionService : IOperatorActionService
         StorySpawnOrchestrator orchestrator,
         PlanReconciler reconciler,
         IterationPromptStore promptStore,
-        CopilotSessionPool copilotPool)
+        CopilotSessionPool copilotPool,
+        ForgeActionContext actionContext)
     {
+        this.actionContext = actionContext;
         this.control = control;
         this.db = db;
         this.runner = runner;
@@ -127,6 +131,8 @@ public sealed class OperatorActionService : IOperatorActionService
     /// <inheritdoc/>
     public async Task<OperatorActionOutcome> AcceptAsync(string id, string actor, CancellationToken ct)
     {
+        var verifiedActor = await this.actionContext.RequireAsync("workstream.accept", new(WorkstreamId: id), ct);
+        actor = verifiedActor.UserId;
         var ws = await this.db.Workstreams.FirstOrDefaultAsync(w => w.Id == id, ct);
         if (ws is null) return OperatorActionOutcome.Problem(404, null, $"Workstream {id} not found", null);
 
@@ -227,6 +233,7 @@ public sealed class OperatorActionService : IOperatorActionService
     /// <inheritdoc/>
     public async Task<OperatorActionOutcome> CancelAsync(string id, CancellationToken ct)
     {
+        var verifiedActor = await this.actionContext.RequireAsync("workstream.cancel", new(WorkstreamId: id), ct);
         var ws = await this.db.Workstreams.FirstOrDefaultAsync(w => w.Id == id, ct);
         if (ws is null) return OperatorActionOutcome.Problem(404, null, $"Workstream {id} not found", null);
 
@@ -294,6 +301,8 @@ public sealed class OperatorActionService : IOperatorActionService
     /// <inheritdoc/>
     public async Task<OperatorActionOutcome> RetryAsync(string id, string actor, CancellationToken ct)
     {
+        var verifiedActor = await this.actionContext.RequireAsync("workstream.retry", new(WorkstreamId: id), ct);
+        actor = verifiedActor.UserId;
         var ws = await this.db.Workstreams.FirstOrDefaultAsync(w => w.Id == id, ct);
         if (ws is null) return OperatorActionOutcome.Problem(404, null, $"Workstream {id} not found", null);
 
@@ -454,6 +463,7 @@ public sealed class OperatorActionService : IOperatorActionService
     /// <inheritdoc/>
     public async Task<OperatorActionOutcome> RestartAsync(string id, CancellationToken ct)
     {
+        var verifiedActor = await this.actionContext.RequireAsync("workstream.restart", new(WorkstreamId: id), ct);
         var ws = await this.db.Workstreams.FirstOrDefaultAsync(w => w.Id == id, ct);
         if (ws is null) return OperatorActionOutcome.Problem(404, null, $"Workstream {id} not found", null);
 

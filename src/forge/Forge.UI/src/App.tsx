@@ -1,3 +1,4 @@
+import { OperatorGate } from '@/auth/OperatorGate';
 import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from '@/shell/AppShell';
@@ -21,6 +22,10 @@ import { InboxView } from '@/views/InboxView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
+  return <OperatorGate><ForgeApp /></OperatorGate>;
+}
+
+function ForgeApp() {
   const load = useStateStore((s) => s.load);
 
   // Phase 0: prime the store so Phases 1+ can render off it without re-fetching.

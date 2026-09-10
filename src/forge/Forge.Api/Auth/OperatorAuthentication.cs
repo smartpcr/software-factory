@@ -1,0 +1,213 @@
+// -----------------------------------------------------------------------
+// <copyright file="OperatorAuthentication.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Forge.Api.Auth;
+
+using System.Net;
+using System.Security.Claims;
+using Forge.Api.Persistence;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+
+public sealed class OperatorAuthenticationOptions
+{
+    public string[] ApiOrigins { get; set; } = ["http://localhost:5180", "http://127.0.0.1:5180", "http://[::1]:5180"];
+    public string[] BrowserOrigins { get; set; } = ["http://localhost:5181", "http://127.0.0.1:5181", "http://[::1]:5181",
+        "http://localhost:5180", "http://127.0.0.1:5180", "http://[::1]:5180"];
+}
+
+public static class OperatorAuthentication
+{
+    public const string CsrfHeader = "X-Forge-CSRF";
+    public static void AddOperatorAuthentication(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(sp => new HostIdentityStore(
+            sp.GetRequiredService<IConfiguration>()["Forge:Identity:StorePath"] ?? HostIdentityStore.DefaultPath(),
+            sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<OperatorSessions>();
+        services.AddScoped<ForgeActorResolver>();
+        services.AddScoped<ForgeCapabilityAuthorizer>();
+        services.AddScoped<ForgeActionContext>();
+        services.AddOptions<OperatorAuthenticationOptions>().Bind(configuration.GetSection("Forge:Identity"))
+            .Validate(o => o.ApiOrigins.Length > 0 && o.BrowserOrigins.Length > 0
+                && o.ApiOrigins.Concat(o.BrowserOrigins).All(IsLoopbackOrigin), "Only explicit loopback origins are supported.")
+            .ValidateOnStart();
+        services.AddAuthentication(OperatorSessions.Scheme).AddCookie(OperatorSessions.Scheme, o =>
+        {
+            o.Cookie.Name = "Forge.Operator";
+            o.Cookie.HttpOnly = true;
+            o.Cookie.SameSite = SameSiteMode.Strict;
+            o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+            o.ExpireTimeSpan = TimeSpan.FromHours(8);
+            o.SlidingExpiration = false;
+            o.Events = new CookieAuthenticationEvents
+            {
+                OnRedirectToLogin = c => { c.Response.StatusCode = 401; return Task.CompletedTask; },
+                OnRedirectToAccessDenied = c => { c.Response.StatusCode = 403; return Task.CompletedTask; },
+                OnValidatePrincipal = async c =>
+                {
+                    var resolver = c.HttpContext.RequestServices.GetRequiredService<ForgeActorResolver>();
+                    if (c.Principal is null || await resolver.FromBrowserAsync(c.Principal, c.HttpContext.RequestAborted) is null)
+                        c.RejectPrincipal();
+                },
+            };
+        });
+        services.AddAuthorization(o => o.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
+        services.AddAntiforgery(o =>
+        {
+            o.HeaderName = CsrfHeader;
+            o.Cookie.Name = "Forge.CSRF";
+            o.Cookie.HttpOnly = true;
+            o.Cookie.SameSite = SameSiteMode.Strict;
+            o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        });
+    }
+
+    public static bool IsLoopbackOrigin(string origin) => Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+        && uri.IsLoopback && uri.Scheme is "http" or "https" && uri.AbsolutePath == "/"
+        && uri.Query.Length == 0 && uri.Fragment.Length == 0 && uri.UserInfo.Length == 0
+        && origin.TrimEnd('/') == uri.GetLeftPart(UriPartial.Authority);
+}
+
+/// <summary>Reject rebinding/cross-origin requests before authentication or application state access.</summary>
+public sealed class OperatorOriginMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(HttpContext ctx, IOptions<OperatorAuthenticationOptions> options)
+    {
+        var remote = ctx.Connection.RemoteIpAddress;
+        if (remote?.IsIPv4MappedToIPv6 == true) remote = remote.MapToIPv4();
+        var origin = ctx.Request.Headers.Origin;
+        var expected = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
+        if ((remote is not null && !IPAddress.IsLoopback(remote))
+            || !options.Value.ApiOrigins.Contains(expected, StringComparer.OrdinalIgnoreCase)
+            || origin.Count > 1 || (origin.Count == 1 && !options.Value.BrowserOrigins.Contains(origin[0], StringComparer.OrdinalIgnoreCase)))
+        {
+            ctx.Response.StatusCode = 403;
+            await ctx.Response.WriteAsJsonAsync(new { title = "Untrusted host or origin", status = 403 });
+            return;
+        }
+        await next(ctx);
+    }
+}
+
+/// <summary>Runs before scope resolution, idempotency, audit, and endpoint body binding.</summary>
+public sealed class OperatorRequestMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(HttpContext ctx, ForgeActorResolver actors, HostIdentityStore identities, IAntiforgery antiforgery)
+    {
+        var path = ctx.Request.Path.Value ?? "";
+        var safe = HttpMethods.IsGet(ctx.Request.Method) || HttpMethods.IsHead(ctx.Request.Method) || HttpMethods.IsOptions(ctx.Request.Method);
+        var publicRoute = path is "/api/operator/status" or "/api/operator/csrf" or "/api/operator/pair" or "/health" or "/api/health";
+        var actor = await actors.FromBrowserAsync(ctx.User, ctx.RequestAborted);
+        if (!publicRoute && (path.StartsWith("/api/", StringComparison.Ordinal) || path.StartsWith("/hubs/", StringComparison.Ordinal)) && actor is null)
+        {
+            ctx.Response.StatusCode = 401;
+            await ctx.Response.WriteAsJsonAsync(new { title = identities.HasEnrollment ? "Pair browser" : "Needs operator enrollment", status = 401 });
+            return;
+        }
+        if (!safe)
+        {
+            if (ctx.Request.Headers.Origin.Count != 1)
+            {
+                ctx.Response.StatusCode = 403;
+                await ctx.Response.WriteAsJsonAsync(new { title = "A trusted Origin is required", status = 403 });
+                return;
+            }
+            try { await antiforgery.ValidateRequestAsync(ctx); }
+            catch (AntiforgeryValidationException)
+            {
+                ctx.Response.StatusCode = 403;
+                await ctx.Response.WriteAsJsonAsync(new { title = "CSRF validation failed", status = 403 });
+                return;
+            }
+            if (string.Equals(ProductScope.Read(ctx), "all", StringComparison.OrdinalIgnoreCase))
+            {
+                ctx.Response.StatusCode = 403;
+                await ctx.Response.WriteAsJsonAsync(new { title = "Select a specific product for mutations", status = 403 });
+                return;
+            }
+        }
+        try { await next(ctx); }
+        catch (ForgeAccessDeniedException)
+        {
+            ctx.Response.StatusCode = 403;
+            await ctx.Response.WriteAsJsonAsync(new { title = "Capability denied", status = 403 });
+        }
+    }
+}
+
+public static class OperatorSessionEndpoints
+{
+    public static void MapOperatorSessionEndpoints(this WebApplication app)
+    {
+        app.MapGet("/api/operator/status", async (HttpContext ctx, HostIdentityStore identities, ForgeActorResolver actors, ControlDbContext control) =>
+        {
+            var actor = await actors.FromBrowserAsync(ctx.User, ctx.RequestAborted);
+            ctx.Response.Headers.CacheControl = "no-store";
+            var enrolledIds = identities.EnrolledUserIds;
+            var enrolled = await control.Users.AnyAsync(u => enrolledIds.Contains(u.Id), ctx.RequestAborted);
+            return Results.Ok(new { state = actor is not null ? "Paired" : enrolled ? "Pair browser" : "Needs operator enrollment", userId = actor?.UserId });
+        }).AllowAnonymous();
+        app.MapGet("/api/operator/csrf", (HttpContext ctx, IAntiforgery anti) =>
+        {
+            ctx.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new { token = anti.GetAndStoreTokens(ctx).RequestToken });
+        }).AllowAnonymous();
+        app.MapPost("/api/operator/pair", async (PairBrowserRequest req, HttpContext ctx, HostIdentityStore identities,
+            OperatorSessions sessions, ControlDbContext control, IAntiforgery anti) =>
+        {
+            ctx.Response.Headers.CacheControl = "no-store";
+            var userId = req.Challenge is null ? null : identities.ChallengeUserId(req.Challenge, "browser");
+            var enrollment = userId is not null && await control.Users.AnyAsync(u => u.Id == userId, ctx.RequestAborted)
+                ? identities.RedeemBrowserChallenge(req.Challenge!) : null;
+            if (enrollment is null || !await control.Users.AnyAsync(u => u.Id == enrollment.UserId, ctx.RequestAborted))
+                return Results.Problem(title: "Invalid, expired, or used pairing challenge", statusCode: 403);
+            sessions.Revoke(ctx.User.FindFirstValue(OperatorSessions.SessionClaim));
+            var principal = sessions.Issue(enrollment);
+            await ctx.SignInAsync(OperatorSessions.Scheme, principal, new AuthenticationProperties
+            {
+                IsPersistent = false, AllowRefresh = false, ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8),
+            });
+            ctx.User = principal;
+            return Results.Ok(new { state = "Paired", userId = enrollment.UserId, token = anti.GetAndStoreTokens(ctx).RequestToken });
+        }).AllowAnonymous();
+        app.MapPost("/api/operator/logout", async (HttpContext ctx, OperatorSessions sessions) =>
+        {
+            sessions.Revoke(ctx.User.FindFirstValue(OperatorSessions.SessionClaim));
+            await ctx.SignOutAsync(OperatorSessions.Scheme);
+            return Results.NoContent();
+        });
+        app.MapPost("/api/operators/{userId}/revoke", async (string userId, HttpContext ctx, ForgeActionContext action, HostIdentityStore identities, OperatorSessions sessions) =>
+        {
+            await action.RequireAsync(ForgeCapabilities.IdentityManage, new(), ctx.RequestAborted);
+            identities.RevokeEnrollment(userId);
+            sessions.RevokeUser(userId);
+            return Results.NoContent();
+        });
+        app.MapPut("/api/operators/{userId}/roles/{productId}", async (string userId, string productId, OperatorRoleRequest req,
+            HttpContext ctx, ForgeActionContext action, ControlDbContext control) =>
+        {
+            await action.RequireAsync(ForgeCapabilities.IdentityManage, new(), ctx.RequestAborted);
+            if (!ForgeCapabilities.Roles.Contains(req.Role) || productId == "all") return Results.BadRequest();
+            if (!await control.Users.AnyAsync(u => u.Id == userId, ctx.RequestAborted)
+                || !await control.Products.AnyAsync(p => p.Id == productId, ctx.RequestAborted)) return Results.NotFound();
+            var role = await control.UserProductRoles.FindAsync(new object[] { userId, productId }, ctx.RequestAborted);
+            if (role is null) { role = new() { UserId = userId, ProductId = productId }; control.UserProductRoles.Add(role); }
+            role.Role = req.Role;
+            role.UpdatedAt = DateTimeOffset.UtcNow;
+            await control.SaveChangesAsync(ctx.RequestAborted);
+            return Results.NoContent();
+        });
+    }
+
+    public sealed record PairBrowserRequest(string? Challenge);
+    public sealed record OperatorRoleRequest(string Role);
+}

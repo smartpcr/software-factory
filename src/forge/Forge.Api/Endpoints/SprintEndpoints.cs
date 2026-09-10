@@ -424,7 +424,7 @@ public static class SprintEndpoints
             p.ProductId == id && p.Prefix == req.Prefix && p.Kind == kind);
         if (existing is not null) return Results.Conflict(new { id = existing.Id });
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault() ?? "unknown";
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "unknown";
         var row = new ProductSavedPrefixRow
         {
             ProductId = id,
@@ -587,7 +587,7 @@ public static class SprintEndpoints
             if (dup is not null) return Results.Ok(MapBinding(dup));
         }
 
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var row = new RepoIterationBindingRow
         {
             RepoId = id,

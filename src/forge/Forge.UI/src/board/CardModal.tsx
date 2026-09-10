@@ -1,3 +1,4 @@
+import { operatorFetch } from '@/api/operatorSession';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Card, ColumnId, Priority, CardType, Crew } from '@/types';
 import { useStateStore } from '@/state/useStateStore';
@@ -343,7 +344,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
       const body = taskKind === 'plan'
         ? { workItemId: witId }
         : { stepWorkItemId: witId };
-      const r = await fetch(`/api/crews/${encodeURIComponent(crewId)}/${path}`, {
+      const r = await operatorFetch(`/api/crews/${encodeURIComponent(crewId)}/${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
         body: JSON.stringify(body),

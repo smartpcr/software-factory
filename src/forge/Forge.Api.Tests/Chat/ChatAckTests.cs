@@ -34,6 +34,8 @@ public class ChatAckTests
 
     private static async Task SeedAsync(WebApplicationFactory<Program> app, string notifId, string kind)
     {
+        await app.EnrollAsync("user-1", admin: true);
+        app.Link("user-1");
         using var scope = app.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         control.ChatSubscribers.Add(new ChatSubscriberRow

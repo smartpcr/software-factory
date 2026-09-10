@@ -473,7 +473,7 @@ public static class ProductsEndpoints
             return Results.Problem(title: "Repo has no local clone", statusCode: 422);
 
         var runId = Guid.NewGuid().ToString("N")[..12];
-        var triggeredBy = ctx.Request.Headers.TryGetValue(ForgeUser.HeaderName, out var hv) ? hv.ToString() : null;
+        var triggeredBy = Forge.Api.Auth.ForgeUser.UserId(ctx);
 
         // Reclaim ORPHANED runs first. A queued/running row that this worker
         // instance isn't actually tracking was left behind by a server
@@ -673,9 +673,13 @@ public static class ProductsEndpoints
 
     // ----- /api/products ---------------------------------------------------
 
-    private static async Task<IResult> ListProducts(ControlDbContext control, ProductDbContext db) =>
-        Results.Ok((await control.Products.AsNoTracking().OrderBy(p => p.Sort).ThenBy(p => p.Name).ToListAsync())
+    private static async Task<IResult> ListProducts(ControlDbContext control, ForgeActionContext action, ForgeCapabilityAuthorizer authorizer)
+    {
+        var ids = (await authorizer.ReadableProductIdsAsync(await action.ActorAsync())).ToList();
+        if (ids.Count == 0) return Results.Ok(Array.Empty<object>());
+        return Results.Ok((await control.Products.AsNoTracking().Where(p => ids.Contains(p.Id)).OrderBy(p => p.Sort).ThenBy(p => p.Name).ToListAsync())
             .Select(MapProduct).ToList());
+    }
 
     private static async Task<IResult> GetProduct(string id, ControlDbContext control, ProductDbContext db)
     {
@@ -1036,19 +1040,20 @@ public static class ProductsEndpoints
 
     // ----- /api/repos ------------------------------------------------------
 
-    private static async Task<IResult> ListAllRepos(ControlDbContext control, Forge.Api.Persistence.RepoLookup repoLookup, string? productId)
+    private static async Task<IResult> ListAllRepos(ControlDbContext control, Forge.Api.Persistence.RepoLookup repoLookup, string? productId, ForgeActionContext action, ForgeCapabilityAuthorizer authorizer)
     {
+        var readable = await authorizer.ReadableProductIdsAsync(await action.ActorAsync());
         // Phase 80.B — repos live per-product. Route to one product or union
         // across all products (this is the cross-product repo list).
         List<RepoRow> rows;
         if (!string.IsNullOrWhiteSpace(productId))
         {
-            rows = await repoLookup.ListByProductAsync(productId);
+            rows = readable.Contains(productId) ? await repoLookup.ListByProductAsync(productId) : new();
         }
         else
         {
             rows = new List<RepoRow>();
-            var productIds = await control.Products.AsNoTracking().Select(p => p.Id).ToListAsync();
+            var productIds = readable;
             foreach (var pid in productIds)
             {
                 rows.AddRange(await repoLookup.ListByProductAsync(pid));

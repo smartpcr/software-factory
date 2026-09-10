@@ -1,6 +1,6 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stage 0A implemented and verified; Stage 0B onward remains planned. Updated 2026-09-09.
+**Status:** Stages 0A and 0B implemented; Stage 0B focused checks pass, with remaining full-suite fixture migration documented. Stage 1 onward remains planned. Updated 2026-09-09.
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
@@ -227,24 +227,24 @@ Required v1 posture is the complete [identity/capability boundary](chat-plugin-d
 not binding a remote operator to an unverified header string. This is a separately
 reviewable prerequisite and must not be hidden inside a delivery subtask.
 
-- [ ] Add explicit host-side operator enrollment and Pair browser command with
+- [x] Add explicit host-side operator enrollment and Pair browser command with
       stable user IDs, OS-protected admin/enrollment data and one-use expiring
       challenges. No HTTP endpoint can create the first administrator.
-- [ ] Register ASP.NET authentication/authorization and host-paired cookie sessions;
+- [x] Register ASP.NET authentication/authorization and host-paired cookie sessions;
       add anti-forgery, loopback Host/Origin validation, session expiry/revocation,
       frontend credential/CSRF handling and **Needs operator enrollment** when empty.
-- [ ] Implement `ForgeActorResolver` and `ForgeCapabilityAuthorizer` with every
+- [x] Implement `ForgeActorResolver` and `ForgeCapabilityAuthorizer` with every
       capability and fixed role mapping in design §9. Fail closed on unknown users,
       missing roles, unknown capabilities, unresolved targets and `productId=all`
       for mutations. Drop `X-Forge-User` as an authority source.
-- [ ] Enumerate/protect all supported web action endpoints and aliases, existing
+- [x] Enumerate/protect all supported web action endpoints and aliases, existing
       chat link/test endpoints, and user/role/connection-grant mutation paths. Check
       capabilities inside the common action boundary; internal chat calls never
       synthesize an authenticated header.
-- [ ] Extract pause/resume and artifact action cores while introducing that shared
+- [x] Extract pause/resume and artifact action cores while introducing that shared
       check. Keep domain behavior equivalent; authentication behavior intentionally
       changes from header presence to authenticated capability enforcement.
-- [ ] Gate plugin interactive mode until this entire prerequisite passes. An early
+- [x] Gate plugin interactive mode until this entire prerequisite passes. An early
       slice may deliver notifications, but cannot claim remote actions are available.
 
 **Gate:** run table-driven HTTP and chat-invocation parity tests for every supported
@@ -253,6 +253,14 @@ change roles or execute actions; chat grants no more authority than web. No-user
 cross-product, revoked user/link/session, expired pairing, `all` scope, CSRF and
 alias-route bypass cases deny before any side effect. Tests use authenticated test
 principals instead of retaining the old header-only shortcut.
+
+**Implementation evidence:** [Stage 0B requirement review, validation and host setup](chat-plugin-stage0b-validation.md).
+Focused verification: 139 backend tests and 175 UI tests passed; TypeScript build
+passed. All six implementation tasks are checked. **Full-suite validation is not
+complete:** the broader API run was stopped with legacy authentication/ownership
+fixture failures. Those fixtures still need migration; do not interpret these
+checkboxes as a green full-repository test run. Plugin interactive mode remains
+gated until its later runtime/delivery stages pass.
 
 > <a id="review-p-03"></a>
 > ### 🟠 REVIEW-P-03 — Major: no thin end-to-end slice, and nothing is sizeable [FIXED]

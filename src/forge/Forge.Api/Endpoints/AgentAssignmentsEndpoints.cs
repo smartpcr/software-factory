@@ -145,7 +145,7 @@ public static class AgentAssignmentsEndpoints
         if (unknown.Count > 0)
             return Results.Problem(title: $"Unknown agent(s): {string.Join(", ", unknown)}", statusCode: 400);
 
-        var userId = ctx.Request.Headers.TryGetValue(ForgeUser.HeaderName, out var uv) ? uv.FirstOrDefault() : null;
+        var userId = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var now = DateTimeOffset.UtcNow;
 
         // Determine history kind based on role.
@@ -213,7 +213,7 @@ public static class AgentAssignmentsEndpoints
         catch { /* no body or malformed — fine */ }
 
         var agentIds = WorkItemsEndpoints.ParseAgentIds(row.AssignedAgentJson);
-        var userId = ctx.Request.Headers.TryGetValue(ForgeUser.HeaderName, out var uv) ? uv.FirstOrDefault() : null;
+        var userId = Forge.Api.Auth.ForgeUser.UserId(ctx);
 
         // Append history (even if already null — audit completeness).
         db.AgentAssignments.Add(new AgentAssignmentRow

@@ -10,17 +10,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Phase 7.6 — pluggable auth.
-///
-/// Default mode: <c>Mode = "single-user"</c>. Writes must present BOTH
-///   * <c>X-Forge-User</c>     — caller identity (already enforced by ForgeUser)
-///   * <c>X-Forge-Secret</c>   — local shared secret matching <c>Forge:Auth:Secret</c>
-/// When <c>Forge:Auth:Secret</c> is empty the secret check is skipped (legacy
-/// behaviour, suitable for trusted dev environments behind a reverse proxy).
-///
-/// <c>Mode = "azure-ad"</c> is a placeholder — wires the standard JWT bearer
-/// middleware so deployments can swap to Entra ID without code edits. The
-/// JWT path is configured via <c>Forge:Auth:AzureAd:*</c> standard keys.
+/// Provider OAuth configuration and retained legacy configuration keys.
+/// Operator identity is established by host enrollment and paired sessions.
+/// Mode, Secret, AzureAd and BootstrapPoEmail do not grant Forge authority.
 /// </summary>
 public class ForgeAuthOptions
 {
@@ -56,11 +48,11 @@ public class ForgeAuthOptions
     /// <summary>Phase 9.4 — "edge" (default) or "default". Non-Windows always uses the OS default browser.</summary>
     public string BrowserPreference { get; set; } = "edge";
 
-    /// <summary>Phase 9.9 — first-run bootstrap email; this user is auto-promoted to product-owner on first sign-in if no PO exists.</summary>
-    public string BootstrapPoEmail { get; set; } = "lingxd@gmail.com";
+    /// <summary>Retained legacy setting; no longer used for promotion or enrollment.</summary>
+    public string BootstrapPoEmail { get; set; } = string.Empty;
 }
 
-/// <summary>Verifies the X-Forge-Secret header against <c>Forge:Auth:Secret</c>.</summary>
+/// <summary>Legacy shared-secret middleware, no longer registered in the Forge request pipeline.</summary>
 public class ForgeSecretMiddleware
 {
     public const string HeaderName = "X-Forge-Secret";

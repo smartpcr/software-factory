@@ -18,10 +18,16 @@ using Microsoft.AspNetCore.SignalR;
 /// <see cref="Subscribe"/> with <c>"agent.{agentId}"</c> to receive
 /// <c>agent.event</c> token / status messages and <c>agent.usage</c> on finish.
 /// </summary>
-public class ForgeHub : Hub
+public class ForgeHub(OperatorHubAccess access) : Hub
 {
     /// <summary>Join a named group (e.g. <c>agent.E4</c>) so server-side fan-out reaches this connection.</summary>
-    public Task Subscribe(string channel) => this.Groups.AddToGroupAsync(this.Context.ConnectionId, channel);
+    public async Task Subscribe(string channel)
+    {
+        if (!await access.IsAllowedAsync(this.Context.User, this.Context.ConnectionAborted))
+        { this.Context.Abort(); throw new HubException("Operator session or product access is no longer valid."); }
+        if (string.IsNullOrWhiteSpace(channel) || channel.Length > 256) throw new HubException("Invalid channel.");
+        await this.Groups.AddToGroupAsync(this.Context.ConnectionId, channel);
+    }
 
     /// <summary>Leave a previously-joined group.</summary>
     public Task Unsubscribe(string channel) => this.Groups.RemoveFromGroupAsync(this.Context.ConnectionId, channel);

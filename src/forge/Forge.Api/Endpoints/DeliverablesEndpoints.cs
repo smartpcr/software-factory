@@ -96,10 +96,10 @@ public static class DeliverablesEndpoints
         // Authority: caller must be the generator agent OR the lead of that
         // agent's crew. Single-user-dev pass-through (RequireRole = null) is
         // tolerated to match the existing assign / patch endpoints' style.
-        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var caller = Forge.Api.Auth.ForgeUser.UserId(ctx);
         var crew = await control.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == row.CrewId, ct);
         var role = RequireRole.ResolveRoleForProduct(ctx, control, null);
-        var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
+        var isPo = string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
             var callerUser = string.IsNullOrEmpty(caller) ? null

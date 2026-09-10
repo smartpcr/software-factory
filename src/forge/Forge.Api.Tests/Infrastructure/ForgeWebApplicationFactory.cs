@@ -167,6 +167,7 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // the AddDbContext factory delegate at DI resolution time
                 // (after Build()), so the in-memory override always wins.
                 ["Forge:Db:Folder"] = this.folder,
+                ["Forge:Identity:StorePath"] = Path.Combine(this.folder, "operator-identities.bin"),
                 // Explicitly null out the legacy Forge:Db:Path key. Otherwise
                 // an appsettings.json or env-var setting could shadow the
                 // folder override and force the control DB onto an
