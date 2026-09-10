@@ -1607,7 +1607,7 @@ public static class ForgeSeedSpawnScrub
             db.StorySpawns.RemoveRange(staleSpawns);
             await db.SaveChangesAsync();
             await control.SaveChangesAsync();
-            var owners = await db.Repos.AsNoTracking().ToDictionaryAsync(r => r.Id, r => r.ProductId);
+            var owners = await db.Repos.AsNoTracking().Select(r => new { r.Id, r.ProductId }).ToDictionaryAsync(r => r.Id, r => r.ProductId);
             foreach (var group in staleSpawns.Where(s => owners.ContainsKey(s.RepoId)).GroupBy(s => owners[s.RepoId]))
                 await Forge.Api.Services.Chat.ChatScopeLifecycleService.RetireAsync(control, group.Key, group.Select(s => s.Id).ToList());
         }

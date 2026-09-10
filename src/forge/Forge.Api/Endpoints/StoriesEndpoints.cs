@@ -1574,7 +1574,9 @@ public static class StoriesEndpoints
             rows = (await q.ToListAsync()).Select(spawn => (Spawn: spawn, ProductId: productId)).ToList();
         }
         rows.Sort((a, b) => b.Spawn.UpdatedAt.CompareTo(a.Spawn.UpdatedAt));
-        return Results.Ok(rows.Select(row => ToContract(row.Spawn, row.ProductId)).ToList());
+        var chatSummaries = await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, rows, ctx.RequestAborted);
+        return Results.Ok(rows.Select(row => ToContract(row.Spawn, row.ProductId,
+            chatSummaries.GetValueOrDefault(Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(row.ProductId, row.Spawn.Id).Key))).ToList());
     }
 
     private static async Task<IResult> GetSpawn(string storyId, ControlDbContext control, ProductDbContext db)
@@ -1900,9 +1902,11 @@ public static class StoriesEndpoints
             };
         }).ToArray();
 
+        var owner = await control.Products.Where(p => p.Slug == db.ProductSlug).Select(p => p.Id).SingleAsync();
+        var summaries = await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, new[] { (spawn, owner) });
         return Results.Ok(new
         {
-            spawn = ToContract(spawn),
+            spawn = ToContract(spawn, owner, summaries[Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(owner, spawn.Id).Key]),
             // Phase 50 — top-level sibling so the strip can colour the QA-PR
             // rect (release stage) without fetching the PR row separately.
             // Sibling rather than inside `spawn` because ToContract is reused
@@ -3847,10 +3851,11 @@ public static class StoriesEndpoints
     private static Task<IResult> ResumeSpawn(HttpContext ctx, string storyId, StoryOperatorActionService actions) =>
         actions.ResumeSpawnAsync(storyId, ctx.RequestAborted);
 
-    internal static object ToContract(StorySpawnRow row, string? owningProductId = null) => new
+    internal static object ToContract(StorySpawnRow row, string? owningProductId = null, Forge.Api.Services.Chat.ChatRowSummary? chatSummary = null) => new
     {
         id = row.Id,
         productId = owningProductId,
+        chatSummary,
         storyId = row.StoryId,
         storyTitle = row.StoryTitle,
         storyDescription = row.StoryDescription,

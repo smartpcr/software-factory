@@ -57,6 +57,14 @@ public static class ChatPluginRegistration
         services.AddScoped<ChatEventService>();
         services.AddScoped<ChatDeliveryService>();
         services.AddScoped<ChatInboxService>();
+        services.AddScoped<ChatDomainActionRunner>();
+        services.AddScoped<ChatResultReconciler>();
+        services.AddScoped<ChatScopeLifecycleService>();
+        services.AddScoped<ChatScopeReconciler>();
+        services.AddScoped<ChatRetentionService>();
+        services.AddScoped<ChatStatusService>();
+        services.AddScoped<ChatLinkService>();
+        services.AddSingleton<ChatRuntimeWorker>();
         services.AddOptions<ChatBridgeOptions>().PostConfigure<IOptions<ChatPluginOptions>>((legacy, plugins) =>
             legacy.Enabled = plugins.Value.LegacyEnabled(legacy.Enabled));
         services.AddOptions<ChatTransportOptions>().PostConfigure<IOptions<ChatPluginOptions>>((legacy, plugins) =>

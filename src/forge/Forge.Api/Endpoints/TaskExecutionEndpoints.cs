@@ -117,6 +117,7 @@ public static class TaskExecutionEndpoints
                 : JsonSerializer.Deserialize<string[]>(q.ChoicesJson) ?? Array.Empty<string>(),
             answer = q.Answer,
             answeredAt = q.AnsweredAt,
+            answerRevision = q.AnsweredAt == null ? null : q.AnsweredAt.Value.ToString("O"),
             answeredBy = q.AnsweredBy,
             // Parsed operator-facing rationale (terms / per-choice logic /
             // recommendation) — null until agent-authored or generated.
@@ -467,7 +468,8 @@ public static class TaskExecutionEndpoints
     }
 
     public sealed record AnswerQuestionsRequest(IReadOnlyList<AnswerEntry> Answers);
-    public sealed record AnswerEntry(string ExternalId, string Answer);
+    public sealed record AnswerEntry(string ExternalId, string Answer, long? ExpectedRevision = null,
+        bool EditExisting = false, string? ExpectedAnswerRevision = null);
     public sealed record DismissQuestionsRequest(IReadOnlyList<string> ExternalIds);
 
     /// <summary>
@@ -547,9 +549,10 @@ public static class TaskExecutionEndpoints
         // Phase 95.3 — delegate to the shared IOpenQuestionService (the same core
         // the chat-bridge inbound path calls) so there is one answer/resume impl.
         var mapped = req.Answers
-            .Select(a => new Forge.Api.Services.OpenQuestionAnswer(a.ExternalId, a.Answer))
+            .Select(a => new Forge.Api.Services.OpenQuestionAnswer(a.ExternalId, a.Answer, a.ExpectedRevision, a.EditExisting, a.ExpectedAnswerRevision))
             .ToList();
         var result = await questions.AnswerAsync(id, mapped, actor, ct);
+        if (result.RevisionConflict) return Results.Problem(title: "Question changed; refresh before answering.", statusCode: 409);
         return Results.Ok(new { workItemId = id, unansweredCount = result.UnansweredCount, resumeScheduled = result.ResumeScheduled });
     }
 

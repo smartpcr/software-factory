@@ -198,6 +198,9 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
           {spawn.repoId && <span className="seg">repo <b>{spawn.repoId}</b></span>}
         </div>
         {detail && <StoryDeliveryStrip detail={detail} />}
+        {!!spawn.chatSummary?.unroutedCount && <span className="sr-chip" title={Object.entries(spawn.chatSummary.unroutedReasons).map(([reason, count]) => `${reason.replaceAll('-', ' ')}: ${count}`).join('; ')}>
+          {spawn.chatSummary.unroutedCount} chat alerts unrouted
+        </span>}
         {spawn.productId && <ChatRowControl key={`${spawn.productId}:${spawn.id}`} productId={spawn.productId} spawnId={spawn.id} title={spawn.storyTitle} />}
       </div>
       {(() => {

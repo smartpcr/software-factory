@@ -12,7 +12,7 @@ child workstreams. Multiple providers and channels may be attached to the same r
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
 
-**Status (2026-09-10): Stages 0A, 0B and 1 implemented; Stage 1S code and automated checks implemented, live gate pending.** The legacy bridge uses
+**Status (2026-09-10): Stages 0A, 0B, 1 and 2 implemented; Stage 1S live gate pending.** The legacy bridge uses
 explicit host-user configuration and safe defaults. Authenticated operator pairing
 and shared capabilities are implemented. Stage 1 adds provider/plugin contracts,
 the six control-DB configuration tables, scoped configuration APIs, Host alerts
@@ -24,14 +24,19 @@ setup state, revision checks and protection against reused spawn IDs.
   194 passing focused checks, the existing catalog-test limitation and API usage.
 - [Stage 1S validation](chat-plugin-stage1s-validation.md) — Telegram row controls,
   metadata-only delivery, retention, automated evidence and the pending live exercise.
+- [Stage 2 validation](chat-plugin-stage2-validation.md) — all 14 runtime requirements,
+  schema registration, 37 new durability/recovery tests and complete regression evidence.
 
 The active engine still defaults to `legacy`. Stage 1S adapts `TelegramTransport`
 for one connection, one selected parent row and one destination on a fresh isolated
 test profile. Save creates an introduction in the existing outbox; verified child
 open-question events produce metadata-only alerts. Row status refreshes without
-restarting agents. **Notifications only** remains the boundary: broad provider
-extraction, inbox/domain actions, Slack and fan-out are later stages. Fake HTTP and
-browser checks are distinguished from the real Telegram exercise, which has not run.
+restarting agents. **Notifications only** remains the live provider boundary. Stage 2 adds the general
+logical event/fan-out engine, durable inbox/cursors, shared app reception supervisor,
+domain receipts and result reconciliation, scoped lifecycle and full retention. Its
+interactive acceptance uses fake providers. Interactive Telegram, the real Slack
+provider and full administration UI remain later stages. Fake HTTP and browser
+checks are distinguished from the real Telegram exercise, which has not run.
 
 **Review status (round 1, 2026-09-09): all 15 comments fixed in documentation.**
 The inline `REVIEW-D-nn` / `REVIEW-P-nn` records preserve the original feedback and

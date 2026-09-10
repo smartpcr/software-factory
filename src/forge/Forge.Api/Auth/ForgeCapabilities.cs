@@ -85,7 +85,7 @@ public sealed class ForgeActorResolver(HostIdentityStore identities, OperatorSes
 
 /// <summary>Fixed policy shared by HTTP and provider invocations, including current target membership.</summary>
 public sealed class ForgeCapabilityAuthorizer(
-    HostIdentityStore identities, ForgeActorResolver actors, ControlDbContext control, IProductDbContextFactory products)
+    HostIdentityStore identities, ForgeActorResolver actors, ControlDbContext control, IProductDbContextFactory products, IForgeDbPaths paths)
 {
     public async Task<bool> IsAllowedAsync(ForgeActor? actor, string capability, ForgeActionTarget target, CancellationToken ct = default)
     {
@@ -105,6 +105,8 @@ public sealed class ForgeCapabilityAuthorizer(
             || (capability != ForgeCapabilities.SpawnRead && role != RequireRole.ProductOwner)) return false;
 
         var db = products.CreateFor(product.Slug);
+        if (SplitMarkerCache.IsPhase73Applied(paths) && !paths.ProductDbExists(product.Slug)
+            && (target.SpawnId is not null || target.StoryId is not null || target.WorkstreamId is not null || target.WorkItemId is not null)) return false;
         StorySpawnRow? spawn = null;
         if (target.SpawnId is not null || target.StoryId is not null)
         {

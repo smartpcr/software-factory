@@ -77,7 +77,7 @@ public sealed class TelegramNotificationProvider(IHttpClientFactory clients) : I
             var result = await this.transport.SendAsync(address.ChannelId, text, null, ct);
             return result.Ok && !string.IsNullOrWhiteSpace(result.MessageId)
                 ? ChatProviderResult<ChatSendReceipt>.Success(new([new(address, result.MessageId)]))
-                : ChatProviderResult<ChatSendReceipt>.Fail(ChatFailureKind.Unavailable, "telegram-send-unconfirmed");
+                : ChatProviderResult<ChatSendReceipt>.Fail(ChatFailureKind.UnknownOutcome, "telegram-send-unconfirmed");
         }
 
         public ValueTask<ChatProviderResult<ChatConversation>> EnsureConversationAsync(ChatDestination destination, ChatConversationPolicy policy,

@@ -58,6 +58,7 @@ public sealed class ChatSliceRetention(ControlDbContext control, ChatSliceCoordi
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
                 DELETE FROM chat_conversation_bindings WHERE Id IN (SELECT b.Id FROM chat_conversation_bindings b
                   WHERE julianday(b.RetiredAt) <= julianday({day90})
+                  AND NOT EXISTS (SELECT 1 FROM chat_deliveries d WHERE d.BindingId = b.Id)
                   AND NOT EXISTS (SELECT 1 FROM chat_notifications n WHERE n.Platform = 'telegram-1s'
                     AND n.DedupeKey LIKE 'slice1:' || b.Id || ':%') LIMIT 100)
                 """, ct);

@@ -35,11 +35,12 @@ public sealed class ChatSecretResolver(IEnumerable<IChatSecretStore> stores) : I
 
 /// <summary>Immutable connection revisions; a reception key owns one receiver, including a shared Slack app socket.</summary>
 public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatProviderRegistry providers, ChatSecretResolver secrets,
-    ChatRuntimeState runtime, TimeProvider clock, IOptions<ChatPluginOptions> options) : IAsyncDisposable
+    ChatRuntimeState runtime, TimeProvider clock, IOptions<ChatPluginOptions> options) : IAsyncDisposable, IDisposable
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<string, Session> sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Receiver> receivers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string Provider, string Key)> retiredReceivers = new(StringComparer.Ordinal);
     private long lastHealthCheckpoint;
     private IServiceScope NewScope() => scopes.CreateScope();
     public sealed record Session(ChatConnectionRow Configuration, IChatConnectionSession Provider, CancellationTokenSource Cancellation);
@@ -54,7 +55,7 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
             if (this.sessions.TryGetValue(row.Id, out var existing))
             {
                 if (existing.Configuration.Revision == row.Revision) return existing;
-                await this.StopAsync(existing);
+                if (!await this.StopAsync(existing)) return null;
             }
             var plugin = providers.Resolve(row.ProviderId);
             if (plugin is null) return null;
@@ -69,11 +70,11 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
                 if (!opened.Succeeded || opened.Value!.ConnectionId != row.Id) return null;
                 var session = new Session(row, opened.Value, new CancellationTokenSource());
                 this.sessions.Add(row.Id, session);
-                runtime.Health[row.Id] = ("ready", null, null, null);
+                runtime.RecordHealth(row.Id, "ready", null, null, null);
                 return session;
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
-            { runtime.Health[row.Id] = ("degraded", "session-unavailable", null, null); return null; }
+            { runtime.RecordHealth(row.Id, "degraded", "session-unavailable", null, null); return null; }
         }
         finally { this.gate.Release(); }
     }
@@ -88,6 +89,16 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         await this.gate.WaitAsync(ct);
         try
         {
+            foreach (var stale in await db.ChatReceiverStates.Where(r => r.OwnerProcessInstanceId != runtime.ProcessId && r.RetiredAt == null).Take(100).ToListAsync(ct))
+            {
+                // The named mutex proves that the former process no longer owns reception.
+                stale.State = "stopped"; stale.RetiredAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                stale.OwnerProcessInstanceId = null; stale.RecoveryDeadline = null;
+            }
+            foreach (var stale in await db.ChatConnectionStates.Where(s => s.RetiredAt == null
+                && !db.ChatConnections.Any(c => c.Id == s.ConnectionId && c.DeletedAt == null)).Take(100).ToListAsync(ct))
+            { stale.RetiredAt = clock.GetUtcNow().ToUnixTimeMilliseconds(); stale.Health = "stopped"; stale.Reason = "connection-retired"; }
+            if (db.ChangeTracker.HasChanges()) await scope.ServiceProvider.GetRequiredService<ChatDbBudget>().SaveAsync(db, ct);
             foreach (var session in this.sessions.Values.ToArray())
                 if (!rows.Any(r => r.Id == session.Configuration.Id && r.Revision == session.Configuration.Revision)) await this.StopAsync(session);
             foreach (var pair in this.receivers.Where(p => p.Value.Task.IsCompleted).ToArray())
@@ -98,25 +109,36 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         await this.gate.WaitAsync(ct);
         try
         {
-            foreach (var group in this.sessions.Values.GroupBy(s => s.Configuration.ProviderId + ":" + s.Provider.ReceptionKey))
+            foreach (var group in this.sessions.Values.Where(s => rows.Any(r => r.Id == s.Configuration.Id && r.Revision == s.Configuration.Revision))
+                .GroupBy(s => s.Configuration.ProviderId + ":" + s.Provider.ReceptionKey))
             {
                 var first = group.First();
                 var capability = providers.Resolve(first.Configuration.ProviderId)!.Descriptor.Capabilities;
                 if (capability.Reception == ChatReceptionMode.None || this.receivers.ContainsKey(group.Key)) continue;
                 if (group.Count() > 1 && (capability.Reception != ChatReceptionMode.Socket || first.Configuration.ProviderId != "slack"))
                 {
-                    foreach (var member in group) runtime.Health[member.Configuration.Id] = ("degraded", "duplicate-reception-key", null, null);
+                    foreach (var member in group) runtime.RecordHealth(member.Configuration.Id, "degraded", "duplicate-reception-key", null, null);
                     continue;
                 }
                 var state = await db.ChatConnectionStates.AsNoTracking().SingleOrDefaultAsync(s => s.ConnectionId == first.Configuration.Id, ct);
                 if (first.Provider is IChatResumableSession resumable) await resumable.RestoreCursorAsync(state?.Cursor, ct);
+                var ownership = await db.ChatReceiverStates.FindAsync([first.Configuration.ProviderId, first.Provider.ReceptionKey], ct);
+                if (ownership is null)
+                {
+                    ownership = new() { ProviderId = first.Configuration.ProviderId, ReceptionKey = first.Provider.ReceptionKey };
+                    db.ChatReceiverStates.Add(ownership);
+                }
+                ownership.OwnerProcessInstanceId = runtime.ProcessId; ownership.State = "receiving";
+                ownership.RecoveryDeadline = clock.GetUtcNow().AddSeconds(60).ToUnixTimeMilliseconds(); ownership.RetiredAt = null;
+                await scope.ServiceProvider.GetRequiredService<ChatDbBudget>().SaveAsync(db, ct);
+                this.retiredReceivers.Remove(group.Key);
                 var cancellation = CancellationTokenSource.CreateLinkedTokenSource(first.Cancellation.Token);
                 var key = group.Key;
                 var task = Task.Run(async () =>
                 {
                     try { await first.Provider.ReceiveAsync(new ReceptionSink(this, key), cancellation.Token); }
                     catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
-                    catch { runtime.Health[first.Configuration.Id] = ("degraded", "receiver-disconnected", null, null); }
+                    catch { runtime.RecordHealth(first.Configuration.Id, "degraded", "receiver-disconnected", null, null); }
                 }, CancellationToken.None);
                 this.receivers[key] = new(first.Configuration.ProviderId, first.Provider.ReceptionKey, cancellation, task);
             }
@@ -127,17 +149,27 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
 
     public async Task CheckpointHealthAsync(CancellationToken ct)
     {
+        await this.gate.WaitAsync(ct);
+        try { await this.CheckpointHealthCoreAsync(ct); }
+        finally { this.gate.Release(); }
+    }
+
+    private async Task CheckpointHealthCoreAsync(CancellationToken ct)
+    {
         var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
-        if (now - this.lastHealthCheckpoint < 60000 || runtime.Health.IsEmpty && this.receivers.Count == 0) return;
+        if (now - this.lastHealthCheckpoint < 60000 || runtime.Health.IsEmpty && this.receivers.Count == 0 && this.retiredReceivers.Count == 0) return;
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
-        foreach (var pair in runtime.Health.ToArray())
+        var health = runtime.Health.ToArray();
+        foreach (var pair in health)
         {
             var row = await db.ChatConnectionStates.SingleOrDefaultAsync(s => s.ConnectionId == pair.Key, ct);
             if (row is null) { row = new() { ConnectionId = pair.Key }; db.ChatConnectionStates.Add(row); }
             row.Health = pair.Value.Health; row.Reason = pair.Value.Reason;
             row.LastSendAt = pair.Value.Sent ?? row.LastSendAt; row.LastReceiveAt = pair.Value.Received ?? row.LastReceiveAt;
-            runtime.Health.TryRemove(pair.Key, out _);
+            var connection = await db.ChatConnections.AsNoTracking().SingleOrDefaultAsync(c => c.Id == pair.Key, ct);
+            row.SettingsRevision = connection?.Revision ?? row.SettingsRevision;
+            row.RetiredAt = connection?.DeletedAt?.ToUnixTimeMilliseconds();
         }
         foreach (var receiver in this.receivers.Values)
         {
@@ -145,22 +177,38 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
             if (row is null) { row = new() { ProviderId = receiver.ProviderId, ReceptionKey = receiver.ReceptionKey }; db.ChatReceiverStates.Add(row); }
             row.OwnerProcessInstanceId = runtime.ProcessId; row.State = "receiving"; row.CheckpointAt = now; row.RecoveryDeadline = now + 60000; row.RetiredAt = null;
         }
+        foreach (var retired in this.retiredReceivers.Values)
+        {
+            var row = await db.ChatReceiverStates.FindAsync([retired.Provider, retired.Key], ct);
+            if (row is not null) { row.State = "stopped"; row.RetiredAt = now; row.OwnerProcessInstanceId = null; row.RecoveryDeadline = null; }
+        }
         if (db.ChangeTracker.HasChanges()) await scope.ServiceProvider.GetRequiredService<ChatDbBudget>().SaveAsync(db, ct);
+        this.retiredReceivers.Clear();
+        foreach (var entry in health)
+            ((ICollection<KeyValuePair<string, (string Health, string? Reason, long? Sent, long? Received)>>)runtime.Health).Remove(entry);
         this.lastHealthCheckpoint = now;
     }
 
-    private async Task StopAsync(Session session)
+    private async Task<bool> StopAsync(Session session)
     {
         var key = session.Configuration.ProviderId + ":" + session.Provider.ReceptionKey;
-        if (this.receivers.Remove(key, out var receiver))
+        if (this.receivers.TryGetValue(key, out var receiver))
         {
             receiver.Cancellation.Cancel();
-            try { await receiver.Task.WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
+            try { await receiver.Task.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch (TimeoutException)
+            {
+                runtime.RecordHealth(session.Configuration.Id, "degraded", "receiver-stop-pending", null, null);
+                return false;
+            }
+            this.receivers.Remove(key);
+            this.retiredReceivers[key] = (receiver.ProviderId, receiver.ReceptionKey);
             receiver.Cancellation.Dispose();
         }
         session.Cancellation.Cancel();
         await session.Provider.DisposeAsync(); session.Cancellation.Dispose(); this.sessions.Remove(session.Configuration.Id);
-        runtime.Health[session.Configuration.Id] = ("stopped", "configuration-changed", null, null);
+        runtime.RecordHealth(session.Configuration.Id, "stopped", "configuration-changed", null, null);
+        return true;
     }
 
     public async ValueTask DisposeAsync()
@@ -169,6 +217,7 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         try { foreach (var session in this.sessions.Values.ToArray()) await this.StopAsync(session); }
         finally { this.gate.Release(); }
     }
+    public void Dispose() => this.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     private sealed class ReceptionSink(ChatConnectionSupervisor supervisor, string receptionKey) : IChatDurableBatchSink
     {

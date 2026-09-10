@@ -159,7 +159,7 @@ public sealed partial class ChatConfigurationService
         {
             var destination = destinations.Find(d => d.Id == subscription.DestinationId && d.DeletedAt is null);
             var connection = connections.Find(c => c.Id == destination?.ConnectionId && c.Enabled && c.DeletedAt is null);
-            if (connection is not null && this.ConnectionReason(connection) is null) return "plugin-delivery-not-implemented";
+            if (connection is not null && this.ConnectionReason(connection) is null) return null;
         }
         return "no-available-subscriptions";
     }

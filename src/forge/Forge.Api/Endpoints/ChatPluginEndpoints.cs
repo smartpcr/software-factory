@@ -29,12 +29,16 @@ public static class ChatPluginEndpoints
 
         api.MapGet("/plugins", (WorkstreamPluginRegistry registry) => new { registry.IsAvailable, registry.Errors, Plugins = registry.Descriptors }).WithMetadata(self);
         api.MapGet("/chat/providers", (IChatProviderRegistry registry) => new { registry.IsAvailable, registry.Errors, registry.Providers }).WithMetadata(self);
+        api.MapPost("/chat/connections/{id}/link-challenge", async (string id, ChatConnectionLinkRequest request, ForgeActionContext action, ChatLinkService service, CancellationToken ct)
+            => await service.BeginAsync(await action.ActorAsync(ct), id, request.ExternalTenantId, request.ExternalUserId, ct)).WithMetadata(self);
+        api.MapDelete("/chat/operator-links/self", async (ForgeActionContext action, ChatLinkService service, CancellationToken ct) =>
+        { await service.RevokeAsync(await action.ActorAsync(ct), ct); return Results.NoContent(); }).WithMetadata(self);
         api.MapGet("/chat/configuration", (IOptions<ChatPluginOptions> options) => new
         {
             options.Value.Enabled, options.Value.Engine, options.Value.HostId, options.Value.UnavailableReason,
             InteractiveAvailable = ChatPluginInteractiveGate.IsAvailable,
         }).WithMetadata(host);
-        api.MapPost("/chat/retention/purge-content", async (ForgeActionContext action, ChatSliceRetention retention, CancellationToken ct)
+        api.MapPost("/chat/retention/purge-content", async (ForgeActionContext action, ChatRetentionService retention, CancellationToken ct)
             => await retention.PurgeContentAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
 
         api.MapGet("/chat/connections", async (string? productId, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
@@ -61,6 +65,18 @@ public static class ChatPluginEndpoints
         }).WithMetadata(host);
 
         const string SpawnPath = "/products/{productId}/story-spawns/{spawnId}/plugins/chat";
+        api.MapGet(SpawnPath + "/status", async (string productId, string spawnId, ForgeActionContext action, ChatStatusService service, CancellationToken ct)
+            => await service.SpawnAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
+        api.MapGet("/chat/host/status", async (ForgeActionContext action, ChatStatusService service, CancellationToken ct)
+            => await service.HostAsync(await action.ActorAsync(ct), ct)).WithMetadata(hostAlerts);
+        api.MapPost("/chat/deliveries/{id}/retry", async (string id, ForgeActionContext action, ChatStatusService service, CancellationToken ct)
+            => await service.RetryAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(self);
+        api.MapPost("/chat/deliveries/{id}/skip", async (string id, ForgeActionContext action, ChatStatusService service, CancellationToken ct)
+            => await service.SkipAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(self);
+        api.MapPost("/chat/notifications/{id}/resend", async (string id, ChatResendRequest request, ForgeActionContext action, ChatStatusService service, CancellationToken ct)
+            => await service.ResendAsync(await action.ActorAsync(ct), id, request.RequestId, ct)).WithMetadata(self);
+        api.MapPost(SpawnPath + "/purge-content", async (string productId, string spawnId, ForgeActionContext action, ChatRetentionService service, CancellationToken ct)
+            => await service.PurgeSpawnContentAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(write);
         api.MapGet(SpawnPath + "/notification-setup", async (string productId, string spawnId, ForgeActionContext action, ChatTelegramSliceService service, CancellationToken ct)
             => await service.GetAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
         api.MapPut(SpawnPath + "/notification-setup", async (string productId, string spawnId, ChatNotificationSetupWrite request,

@@ -71,7 +71,8 @@ the caller's console).
 The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 0B validation](chat/chat-plugin-stage0b-validation.md) and
 [Stage 1 validation](chat/chat-plugin-stage1-validation.md) and
-[Stage 1S validation](chat/chat-plugin-stage1s-validation.md). Stage 0B replaced
+[Stage 1S validation](chat/chat-plugin-stage1s-validation.md) and
+[Stage 2 validation](chat/chat-plugin-stage2-validation.md). Stage 0B replaced
 header-based operator authority with paired sessions and shared capabilities;
 the historical Phase 9 description below is not the current authorization boundary.
 
@@ -89,9 +90,15 @@ a separate `telegram-1s` discriminator and immutable route snapshot, one connect
 and one selected parent. `Phase99Migration` adds the spawn-plugin retirement timestamp.
 The browser saves row settings and the introduction atomically and polls saved
 delivery health; no agent restart is involved. The live test-bot/manual row gate
-remains pending. Stage 2 owns the full delivery/inbox schema, supervisors and lifecycle
-reconciler; later stages add interactive providers and Slack. See the validation
-documents for automated evidence and the existing `repos` catalog-test exclusion.
+remains pending. Stage 2 implements the provider-neutral event/delivery/inbox core,
+connection/app supervision, expected revisions and product action receipts, result
+reconciliation, retirement hooks and bounded retention. Phases 100/102/103 register
+the delivery, reception and identity/action control increments; Phase 101 separately
+registers `chat_action_receipts` in product DBs. The general worker requires the plugin
+engine with the Stage 1S slice disabled. Its interactive tests use fake providers;
+public interactive configuration, real Slack and the full setup UI remain gated for
+later stages. See the validation documents for automated evidence and the existing
+`repos` catalog-test exclusion.
 
 ## Foundational decisions (apply everywhere)
 

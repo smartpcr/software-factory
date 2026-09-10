@@ -29,7 +29,7 @@ public static class ChatEventCatalog
 
 public sealed record ChatQuestionPayload(string Id, long Revision, string? Text);
 public sealed record ChatEventPayload(int Version, string Title, string Body, IReadOnlyList<ChatQuestionPayload> Questions,
-    IReadOnlyList<ChatSemanticAction> LegacyActions);
+    IReadOnlyList<ChatSemanticAction> LegacyActions, string? StoryId = null);
 public sealed record ChatEventInput(string Kind, string DedupeKey, string? ProductId = null, string? SpawnId = null,
     string? WorkItemId = null, string? WorkstreamId = null, string? RepoId = null, long Revision = 1, string? ArtifactKey = null);
 public sealed record ChatDeliveryTarget(int Version, string ScopeKind, string? ProductId, string? SpawnId, string? HostId,

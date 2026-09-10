@@ -44,10 +44,11 @@ public interface IOpenQuestionService
 }
 
 /// <summary>An operator answer to a single open question.</summary>
-public sealed record OpenQuestionAnswer(string ExternalId, string? Answer, long? ExpectedRevision = null);
+public sealed record OpenQuestionAnswer(string ExternalId, string? Answer, long? ExpectedRevision = null,
+    bool EditExisting = false, string? ExpectedAnswerRevision = null);
 
 /// <summary>Result of an answer/dismiss: the recomputed unanswered count + whether a resume fired.</summary>
-public sealed record OpenQuestionAnswerResult(int UnansweredCount, bool ResumeScheduled);
+public sealed record OpenQuestionAnswerResult(int UnansweredCount, bool ResumeScheduled, int AcceptedCount = 0, bool RevisionConflict = false);
 
 /// <inheritdoc/>
 public sealed class OpenQuestionService : IOpenQuestionService
@@ -84,13 +85,18 @@ public sealed class OpenQuestionService : IOpenQuestionService
     public async Task<OpenQuestionAnswerResult> AnswerAsync(
         string workItemId, IReadOnlyList<OpenQuestionAnswer> answers, string actor, CancellationToken ct)
     {
-        actor = (await this.actionContext.RequireAsync(ForgeCapabilities.QuestionAnswer, new(WorkItemId: workItemId), ct)).UserId;
+        var verifiedActor = await this.actionContext.RequireAsync(ForgeCapabilities.QuestionAnswer, new(WorkItemId: workItemId), ct);
+        actor = verifiedActor.UserId;
         await this.chatRuntime.DomainGate.WaitAsync(ct);
         try
         {
+            await this.actionContext.RequireAsync("question.answer", new(WorkItemId: workItemId), ct);
+            using var limits = ChatDbBudget.Limit(this.db);
             var now = DateTimeOffset.UtcNow;
             var productId = await this.control.Products.Where(p => p.Slug == this.db.ProductSlug).Select(p => p.Id).SingleAsync(ct);
             var accepted = 0;
+            var newAnswers = 0;
+            var conflict = false;
             ChatActionReceiptRow? resume = null;
             int unanswered;
             await using (var tx = await this.db.Database.BeginTransactionAsync(ct))
@@ -98,16 +104,22 @@ public sealed class OpenQuestionService : IOpenQuestionService
                 var byExtId = await this.LatestByExternalIdAsync(workItemId, ct);
                 foreach (var answer in answers)
                 {
-                    if (string.IsNullOrEmpty(answer.ExternalId) || !byExtId.TryGetValue(answer.ExternalId, out var latest)
-                        || latest.Answer is not null || answer.ExpectedRevision is { } revision && revision != latest.Id) continue;
+                    if (string.IsNullOrEmpty(answer.ExternalId) || string.IsNullOrWhiteSpace(answer.Answer)
+                        || !byExtId.TryGetValue(answer.ExternalId, out var latest)) continue;
+                    if (answer.ExpectedRevision is { } revision && revision != latest.Id) { conflict = true; continue; }
+                    var editing = !string.IsNullOrEmpty(latest.Answer);
+                    if (editing && (!answer.EditExisting || verifiedActor.Source != "browser")) continue;
+                    if (editing && (answer.ExpectedAnswerRevision is null || answer.ExpectedAnswerRevision != latest.AnsweredAt?.ToString("O"))) { conflict = true; continue; }
+                    var actionKey = editing ? $"question-edit:{workItemId}:{latest.Id}:{answer.ExpectedAnswerRevision}" : $"question:{workItemId}:{latest.Id}";
                     latest.Answer = answer.Answer ?? string.Empty; latest.AnsweredAt = now; latest.AnsweredBy = actor;
-                    this.db.ChatActionReceipts.Add(new() { ProductId = productId, ActionKey = ChatEventCatalog.Hash($"question:{workItemId}:{latest.Id}"),
-                        Action = "question.answer", TargetId = workItemId, ExpectedRevision = latest.Id, ActorId = actor,
+                    this.db.ChatActionReceipts.Add(new() { ProductId = productId, ActionKey = ChatEventCatalog.Hash(actionKey),
+                        Action = editing ? "question.edit" : "question.answer", TargetId = workItemId, ExpectedRevision = latest.Id, ActorId = actor,
                         CreatedAt = now.ToUnixTimeMilliseconds(), TerminalAt = now.ToUnixTimeMilliseconds() });
                     accepted++;
+                    if (!editing) newAnswers++;
                 }
-                unanswered = byExtId.Values.Count(q => q.Answer is null);
-                if (accepted > 0 && unanswered == 0)
+                unanswered = byExtId.Values.Count(q => string.IsNullOrEmpty(q.Answer));
+                if (newAnswers > 0 && unanswered == 0)
                 {
                     resume = new() { ProductId = productId, ActionKey = "resume:" + Guid.NewGuid().ToString("N"), Action = "questions.resume",
                         TargetId = workItemId, ActorId = actor, State = "executing", Result = "pending", OperationId = Guid.NewGuid().ToString("N"),
@@ -125,7 +137,7 @@ public sealed class OpenQuestionService : IOpenQuestionService
                 await this.db.SaveChangesAsync(ct);
             }
             this.chatRuntime.Signal();
-            return new(unanswered, scheduled);
+            return new(unanswered, scheduled, accepted, conflict);
         }
         finally { this.chatRuntime.DomainGate.Release(); }
     }
@@ -145,21 +157,6 @@ public sealed class OpenQuestionService : IOpenQuestionService
         return existing
             .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(), StringComparer.OrdinalIgnoreCase);
-    }
-
-    private async Task<OpenQuestionAnswerResult> FinalizeAsync(string workItemId, CancellationToken ct)
-    {
-        await this.db.SaveChangesAsync(ct);
-
-        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(this.control, this.db, workItemId, ct);
-
-        var resumeScheduled = false;
-        if (unansweredCount == 0)
-        {
-            resumeScheduled = await this.TryUnparkAndResumeAsync(workItemId, ct);
-        }
-
-        return new OpenQuestionAnswerResult(unansweredCount, resumeScheduled);
     }
 
     /// <summary>

@@ -105,10 +105,10 @@ boundary classification and are also listed in the altering phase's catalog.
 | Planned increment | Per-table registration checklist | Boundary |
 |---|---|---|
 | Stage 1 configuration (Phase98) | [x] `spawn_plugins`; [x] `chat_connections`; [x] `chat_connection_products`; [x] `chat_destinations`; [x] `chat_subscriptions`; [x] `chat_conversation_bindings` | Each `Control` / `Global` |
-| Stage 2 delivery | [ ] existing `chat_notifications` alterations; [ ] `chat_deliveries`; [ ] `chat_delivery_messages` | Each `Control` / `Global` |
-| Stage 2 reception | [ ] `chat_inbox`; [ ] `chat_connection_state`; [ ] `chat_receiver_state` | Each `Control` / `Global` |
-| Stage 2 identities/actions | [ ] `chat_operator_links`; [ ] `chat_link_challenges`; [ ] `chat_action_tokens` | Each `Control` / `Global` |
-| Stage 2 domain receipts (separate product phase) | [ ] `chat_action_receipts`, with required `ProductId` | `Product` / `DirectProductId`, partition column `ProductId` |
+| Stage 2 delivery (Phase100) | [x] existing `chat_notifications` alterations; [x] `chat_subscriptions.ContentMode` alteration; [x] `chat_deliveries`; [x] `chat_delivery_messages` | Each `Control` / `Global` |
+| Stage 2 reception (Phase102) | [x] `chat_inbox`; [x] `chat_connection_state`; [x] `chat_receiver_state` | Each `Control` / `Global` |
+| Stage 2 identities/actions (Phase103) | [x] `chat_operator_links`; [x] `chat_link_challenges`; [x] `chat_action_tokens` | Each `Control` / `Global` |
+| Stage 2 domain receipts (Phase101, product) | [x] `chat_action_receipts`, with required `ProductId` | `Product` / `DirectProductId`, partition column `ProductId` |
 | Stage 6 cutover | [ ] `chat_migration_state`; [ ] legacy-alias additions to `chat_delivery_messages` | Each `Control` / `Global` |
 
 `chat_action_receipts` is the only new **product-DB** chat table. Do not put it in
@@ -433,46 +433,51 @@ provider/visible UI stopping point before the full delivery/inbox schema is buil
 
 ### Stage 2 — delivery, inbound durability, and domain result handling
 
-- [ ] Evolve `chat_notifications` into a provider-neutral logical event; add
+Status (2026-09-10): all 14 requirements implemented and validated. See the
+[Stage 2 requirement review and evidence](chat-plugin-stage2-validation.md): 262 backend
+tests passed (1 live exercise skipped), 194 UI tests, UI build and 4 browser checks.
+The Stage 1S real-bot gate and later provider/setup/cutover stages remain separate.
+
+- [x] Evolve `chat_notifications` into a provider-neutral logical event; add
       versioned payload conversion for legacy text/actions.
-- [ ] Add `chat_deliveries` and `chat_delivery_messages`, including immutable target
+- [x] Add `chat_deliveries` and `chat_delivery_messages`, including immutable target
       snapshots, operation/recovery records, retry schedules, rendered revisions and question/part IDs.
-- [ ] Resolve subscriptions using product/spawn scope and event filters; validate
+- [x] Resolve subscriptions using product/spawn scope and event filters; validate
       `WorkstreamRow.StorySpawnId` for child events and persisted ownership for
       planning/artifact events before child workstreams exist. Retain exact targets;
       create event and delivery rows atomically in the control DB.
-- [ ] Add a durable inbox, connection cursor/session state and provider receiver
+- [x] Add a durable inbox, connection cursor/session state and provider receiver
       ownership records. Share Slack reception by app identity and route to workspace connections.
       Store receipt keys before transport acknowledgement; retry domain dispatch
       separately.
-- [ ] Implement the connection supervisor with in-process reception-key ownership,
+- [x] Implement the connection supervisor with in-process reception-key ownership,
       per-connection cancellation, configuration revisions and health reporting.
-- [ ] Implement provider-aware retry classification and fair scheduling. Handle
+- [x] Implement provider-aware retry classification and fair scheduling. Handle
       accepted-but-unconfirmed sends and uncertain topic creation explicitly.
-- [ ] Implement the [versioned event catalog](chat-plugin-design.md#event-catalog),
+- [x] Implement the [versioned event catalog](chat-plugin-design.md#event-catalog),
       explicit default filters, permanent host routing and visible zero-match rows.
       Enforce actionable ordering and supersession across retries.
-- [ ] Use the [single-instance DB budget](chat-plugin-design.md#single-instance-recovery):
+- [x] Use the [single-instance DB budget](chat-plugin-design.md#single-instance-recovery):
       named host mutex, in-process receiver locks, crash records, 60-second recovery
       window, coalesced health and short batched writes. Test checkpoint failure
       after a successful send without repeating the provider call.
-- [ ] Add `ChatScopeLifecycleService`, wire spawn/product deletion and the
+- [x] Add `ChatScopeLifecycleService`, wire spawn/product deletion and the
       `ForgeSeed.ScrubMockedSpawnsAsync` / `StorySpawnIdsDeleted` prune path, and add
       startup/five-minute `ChatScopeReconciler`. Missing parents are Orphaned;
       unavailable product DBs are Degraded. Validate ownership before every action.
-- [ ] Expand the slice's `ChatContentPolicy` to both providers and all retries/edits;
+- [x] Expand the slice's `ChatContentPolicy` to both providers and all retries/edits;
       implement hourly bounded `ChatRetentionService` for every content-bearing
       table and content-free correlation record in the design's retention matrix.
-- [ ] Add domain action receipts/expected revisions and use the Stage 0B shared
+- [x] Add domain action receipts/expected revisions and use the Stage 0B shared
       authorizer (do not rebuild it). Product mutation and its receipt commit together where transactional;
       worktree/process effects use recorded operation IDs and recovery states.
-- [ ] Extract parent pause/resume and required artifact action cores from
+- [x] Extract parent pause/resume and required artifact action cores from
       `StoriesEndpoints`; share them with chat and the existing HTTP endpoints.
       Add parent status aggregation, child/artifact target selection and membership
       checks. Never map an ambiguous action to every child in the row.
-- [ ] Reconcile domain results to every copy after restart, including web-UI actions.
+- [x] Reconcile domain results to every copy after restart, including web-UI actions.
       Keep unanswered questions actionable and retire superseded action tokens.
-- [ ] Implement disable/pause/removal behavior from the design, including cancellation
+- [x] Implement disable/pause/removal behavior from the design, including cancellation
       of queued sends, refusal of stale actions and retirement of sent controls.
 
 **Acceptance (fake providers and stubbed clocks/storage faults):** failure in one

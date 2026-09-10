@@ -15,10 +15,11 @@ using Microsoft.Extensions.Options;
 /// <summary>Atomic logical event and immutable fan-out; producers never perform transport I/O.</summary>
 public sealed class ChatEventService(ControlDbContext control, IProductDbContextFactory products, ChatScopeResolver resolver,
     ChatContentPolicy policy, ChatRuntimeState runtime, ChatDbBudget budget, TimeProvider clock, IOptions<ChatPluginOptions> options,
-    WorkstreamPluginRegistry plugins)
+    WorkstreamPluginRegistry plugins, ChatSecretResolver secrets)
 {
     public async Task<bool> EnqueueAsync(ChatEventInput input, CancellationToken ct = default)
     {
+        using var limits = ChatDbBudget.Limit(control);
         await runtime.EnqueueGate.WaitAsync(ct);
         try
         {
@@ -28,6 +29,18 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
             var spawnScope = owned.Spawn is not null;
             var scope = spawnScope ? ChatConfigurationScope.Spawn(owned.Product!.Id, owned.Spawn!.Id) : ChatConfigurationScope.Host(options.Value.HostId);
             var now = clock.GetUtcNow();
+            var credentials = new List<string>();
+            var includeQuestionText = policy.AllowsQuestions(scope.ProductId);
+            if (includeQuestionText)
+            {
+                try
+                {
+                    foreach (var connection in await control.ChatConnections.AsNoTracking().Where(c => c.DeletedAt == null).ToListAsync(ct))
+                        credentials.AddRange(await secrets.ValuesAsync(connection, ct));
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
+                { includeQuestionText = false; } // Persist generated metadata when the redaction inputs cannot be verified.
+            }
             var notification = new ChatNotificationRow
             {
                 Id = Guid.NewGuid().ToString("N"), Platform = "plugins", ScopeKind = scope.Kind, ProductId = scope.ProductId ?? "",
@@ -42,10 +55,10 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
             {
                 var rows = await products.CreateFor(owned.Product!.Slug).DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == owned.WorkItemId).ToListAsync(ct);
                 questions.AddRange(rows.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
-                    .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First()).Where(q => q.Answer is null)
-                    .Select(q => new ChatQuestionPayload(q.ExternalId, q.Id, policy.AllowsQuestions(owned.Product.Id) ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], []) : null)));
+                    .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First()).Where(q => string.IsNullOrEmpty(q.Answer))
+                    .Select(q => new ChatQuestionPayload(q.ExternalId, q.Id, includeQuestionText ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], credentials) : null)));
             }
-            notification.PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, notification.Title, notification.Body, questions, []));
+            notification.PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, notification.Title, notification.Body, questions, [], owned.Spawn?.StoryId));
             var subscriptions = await control.ChatSubscriptions.Where(s => s.ScopeKey == scope.Key && s.RetiredAt == null).ToListAsync(ct);
             var parent = spawnScope ? await control.SpawnPlugins.SingleOrDefaultAsync(p => p.ProductId == scope.ProductId && p.SpawnId == scope.SpawnId && p.PluginId == "chat", ct) : null;
             notification.RouteReason = !ChatEventCatalog.Known(input.Kind) ? "unsupported-kind"
@@ -79,7 +92,12 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                         CreatedAt = now.ToUnixTimeMilliseconds(), NextAttemptAt = now.ToUnixTimeMilliseconds(), DomainRevision = input.Revision,
                         Actionable = sub.Interactive && ChatEventCatalog.SpawnDefaults.Contains(input.Kind) };
                     control.ChatDeliveries.Add(delivery);
-                    if (questions.Count == 0) control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id });
+                    if (questions.Count == 0)
+                    {
+                        var expectedRevision = spawnScope ? await ChatDomainRevision.ReadAsync(products.CreateFor(owned.Product!.Slug),
+                            new(SpawnId: owned.Spawn!.Id, WorkstreamId: owned.WorkstreamId, ArtifactKey: owned.ArtifactKey), ct) : 0;
+                        control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, ExpectedRevision = expectedRevision });
+                    }
                     else foreach (var question in questions) control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id,
                         PartKey = "question:" + ChatEventCatalog.Hash(question.Id), QuestionId = question.Id, ExpectedRevision = question.Revision });
                     notification.RouteState = "routed"; notification.RouteReason = null;
@@ -90,7 +108,7 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
             {
                 var older = await control.ChatNotifications.Where(n => n.Platform == "plugins" && n.ProductId == notification.ProductId
                     && n.SpawnId == notification.SpawnId && n.Kind == input.Kind && n.WorkItemId == notification.WorkItemId
-                    && n.WorkstreamId == notification.WorkstreamId && n.DomainRevision < input.Revision && n.Status == "pending").ToListAsync(ct);
+                    && n.WorkstreamId == notification.WorkstreamId && n.DomainRevision <= input.Revision && n.Status == "pending").ToListAsync(ct);
                 foreach (var old in older) { old.Status = "superseded"; old.RespondedAt = now; }
             }
             await budget.SaveAsync(control, ct); await tx.CommitAsync(ct);

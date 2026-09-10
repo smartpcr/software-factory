@@ -17,6 +17,7 @@ interface QuestionItem {
   choices: string[];
   answer: string | null;
   answeredAt: string | null;
+  answerRevision?: string | null;
   answeredBy: string | null;
   explanation: QuestionExplanation | null;
 }
@@ -132,7 +133,7 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
 
   async function handleSubmit() {
     const answers = unanswered
-      .map((q) => ({ externalId: q.externalId, answer: (drafts[q.externalId] ?? '').trim() }))
+      .map((q) => ({ externalId: q.externalId, expectedRevision: q.id, answer: (drafts[q.externalId] ?? '').trim() }))
       .filter((a) => a.answer.length > 0);
     if (answers.length === 0) {
       showToast('Pick or write an answer for at least one question.', 'info');
@@ -177,7 +178,7 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
     }
     setSubmitting(true);
     try {
-      const r = await forgeApi.answerQuestions(workItemId, [{ externalId, answer }]);
+      const r = await forgeApi.answerQuestions(workItemId, [{ externalId, answer, expectedRevision: items.find((q) => q.externalId === externalId)?.id, editExisting: true, expectedAnswerRevision: items.find((q) => q.externalId === externalId)?.answerRevision }]);
       setUnansweredCount(r.unansweredCount);
       const full = await forgeApi.listQuestions(workItemId);
       setItems(full.items);

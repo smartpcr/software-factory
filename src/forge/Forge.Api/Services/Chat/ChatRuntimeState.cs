@@ -26,12 +26,19 @@ public sealed class ChatRuntimeState(IForgeDbPaths paths) : IDisposable
     public SemaphoreSlim DeliveryGate { get; } = new(1, 1);
     public SemaphoreSlim InboxGate { get; } = new(1, 1);
     public SemaphoreSlim DomainGate { get; } = new(1, 1);
+    public SemaphoreSlim DispatchGate { get; } = new(1, 1);
+    public string? LastScheduledChannel { get; set; }
+    public string? LastReconciledDelivery { get; set; }
     public Channel<bool> Wake { get; } = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
     public ConcurrentDictionary<string, ChatOperationCheckpoint> Checkpoints { get; } = new(StringComparer.Ordinal);
     public ConcurrentDictionary<string, (string Health, string? Reason, long? Sent, long? Received)> Health { get; } = new(StringComparer.Ordinal);
     public long BusyWrites;
     public long CompletedWrites;
     public ConcurrentQueue<double> WriteMilliseconds { get; } = new();
+
+    public void RecordHealth(string connectionId, string health, string? reason, long? sent = null, long? received = null)
+        => this.Health.AddOrUpdate(connectionId, (health, reason, sent, received),
+            (_, previous) => (health, reason, sent ?? previous.Sent, received ?? previous.Received));
 
     public bool EnsureHostOwnership()
     {
@@ -44,13 +51,21 @@ public sealed class ChatRuntimeState(IForgeDbPaths paths) : IDisposable
             var name = "Forge.Chat." + ChatEventCatalog.Hash(canonical);
             this.mutexThread = new Thread(() =>
             {
-                using var mutex = new Mutex(false, name);
-                try { this.ownsHost = mutex.WaitOne(0); }
-                catch (AbandonedMutexException) { this.ownsHost = true; }
+                Mutex? mutex = null;
+                try
+                {
+                    mutex = new Mutex(false, name);
+                    try { this.ownsHost = mutex.WaitOne(0); }
+                    catch (AbandonedMutexException) { this.ownsHost = true; }
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { this.ownsHost = false; }
                 finally { ready.Set(); }
-                if (!this.ownsHost) return;
-                this.stop.Wait();
-                mutex.ReleaseMutex();
+                using (mutex)
+                {
+                    if (!this.ownsHost) return;
+                    this.stop.Wait();
+                    mutex!.ReleaseMutex();
+                }
             }) { IsBackground = true, Name = "Forge chat ownership" };
             this.mutexThread.Start(); ready.Wait();
             return this.ownsHost;
@@ -70,31 +85,50 @@ public sealed record ChatOperationCheckpoint(string Kind, string Id, ChatSendRec
 
 public sealed class ChatDbBudget(ChatRuntimeState runtime)
 {
+    public static IDisposable Limit(DbContext db) => new TimeoutScope(db);
+
+    private sealed class TimeoutScope : IDisposable
+    {
+        private readonly DbContext db;
+        private readonly int? commandTimeout;
+        private readonly SqliteConnection? sqlite;
+        private readonly int defaultTimeout;
+        public TimeoutScope(DbContext db)
+        {
+            this.db = db; this.commandTimeout = db.Database.GetCommandTimeout();
+            this.sqlite = db.Database.GetDbConnection() as SqliteConnection;
+            this.defaultTimeout = this.sqlite?.DefaultTimeout ?? 0;
+            db.Database.SetCommandTimeout(1);
+            if (this.sqlite is not null) this.sqlite.DefaultTimeout = 1; // Also bounds BEGIN/COMMIT's internal commands.
+        }
+        public void Dispose()
+        {
+            this.db.Database.SetCommandTimeout(this.commandTimeout);
+            if (this.sqlite is not null) this.sqlite.DefaultTimeout = this.defaultTimeout;
+        }
+    }
+
     public async Task WriteAsync(DbContext db, Func<Task> write, CancellationToken ct)
     {
         var watch = Stopwatch.StartNew();
-        var timeout = db.Database.GetCommandTimeout();
-        db.Database.SetCommandTimeout(1);
-        try
+        using var limits = Limit(db);
+        while (true)
         {
-            while (true)
+            try
             {
-                try
-                {
-                    await write();
-                    Interlocked.Increment(ref runtime.CompletedWrites);
-                    runtime.WriteMilliseconds.Enqueue(watch.Elapsed.TotalMilliseconds);
-                    while (runtime.WriteMilliseconds.Count > 1000) runtime.WriteMilliseconds.TryDequeue(out _);
-                    return;
-                }
-                catch (Exception ex) when (IsBusy(ex) && watch.Elapsed < TimeSpan.FromMilliseconds(900))
-                {
-                    Interlocked.Increment(ref runtime.BusyWrites);
-                    await Task.Delay(Random.Shared.Next(20, 60), ct);
-                }
+                await write();
+                Interlocked.Increment(ref runtime.CompletedWrites);
+                runtime.WriteMilliseconds.Enqueue(watch.Elapsed.TotalMilliseconds);
+                while (runtime.WriteMilliseconds.Count > 1000) runtime.WriteMilliseconds.TryDequeue(out _);
+                return;
+            }
+            catch (Exception ex) when (IsBusy(ex))
+            {
+                Interlocked.Increment(ref runtime.BusyWrites);
+                if (watch.Elapsed >= TimeSpan.FromMilliseconds(900)) throw;
+                await Task.Delay(Random.Shared.Next(20, 60), ct);
             }
         }
-        finally { db.Database.SetCommandTimeout(timeout); }
     }
     public Task SaveAsync(DbContext db, CancellationToken ct) => this.WriteAsync(db, async () => { await db.SaveChangesAsync(ct); }, ct);
     public static bool IsBusy(Exception ex) => ex is SqliteException { SqliteErrorCode: 5 or 6 }

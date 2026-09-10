@@ -47,6 +47,7 @@ public sealed class ChatDomainActionRunner(ProductDbContext db, ControlDbContext
     public async Task<T> RunAsync<T>(string action, ForgeActionTarget target, Func<Task<T>> execute,
         Func<string, T> repeat, Func<T, bool> succeeded, CancellationToken ct)
     {
+        using var limits = ChatDbBudget.Limit(db);
         var actor = await actions.RequireAsync(action, target, ct);
         await runtime.DomainGate.WaitAsync(ct);
         try

@@ -49,6 +49,9 @@ public sealed class ChatDeliveryMessageRow
     public string PartKey { get; set; } = "summary";
     public string? QuestionId { get; set; }
     public long ExpectedRevision { get; set; }
+    public string? ActionKind { get; set; }
+    public string? ConfirmationActorId { get; set; }
+    public long? ExpiresAt { get; set; }
     public string? MessageId { get; set; }
     public string AddressJson { get; set; } = "{}";
     public string? RenderedJson { get; set; }
@@ -118,6 +121,31 @@ public sealed class ChatActionTokenRow
     public string? ActorId { get; set; }
     public long ExpiresAt { get; set; }
     public string State { get; set; } = "active";
+}
+
+public sealed class ChatOperatorLinkRow
+{
+    public string Id { get; set; } = "";
+    public string ProviderId { get; set; } = "";
+    public string ExternalTenantId { get; set; } = "";
+    public string ExternalUserId { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string EnrollmentRevision { get; set; } = "";
+    public long CreatedAt { get; set; }
+    public long? RevokedAt { get; set; }
+}
+
+public sealed class ChatLinkChallengeRow
+{
+    public string Hash { get; set; } = "";
+    public string ConnectionId { get; set; } = "";
+    public long ConnectionRevision { get; set; }
+    public string UserId { get; set; } = "";
+    public string ExternalTenantId { get; set; } = "";
+    public string ExternalUserId { get; set; } = "";
+    public long ExpiresAt { get; set; }
+    public string State { get; set; } = "pending";
+    public string? PreviousLinkId { get; set; }
 }
 
 /// <summary>Authoritative domain result in the product database, committed with transactional mutations.</summary>

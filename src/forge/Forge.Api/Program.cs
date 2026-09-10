@@ -408,6 +408,7 @@ builder.Services.AddSingleton<Common.Chat.ChatInboundPump>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Common.Chat.ChatInboundPump>());
 Forge.Api.Services.Chat.ChatPluginRegistration.AddChatPlugins(builder.Services, builder.Configuration);
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatTelegramSliceWorker>());
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Chat.ChatRuntimeWorker>());
 // Phase 95.3 — shared open-question answer/resume core (one impl for the HTTP
 // questions endpoints AND the chat-bridge inbound path).
 builder.Services.AddScoped<Forge.Api.Services.IOpenQuestionService, Forge.Api.Services.OpenQuestionService>();

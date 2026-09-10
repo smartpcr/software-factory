@@ -16,26 +16,32 @@ public sealed partial class ChatInboxService
 {
     public async Task DispatchOnceAsync(CancellationToken ct = default)
     {
-        var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
-        var rows = await control.ChatInbox.Where(i => (i.State == "pending" || i.State == "processing") && i.NextAttemptAt <= now)
-            .OrderBy(i => i.ReceivedAt).Take(20).ToListAsync(ct);
-        foreach (var row in rows)
+        using var limits = ChatDbBudget.Limit(control);
+        await runtime.DispatchGate.WaitAsync(ct);
+        try
         {
-            row.State = "processing"; row.OwnerProcessInstanceId = runtime.ProcessId; row.RecoveryDeadline = now + 60000; row.Attempts++;
-            await budget.SaveAsync(control, ct);
-            try
+            var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
+            var rows = await control.ChatInbox.Where(i => (i.State == "pending" || i.State == "processing") && i.NextAttemptAt <= now)
+                .OrderBy(i => i.ReceivedAt).Take(20).ToListAsync(ct);
+            foreach (var row in rows)
             {
-                row.Result = await this.DispatchAsync(row, ct); row.State = "processed"; row.TerminalAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                row.State = "processing"; row.OwnerProcessInstanceId = runtime.ProcessId; row.RecoveryDeadline = now + 60000; row.Attempts++;
+                await budget.SaveAsync(control, ct);
+                try
+                {
+                    row.Result = await this.DispatchAsync(row, ct); row.State = "processed"; row.TerminalAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                }
+                catch (ForgeAccessDeniedException) { row.Result = "not-authorized"; row.State = "rejected"; row.TerminalAt = now; }
+                catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
+                {
+                    row.Result = "dispatch-unavailable"; row.State = row.Attempts >= 10 ? "dead-letter" : "pending";
+                    row.NextAttemptAt = now + Math.Min(300000, 1000L << Math.Min(row.Attempts, 8));
+                    if (row.State == "dead-letter") row.TerminalAt = now;
+                }
+                await budget.SaveAsync(control, ct);
             }
-            catch (ForgeAccessDeniedException) { row.Result = "not-authorized"; row.State = "rejected"; row.TerminalAt = now; }
-            catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
-            {
-                row.Result = "dispatch-unavailable"; row.State = row.Attempts >= 10 ? "dead-letter" : "pending";
-                row.NextAttemptAt = now + Math.Min(300000, 1000L << Math.Min(row.Attempts, 8));
-                if (row.State == "dead-letter") row.TerminalAt = now;
-            }
-            await budget.SaveAsync(control, ct);
         }
+        finally { runtime.DispatchGate.Release(); }
     }
 
     private async Task<string> DispatchAsync(ChatInboxRow row, CancellationToken ct)
@@ -47,7 +53,7 @@ public sealed partial class ChatInboxService
         ChatDeliveryMessageRow? message = null;
         if (envelope.ActionToken is { Length: > 0 })
         {
-            var hash = ChatEventCatalog.Hash(envelope.ActionToken);
+            var hash = envelope.ActionToken.StartsWith("sha256:", StringComparison.Ordinal) ? envelope.ActionToken[7..] : ChatEventCatalog.Hash(envelope.ActionToken);
             token = await control.ChatActionTokens.SingleOrDefaultAsync(t => t.Hash == hash, ct);
             if (token is null || token.State != "active" || token.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds()) return "stale-action";
             message = await control.ChatDeliveryMessages.SingleOrDefaultAsync(m => m.Id == token.DeliveryMessageId, ct);
@@ -63,12 +69,13 @@ public sealed partial class ChatInboxService
             || JsonSerializer.Deserialize<ChatAddress>(message.AddressJson) != envelope.Address) return "unmatched-message";
         var delivery = await control.ChatDeliveries.AsNoTracking().SingleAsync(d => d.Id == message.DeliveryId, ct);
         var notification = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == delivery.NotificationId, ct);
+        if (notification.ExpiresAt <= clock.GetUtcNow() || notification.Status is "resolved" or "superseded" or "expired") return "stale-action";
         var target = JsonSerializer.Deserialize<ChatDeliveryTarget>(delivery.TargetJson)!;
         if (target.ConnectionId != envelope.ConnectionId || target.ProviderId != envelope.ProviderId) return "unmatched-connection";
         if (target.ScopeKind != "spawn") return "open-host-settings";
         using var validation = scopes.CreateScope();
         if (await validation.ServiceProvider.GetRequiredService<ChatScopeResolver>().ValidateAsync(target, notification, ct, action: true) is { } reason) return reason;
-        var actor = await validation.ServiceProvider.GetRequiredService<ForgeActorResolver>().FromProviderAsync(envelope.ProviderId, envelope.Address.ExternalTenantId, envelope.SenderId, ct);
+        var actor = await validation.ServiceProvider.GetRequiredService<ChatLinkService>().ResolveAsync(envelope.ProviderId, envelope.Address.ExternalTenantId, envelope.SenderId, ct);
         var action = token?.Action ?? "question.answer";
         var actionTarget = new ForgeActionTarget(target.ProductId, target.SpawnId,
             WorkstreamId: action.StartsWith("workstream.", StringComparison.Ordinal) ? notification.WorkstreamId : null,
@@ -76,7 +83,19 @@ public sealed partial class ChatInboxService
             ArtifactKey: action.StartsWith("artifact.", StringComparison.Ordinal) ? notification.ArtifactKey : null);
         await validation.ServiceProvider.GetRequiredService<ForgeCapabilityAuthorizer>().RequireAsync(actor, action, actionTarget, ct);
         if (token?.ActorId is { } boundActor && actor!.UserId != boundActor) return "confirmation-actor-mismatch";
-        if (action.EndsWith(".restart", StringComparison.Ordinal) && token?.ActorId != actor!.UserId) return "confirmation-required";
+        if (action.EndsWith(".restart", StringComparison.Ordinal) && token?.ActorId is null)
+        {
+            var key = "confirm:" + ChatEventCatalog.Hash(actor!.UserId + ":" + token!.ExpectedRevision);
+            if (!await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.PartKey == key, ct))
+            {
+                control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, PartKey = key, ActionKind = action, ConfirmationActorId = actor.UserId,
+                    ExpectedRevision = token.ExpectedRevision, ExpiresAt = clock.GetUtcNow().AddSeconds(30).ToUnixTimeMilliseconds() });
+                var queued = await control.ChatDeliveries.SingleAsync(d => d.Id == delivery.Id, ct);
+                queued.State = "pending"; queued.NextAttemptAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                await budget.SaveAsync(control, ct); runtime.Signal();
+            }
+            return "confirmation-queued";
+        }
         var product = await control.Products.AsNoTracking().SingleAsync(p => p.Id == target.ProductId, ct);
         using var productContext = ProductDbContextFactory.PushAsyncLocalSlug(product.Slug);
         using var actorContext = ForgeActorScope.Push(actor!, product.Id);
@@ -87,7 +106,8 @@ public sealed partial class ChatInboxService
         if (action == "question.answer")
         {
             var subscription = await control.ChatSubscriptions.AsNoTracking().SingleAsync(s => s.Id == delivery.SubscriptionId, ct);
-            if (!policy.AllowsQuestions(product.Id, subscription.ContentMode)) return "answer-in-forge";
+            if (!policy.AllowsQuestions(product.Id, subscription.ContentMode)
+                || ChatPayloadConverter.Read(notification)?.Questions.Any(q => q.Id == message.QuestionId && q.Text is not null) != true) return "answer-in-forge";
             if (string.IsNullOrWhiteSpace(envelope.Text)) return "answer-required";
             var latest = (await db.DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == notification.WorkItemId).ToListAsync(ct))
                 .Where(q => q.ExternalId.Equals(message.QuestionId, StringComparison.OrdinalIgnoreCase)).OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).FirstOrDefault();
@@ -96,7 +116,7 @@ public sealed partial class ChatInboxService
                 [new(message.QuestionId!, envelope.Text, revision)], actor!.UserId, ct);
             var key = ChatEventCatalog.Hash($"question:{notification.WorkItemId}:{revision}");
             row.ActionReceiptId = await db.ChatActionReceipts.Where(r => r.ProductId == product.Id && r.ActionKey == key).Select(r => r.Id).SingleOrDefaultAsync(ct);
-            return latest.Answer is not null ? "already-resolved" : result.UnansweredCount == 0 ? "answered-all" : "answered-more-remain";
+            return result.RevisionConflict ? "stale-revision" : result.AcceptedCount == 0 ? "already-resolved" : result.UnansweredCount == 0 ? "answered-all" : "answered-more-remain";
         }
         if (action.StartsWith("workstream.", StringComparison.Ordinal))
         {
@@ -109,6 +129,7 @@ public sealed partial class ChatInboxService
                 "workstream.restart" => await operations.RestartAsync(notification.WorkstreamId!, ct),
                 _ => null,
             };
+            if (token?.ActorId is not null) token.State = "consumed";
             return outcome?.Ok == true ? "accepted" : "action-conflict";
         }
         var spawn = await db.StorySpawns.AsNoTracking().SingleAsync(s => s.Id == target.SpawnId, ct);
@@ -121,6 +142,7 @@ public sealed partial class ChatInboxService
             "artifact.cancel" => await stories.CancelArtifactAsync(spawn.StoryId, notification.ArtifactKey!, ct),
             "artifact.restart" => await stories.RestartArtifactAsync(spawn.StoryId, notification.ArtifactKey!, ct), _ => null,
         };
+        if (token?.ActorId is not null) token.State = "consumed";
         return resultValue is IStatusCodeHttpResult { StatusCode: >= 400 } || resultValue is null ? "action-conflict" : "accepted";
     }
 }

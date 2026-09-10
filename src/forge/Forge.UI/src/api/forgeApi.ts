@@ -100,6 +100,7 @@ export interface StorySpawn {
   id: string;
   /** Explicit ownership from the list response, including the all-products view. */
   productId?: string | null;
+  chatSummary?: { state: string; unroutedCount: number; unroutedReasons: Record<string, number>; pendingCount: number; failedCount: number; sentCount: number };
   storyId: string;
   storyTitle: string;
   repoId: string | null;
@@ -3088,6 +3089,7 @@ export const forgeApi = {
       choices: string[];
       answer: string | null;
       answeredAt: string | null;
+      answerRevision?: string | null;
       answeredBy: string | null;
       /** Operator-facing rationale (terms / per-choice logic / recommendation);
        *  null until agent-authored or generated via explainQuestion. */
@@ -3121,7 +3123,7 @@ export const forgeApi = {
    *  answers` block, and the verdict-gate releases pass when none remain. */
   async answerQuestions(
     workItemId: string,
-    answers: Array<{ externalId: string; answer: string }>,
+    answers: Array<{ externalId: string; answer: string; expectedRevision?: number; editExisting?: boolean; expectedAnswerRevision?: string | null }>,
   ): Promise<{ workItemId: string; unansweredCount: number }> {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions/answer`, {
       method: 'POST',

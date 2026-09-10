@@ -39,6 +39,14 @@ public sealed class HostIdentityStore
 
     public OperatorEnrollment? GetEnrollment(string userId) => this.Read(s => s.Enrollments.GetValueOrDefault(userId));
     public IReadOnlyList<string> EnrolledUserIds => this.Read(s => s.Enrollments.Values.Where(e => e.Enabled).Select(e => e.UserId).ToArray());
+    public IReadOnlyList<OperatorLink> ActiveProviderLinks => this.Read(s => s.Links.Where(l => s.Enrollments.TryGetValue(l.UserId, out var e)
+        && e.Enabled && e.Revision == l.Revision).ToArray());
+    public void PurgeExpiredChallenges()
+    {
+        var cutoff = this.clock.GetUtcNow().AddDays(-1);
+        if (!this.Read(s => s.Challenges.Any(c => c.ExpiresAt <= cutoff))) return;
+        this.Write(s => s.Challenges.RemoveAll(c => c.ExpiresAt <= cutoff));
+    }
     public string? ChallengeUserId(string token, string purpose) => this.Read(s => this.FindChallenge(s, token, purpose)?.UserId);
     public bool HasEnrollment => this.Read(s => s.Enrollments.Values.Any(e => e.Enabled));
 

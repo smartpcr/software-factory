@@ -13,7 +13,6 @@ public sealed class ChatTelegramSliceWorker(IServiceScopeFactory scopes, IOption
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var nextRetention = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -23,11 +22,6 @@ public sealed class ChatTelegramSliceWorker(IServiceScopeFactory scopes, IOption
                 {
                     var slice = scope.ServiceProvider.GetRequiredService<ChatTelegramSliceService>();
                     await slice.RunOutboundOnceAsync(stoppingToken);
-                }
-                if (DateTimeOffset.UtcNow >= nextRetention)
-                {
-                    await scope.ServiceProvider.GetRequiredService<ChatSliceRetention>().SweepAsync(DateTimeOffset.UtcNow, stoppingToken);
-                    nextRetention = DateTimeOffset.UtcNow.AddHours(1);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }

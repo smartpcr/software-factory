@@ -19,6 +19,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
 {
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
+        using var limits = ChatDbBudget.Limit(control);
         if (!runtime.EnsureHostOwnership()) return;
         await runtime.DeliveryGate.WaitAsync(ct);
         try
@@ -27,14 +28,21 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
             await this.RecoverAsync(ct);
             var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
             // The oldest ready item per connection/channel gets one slot before another item on that channel.
-            var candidates = await control.ChatDeliveries.Where(d => (d.State == "pending" || d.State == "retry") && d.NextAttemptAt <= now)
-                .OrderBy(d => d.NextAttemptAt).ThenBy(d => d.CreatedAt).Take(500).ToListAsync(ct);
-            var fair = candidates.GroupBy(d => (d.ConnectionId, d.ChannelId)).Select(g => g.First()).Take(20).ToArray();
+            var candidates = await control.ChatDeliveries.FromSqlInterpolated($"""
+                SELECT * FROM chat_deliveries WHERE Id IN (SELECT Id FROM
+                  (SELECT Id, ROW_NUMBER() OVER (PARTITION BY ConnectionId,ChannelId ORDER BY NextAttemptAt,CreatedAt,Id) AS position
+                   FROM chat_deliveries WHERE State IN ('pending','retry') AND NextAttemptAt <= {now}) WHERE position=1)
+                """).ToListAsync(ct);
+            static string Channel(ChatDeliveryRow d) => d.ConnectionId + "\0" + d.ChannelId;
+            var ordered = candidates.OrderBy(Channel, StringComparer.Ordinal).ToArray();
+            var fair = ordered.Where(d => StringComparer.Ordinal.Compare(Channel(d), runtime.LastScheduledChannel) > 0)
+                .Concat(ordered.Where(d => StringComparer.Ordinal.Compare(Channel(d), runtime.LastScheduledChannel) <= 0)).Take(20).ToArray();
             foreach (var delivery in fair)
             {
+                runtime.LastScheduledChannel = Channel(delivery);
                 try { await this.SendAsync(delivery, ct); }
                 catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
-                { runtime.Health[delivery.ConnectionId] = ("degraded", "delivery-storage-unavailable", null, null); control.ChangeTracker.Clear(); }
+                { runtime.RecordHealth(delivery.ConnectionId, "degraded", "delivery-storage-unavailable", null, null); control.ChangeTracker.Clear(); }
             }
             await this.EditOnceAsync(ct);
         }
@@ -99,16 +107,32 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         address = address with { ConversationId = binding.ConversationId };
         var part = await control.ChatDeliveryMessages.Where(m => m.DeliveryId == delivery.Id && m.State == "pending").OrderBy(m => m.PartKey).FirstOrDefaultAsync(ct);
         if (part is null) { delivery.State = "sent"; await budget.SaveAsync(control, ct); return; }
-        if (part.ControlsRetired) { part.State = "cancelled"; await budget.SaveAsync(control, ct); return; }
+        if (part.ControlsRetired || part.ExpiresAt <= now.ToUnixTimeMilliseconds()) { part.State = "cancelled"; await budget.SaveAsync(control, ct); return; }
         var subscription = await control.ChatSubscriptions.AsNoTracking().SingleAsync(s => s.Id == target.SubscriptionId, ct);
         var actions = new List<ChatSemanticAction>();
         var capabilities = providers.Resolve(target.ProviderId)!.Descriptor.Capabilities;
+        foreach (var previousToken in await control.ChatActionTokens.Where(t => t.DeliveryMessageId == part.Id && t.State == "active").ToListAsync(ct)) previousToken.State = "retired";
         if (target.Interactive && capabilities.Buttons && part.QuestionId is not null && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
         {
-            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+            var token = NewActionToken();
             control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id,
-                Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision, ExpiresAt = now.AddDays(7).ToUnixTimeMilliseconds() });
+                Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision,
+                ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
             actions.Add(new("Answer", token, "question.answer"));
+        }
+        else if (target.Interactive && capabilities.Buttons && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
+        {
+            var kinds = part.ActionKind is not null ? new[] { part.ActionKind }
+                : notification.Kind == "workstream-stalled" && notification.WorkstreamId is not null ? new[] { "workstream.retry", "workstream.accept", "workstream.cancel", "workstream.restart" }
+                : Array.Empty<string>();
+            foreach (var kind in kinds)
+            {
+                var token = NewActionToken();
+                control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id, Action = kind,
+                    ActorId = part.ConfirmationActorId, ExpectedRevision = part.ExpectedRevision,
+                    ExpiresAt = part.ExpiresAt ?? Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
+                actions.Add(new(part.ConfirmationActorId is null ? kind.Split('.').Last() : "Confirm restart", token, kind));
+            }
         }
         var rendered = Bound(policy.Render(notification, part, subscription.ContentMode, await secrets.ValuesAsync(connection, ct), actions), capabilities);
         // Revalidate after session opening/provisioning, immediately before a durable send claim.
@@ -136,10 +160,14 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         }
     }
 
+    private static string NewActionToken() => "a1_" + Convert.ToBase64String(RandomNumberGenerator.GetBytes(16)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
     internal static ChatSemanticNotification Bound(ChatSemanticNotification value, ChatProviderCapabilities caps)
     {
         var limit = Math.Max(1, Math.Min(caps.MaxTextCharacters, caps.MaxPayloadBytes / 4));
-        return value with { Body = value.Body[..Math.Min(value.Body.Length, limit)], Actions = value.Actions.Where(a => a.Token.Length <= caps.MaxActionBytes).ToArray() };
+        var length = Math.Min(value.Body.Length, limit);
+        if (length < value.Body.Length && length > 0 && char.IsHighSurrogate(value.Body[length - 1])) length--;
+        return value with { Body = value.Body[..length], Actions = value.Actions.Where(a => a.Token.Length <= caps.MaxActionBytes).ToArray() };
     }
 
     private void Failure(ChatDeliveryRow delivery, ChatProviderFailure failure)
@@ -212,7 +240,8 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                                 ControlsRetired = part.ControlsRetired, EditState = part.ControlsRetired ? "pending" : "none" });
                     }
                     if (delivery.State == "sending") delivery.State = await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.Id != part.Id && m.State == "pending", ct) ? "pending" : "sent";
-                    runtime.Health[delivery.ConnectionId] = ("ready", null, clock.GetUtcNow().ToUnixTimeMilliseconds(), null);
+                    delivery.OwnerProcessInstanceId = null; delivery.RecoveryDeadline = null;
+                    runtime.RecordHealth(delivery.ConnectionId, "ready", null, clock.GetUtcNow().ToUnixTimeMilliseconds(), null);
                 }
                 part.RenderedRevision = Math.Max(part.RenderedRevision, checkpoint.Revision);
                 part.EditState = part.DesiredRevision > part.RenderedRevision || part.ControlsRetired && checkpoint.Kind == "send" ? "pending" : "none";

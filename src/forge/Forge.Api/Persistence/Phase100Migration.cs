@@ -59,7 +59,7 @@ public static class Phase100Migration
         {
             ChatConfigurationModel.Configure(mb);
             mb.Entity<ChatNotificationRow>().ToTable("chat_notifications").HasKey(x => x.Id);
-            ChatDeliveryModel.Configure(mb);
+            ChatDeliveryModel.ConfigureDelivery(mb);
         }
     }
 }

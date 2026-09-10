@@ -43,6 +43,11 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
                         || !await db.DeliverableQuestions.AnyAsync(q => q.WorkItemId == input.WorkItemId, ct)) parentId = null;
                 }
             }
+            else if (child is null && input.WorkItemId is not null)
+            {
+                var planningParent = await db.StorySpawns.AsNoTracking().SingleOrDefaultAsync(s => s.Id == input.WorkItemId || s.StoryId == input.WorkItemId, ct);
+                if (planningParent is not null && await db.DeliverableQuestions.AnyAsync(q => q.WorkItemId == input.WorkItemId, ct)) parentId = planningParent.Id;
+            }
             // An explicit parent alone is valid only for a parent status/action event, never proof of child ownership.
             if (childId is null) parentId = input.SpawnId;
             if (parentId is null || input.SpawnId is not null && input.SpawnId != parentId
