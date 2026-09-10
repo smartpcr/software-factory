@@ -45,6 +45,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 { runtime.RecordHealth(delivery.ConnectionId, "degraded", "delivery-storage-unavailable", null, null); control.ChangeTracker.Clear(); }
             }
             await this.EditOnceAsync(ct);
+            await this.RetireTopicsAsync(ct);
         }
         finally { runtime.DeliveryGate.Release(); }
     }
@@ -112,15 +113,20 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         var actions = new List<ChatSemanticAction>();
         var capabilities = providers.Resolve(target.ProviderId)!.Descriptor.Capabilities;
         foreach (var previousToken in await control.ChatActionTokens.Where(t => t.DeliveryMessageId == part.Id && t.State == "active").ToListAsync(ct)) previousToken.State = "retired";
-        if (target.Interactive && capabilities.Buttons && part.QuestionId is not null && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
+        if (target.Interactive && capabilities.Buttons && part.QuestionId is not null && part.ActionKind != "question.prompt" && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
         {
-            var token = NewActionToken();
-            control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id,
-                Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision,
-                ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
-            actions.Add(new("Answer", token, "question.answer"));
+            var choices = ChatPayloadConverter.Read(notification)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision)?.Choices ?? [];
+            for (var index = 0; index <= choices.Count; index++)
+            {
+                var token = NewActionToken(); var custom = index == choices.Count;
+                // The custom token also accepts an explicitly supplied answer from generic clients.
+                control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id,
+                    Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision, ChoiceIndex = custom ? null : index,
+                    ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
+                actions.Add(new(custom ? "Custom answer" : choices[index], token, "question.answer"));
+            }
         }
-        else if (target.Interactive && capabilities.Buttons && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
+        else if (target.Interactive && capabilities.Buttons && part.ActionKind != "question.prompt" && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
         {
             var kinds = part.ActionKind is not null ? new[] { part.ActionKind }
                 : notification.Kind == "workstream-stalled" && notification.WorkstreamId is not null ? new[] { "workstream.retry", "workstream.accept", "workstream.cancel", "workstream.restart" }
@@ -134,7 +140,8 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 actions.Add(new(part.ConfirmationActorId is null ? kind.Split('.').Last() : "Confirm restart", token, kind));
             }
         }
-        var rendered = Bound(policy.Render(notification, part, subscription.ContentMode, await secrets.ValuesAsync(connection, ct), actions), capabilities);
+        var rendered = policy.Render(notification, part, subscription.ContentMode, await secrets.ValuesAsync(connection, ct), actions);
+        if (connection.ProviderId != "telegram") rendered = Bound(rendered, capabilities);
         // Revalidate after session opening/provisioning, immediately before a durable send claim.
         if (await resolver.ValidateAsync(target, notification, ct) is { } changed) { await this.CancelAsync(delivery, changed, ct); return; }
         part.RenderedJson = JsonSerializer.Serialize(rendered with { Actions = [] });
@@ -146,9 +153,9 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         ChatProviderResult<ChatSendReceipt> sent;
         try { sent = await session.Provider.SendAsync(address, rendered, timeout.Token); }
         catch { sent = ChatProviderResult<ChatSendReceipt>.Fail(ChatFailureKind.UnknownOutcome, "send-outcome-unknown"); }
-        if (sent.Succeeded && sent.Value!.Messages.Count > 0 && sent.Value.Messages.All(m => m.Address == address && !string.IsNullOrEmpty(m.MessageId)))
+        if (sent.Value is { Messages.Count: > 0 } && sent.Value.Messages.All(m => m.Address == address && !string.IsNullOrEmpty(m.MessageId)))
         {
-            runtime.Checkpoints[part.Id] = new("send", part.Id, sent.Value, Revision: part.DesiredRevision);
+            runtime.Checkpoints[part.Id] = new("send", part.Id, sent.Value, Revision: part.DesiredRevision, Uncertain: !sent.Succeeded);
             // A storage exception leaves the successful receipt in memory. Next tick retries only this checkpoint.
             await this.FlushCheckpointsAsync(ct);
         }
@@ -176,6 +183,13 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         delivery.State = failure.Kind switch { ChatFailureKind.UnknownOutcome => "uncertain", ChatFailureKind.RateLimited or ChatFailureKind.Unavailable => "retry", _ => "failed" };
         delivery.LastError = failure.Kind switch { ChatFailureKind.UnknownOutcome => "send-outcome-unknown", ChatFailureKind.RateLimited => "rate-limited",
             ChatFailureKind.Unavailable => "provider-unavailable", ChatFailureKind.Unauthorized => "provider-permission-denied", _ => "provider-configuration-error" };
+        if (failure.Kind == ChatFailureKind.InvalidPayload) delivery.LastError = failure.Code switch
+        {
+            "render-payload-limit:callback_data:64" or "render-payload-limit:action-key:25" or "render-payload-limit:button-label:256"
+                or "render-payload-limit:buttons:20" or "render-payload-limit:text:65536" or "render-payload-limit:payload-bytes:32768"
+                or "render-payload-limit:edit-text:4096" => failure.Code,
+            _ => "render-payload-limit",
+        };
         var delay = failure.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, Math.Min(delivery.Attempts, 8))) + Random.Shared.NextDouble());
         delay = TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 1, 86400));
         delivery.NextAttemptAt = clock.GetUtcNow().Add(delay).ToUnixTimeMilliseconds();
@@ -229,19 +243,22 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 var delivery = await control.ChatDeliveries.SingleAsync(d => d.Id == part.DeliveryId, ct);
                 if (checkpoint.Kind == "send")
                 {
-                    part.MessageId = checkpoint.Send!.Messages[0].MessageId; part.State = "sent";
-                    for (var index = 1; index < checkpoint.Send.Messages.Count; index++)
+                    // Telegram places controls on the last split message; this remains the token's canonical reference.
+                    part.MessageId = checkpoint.Send!.Messages[^1].MessageId; part.State = "sent";
+                    if (checkpoint.Uncertain) { part.ControlsRetired = true; delivery.State = "uncertain"; delivery.LastError = "partial-send-outcome-unknown"; }
+                    for (var index = 0; index < checkpoint.Send.Messages.Count - 1; index++)
                     {
-                        var partKey = part.PartKey + ":" + index;
+                        var partKey = part.PartKey + ":" + (index + 1);
                         if (!await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.PartKey == partKey, ct))
                             control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, PartKey = partKey, QuestionId = part.QuestionId,
                                 ExpectedRevision = part.ExpectedRevision, MessageId = checkpoint.Send.Messages[index].MessageId,
                                 AddressJson = JsonSerializer.Serialize(checkpoint.Send.Messages[index].Address), State = "sent", RenderedRevision = checkpoint.Revision,
-                                ControlsRetired = part.ControlsRetired, EditState = part.ControlsRetired ? "pending" : "none" });
+                                ControlsRetired = part.ControlsRetired, EditState = part.ControlsRetired ? "pending" : "none",
+                                ActionKind = part.ActionKind, ConfirmationActorId = part.ConfirmationActorId, ExpiresAt = part.ExpiresAt });
                     }
                     if (delivery.State == "sending") delivery.State = await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.Id != part.Id && m.State == "pending", ct) ? "pending" : "sent";
                     delivery.OwnerProcessInstanceId = null; delivery.RecoveryDeadline = null;
-                    runtime.RecordHealth(delivery.ConnectionId, "ready", null, clock.GetUtcNow().ToUnixTimeMilliseconds(), null);
+                    runtime.RecordHealth(delivery.ConnectionId, checkpoint.Uncertain ? "degraded" : "ready", checkpoint.Uncertain ? "partial-send-outcome-unknown" : null, clock.GetUtcNow().ToUnixTimeMilliseconds(), null);
                 }
                 part.RenderedRevision = Math.Max(part.RenderedRevision, checkpoint.Revision);
                 part.EditState = part.DesiredRevision > part.RenderedRevision || part.ControlsRetired && checkpoint.Kind == "send" ? "pending" : "none";

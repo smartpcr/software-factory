@@ -34,7 +34,7 @@ public sealed class ChatPluginEngineTests
         });
         Assert.Equal(expected, app.Services.GetRequiredService<IOptions<ChatBridgeOptions>>().Value.Enabled);
         Assert.Equal(expected, app.Services.GetRequiredService<IOptions<ChatTransportOptions>>().Value.Enabled);
-        Assert.False(ChatPluginInteractiveGate.IsAvailable);
+        Assert.Equal(enabled == "true" && engine == "plugins", ChatPluginInteractiveGate.AvailableFor(app.Services.GetRequiredService<IOptions<ChatPluginOptions>>().Value));
     }
 
     [Fact]

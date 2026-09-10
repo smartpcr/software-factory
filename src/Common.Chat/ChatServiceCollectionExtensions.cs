@@ -25,14 +25,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 /// </summary>
 public static class ChatServiceCollectionExtensions
 {
-    /// <summary>Register the Telegram transport (+ its named HTTP client) as the <see cref="IChatTransport"/>.</summary>
-    public static IServiceCollection AddTelegramChatTransport(this IServiceCollection services)
-    {
-        services.AddHttpClient(TelegramTransport.ClientName);
-        services.TryAddSingleton<IChatTransport, TelegramTransport>();
-        return services;
-    }
-
     /// <summary>Register the route⇄channel map over the app's <typeparamref name="TStore"/> (scoped — stores are usually DB-backed).</summary>
     public static IServiceCollection AddChatChannelMap<TStore>(this IServiceCollection services)
         where TStore : class, IChatChannelStore

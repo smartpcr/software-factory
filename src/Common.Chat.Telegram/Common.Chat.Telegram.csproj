@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Common.Chat.Telegram</RootNamespace>
+    <AssemblyName>Common.Chat.Telegram</AssemblyName>
+    <Description>Telegram Bot API provider and legacy transport adapter for Common.Chat.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Common.Chat\Common.Chat.csproj" />
+  </ItemGroup>
+</Project>

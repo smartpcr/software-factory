@@ -56,7 +56,8 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                 var rows = await products.CreateFor(owned.Product!.Slug).DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == owned.WorkItemId).ToListAsync(ct);
                 questions.AddRange(rows.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
                     .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First()).Where(q => string.IsNullOrEmpty(q.Answer))
-                    .Select(q => new ChatQuestionPayload(q.ExternalId, q.Id, includeQuestionText ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], credentials) : null)));
+                    .Select(q => new ChatQuestionPayload(q.ExternalId, q.Id, includeQuestionText ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], credentials) : null,
+                        includeQuestionText ? ChatContentPolicy.Choices(q.ChoicesJson, credentials) : null)));
             }
             notification.PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, notification.Title, notification.Body, questions, [], owned.Spawn?.StoryId));
             var subscriptions = await control.ChatSubscriptions.Where(s => s.ScopeKey == scope.Key && s.RetiredAt == null).ToListAsync(ct);

@@ -31,6 +31,7 @@ public sealed class ChatRuntimeWorker(IServiceScopeFactory scopes, ChatRuntimeSt
                     await supervisor.RefreshAsync(stoppingToken);
                     if (now >= reconcile) { await services.GetRequiredService<ChatScopeReconciler>().RunOnceAsync(stoppingToken); reconcile = now.AddMinutes(5); }
                     await services.GetRequiredService<ChatInboxService>().DispatchOnceAsync(stoppingToken);
+                    await services.GetRequiredService<ChatInboxResponseService>().RunOnceAsync(stoppingToken);
                     await services.GetRequiredService<ChatResultReconciler>().RunOnceAsync(stoppingToken);
                     await services.GetRequiredService<ChatDeliveryService>().RunOnceAsync(stoppingToken);
                 }

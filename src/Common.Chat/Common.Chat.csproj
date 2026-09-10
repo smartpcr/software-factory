@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <Product>Common Chat Bridge</Product>
-    <Description>App-agnostic chat bridge: platform transports (Telegram first), channel/topic mapping to app-defined routes, and an inbound long-poll pump with handler subscriptions. Persistence enters only through store seams — no EF, no app dependencies.</Description>
+    <Description>App-agnostic chat contracts, secret stores, channel/topic mapping and legacy inbound pump. Telegram protocol lives in Common.Chat.Telegram. Persistence enters only through store seams — no EF, no app dependencies.</Description>
     <RootNamespace>Common.Chat</RootNamespace>
     <AssemblyName>Common.Chat</AssemblyName>
   </PropertyGroup>

@@ -85,6 +85,15 @@ public sealed class ChatInboxRow
     public long? TerminalAt { get; set; }
     public string? Result { get; set; }
     public string? ActionReceiptId { get; set; }
+    public string? ResponseText { get; set; }
+    public string? ContentScopesJson { get; set; }
+    public long? CommandRevision { get; set; }
+    public string ResponseState { get; set; } = "none";
+    public string? ResponseMessageId { get; set; }
+    public string? ResponseOwner { get; set; }
+    public long? ResponseDeadline { get; set; }
+    public long NextResponseAt { get; set; }
+    public int ResponseAttempts { get; set; }
 }
 
 public sealed class ChatConnectionStateRow
@@ -117,6 +126,7 @@ public sealed class ChatActionTokenRow
     public string DeliveryMessageId { get; set; } = "";
     public string Action { get; set; } = "";
     public string? QuestionId { get; set; }
+    public int? ChoiceIndex { get; set; }
     public long ExpectedRevision { get; set; }
     public string? ActorId { get; set; }
     public long ExpiresAt { get; set; }

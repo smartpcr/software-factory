@@ -50,9 +50,11 @@ public sealed class ChatRetentionService(ControlDbContext control, IProductDbCon
                   AND ({purgeContent} OR TerminalAt<={ms30} OR CreatedAt<={ms90}) LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
-                UPDATE chat_inbox SET EnvelopeJson=NULL, State=CASE WHEN State IN ('pending','processing') THEN 'expired' ELSE State END,
+                UPDATE chat_inbox SET EnvelopeJson=NULL, ResponseText=NULL,
+                  ResponseState=CASE WHEN ResponseState='pending' THEN 'expired' ELSE ResponseState END,
+                  State=CASE WHEN State IN ('pending','processing') THEN 'expired' ELSE State END,
                   Result=CASE WHEN State IN ('pending','processing') THEN 'content-expired' ELSE Result END, TerminalAt=COALESCE(TerminalAt,{nowMs})
-                  WHERE Id IN (SELECT Id FROM chat_inbox WHERE EnvelopeJson IS NOT NULL AND ({purgeContent}
+                  WHERE Id IN (SELECT Id FROM chat_inbox WHERE (EnvelopeJson IS NOT NULL OR ResponseText IS NOT NULL) AND ({purgeContent}
                     OR (State='processed' AND TerminalAt<={ms7}) OR ReceivedAt<={ms30}) LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
@@ -69,7 +71,7 @@ public sealed class ChatRetentionService(ControlDbContext control, IProductDbCon
                 DELETE FROM chat_operator_links WHERE Id IN (SELECT Id FROM chat_operator_links WHERE RevokedAt<={ms90} LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
-                DELETE FROM chat_inbox WHERE Id IN (SELECT Id FROM chat_inbox WHERE TerminalAt<={ms90} AND State NOT IN ('pending','processing') LIMIT 100)
+                DELETE FROM chat_inbox WHERE Id IN (SELECT Id FROM chat_inbox WHERE TerminalAt<={ms90} AND State NOT IN ('pending','processing') AND ResponseState NOT IN ('sending','uncertain') LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
                 DELETE FROM chat_delivery_messages WHERE Id IN (SELECT m.Id FROM chat_delivery_messages m JOIN chat_deliveries d ON d.Id=m.DeliveryId
@@ -133,25 +135,30 @@ public sealed class ChatRetentionService(ControlDbContext control, IProductDbCon
                   AND (m.RenderedJson IS NOT NULL OR m.LastError IS NOT NULL OR m.ControlsRetired=0) LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
-                UPDATE chat_inbox SET EnvelopeJson=NULL,State=CASE WHEN State IN ('pending','processing') THEN 'expired' ELSE State END,
+                UPDATE chat_inbox SET EnvelopeJson=NULL,ResponseText=NULL,ResponseState=CASE WHEN ResponseState='pending' THEN 'expired' ELSE ResponseState END,
+                  State=CASE WHEN State IN ('pending','processing') THEN 'expired' ELSE State END,
                   TerminalAt=COALESCE(TerminalAt,{now}),Result='content-purged'
-                WHERE Id IN (SELECT i.Id FROM chat_inbox i WHERE i.EnvelopeJson IS NOT NULL AND EXISTS (
+                WHERE Id IN (SELECT i.Id FROM chat_inbox i WHERE (i.EnvelopeJson IS NOT NULL OR i.ResponseText IS NOT NULL) AND (EXISTS (
+                  SELECT 1 FROM json_each(COALESCE(i.ContentScopesJson,'[]')) scope
+                  WHERE json_extract(scope.value,'$.ProductId')={product.Id} AND json_extract(scope.value,'$.SpawnId')={spawnId}) OR EXISTS (
                   SELECT 1 FROM chat_delivery_messages m JOIN chat_deliveries d ON d.Id=m.DeliveryId
                   JOIN chat_notifications n ON n.Id=d.NotificationId
                   WHERE n.Platform='plugins' AND n.ProductId={product.Id} AND n.SpawnId={spawnId} AND d.ConnectionId=i.ConnectionId
                   AND ((m.MessageId=json_extract(i.EnvelopeJson,'$.ReplyToMessageId') AND m.AddressJson=json_extract(i.EnvelopeJson,'$.Address'))
-                    OR EXISTS (SELECT 1 FROM chat_action_tokens t WHERE t.DeliveryMessageId=m.Id AND 'sha256:'||t.Hash=json_extract(i.EnvelopeJson,'$.ActionToken')))) LIMIT 100)
+                    OR EXISTS (SELECT 1 FROM chat_action_tokens t WHERE t.DeliveryMessageId=m.Id AND 'sha256:'||t.Hash=json_extract(i.EnvelopeJson,'$.ActionToken'))))) LIMIT 100)
                 """, ct);
             await tx.CommitAsync(ct);
         }, ct);
         var notifications = control.ChatNotifications.Where(n => n.Platform == "plugins" && n.ProductId == product.Id && n.SpawnId == spawnId);
         var copies = control.ChatDeliveries.Where(d => notifications.Any(n => n.Id == d.NotificationId));
         var inboundRemaining = await control.Database.SqlQuery<int>($"""
-            SELECT COUNT(*) AS Value FROM chat_inbox i WHERE i.EnvelopeJson IS NOT NULL AND EXISTS (
+            SELECT COUNT(*) AS Value FROM chat_inbox i WHERE (i.EnvelopeJson IS NOT NULL OR i.ResponseText IS NOT NULL) AND (EXISTS (
+              SELECT 1 FROM json_each(COALESCE(i.ContentScopesJson,'[]')) scope
+              WHERE json_extract(scope.value,'$.ProductId')={product.Id} AND json_extract(scope.value,'$.SpawnId')={spawnId}) OR EXISTS (
               SELECT 1 FROM chat_delivery_messages m JOIN chat_deliveries d ON d.Id=m.DeliveryId JOIN chat_notifications n ON n.Id=d.NotificationId
               WHERE n.Platform='plugins' AND n.ProductId={product.Id} AND n.SpawnId={spawnId} AND d.ConnectionId=i.ConnectionId
               AND ((m.MessageId=json_extract(i.EnvelopeJson,'$.ReplyToMessageId') AND m.AddressJson=json_extract(i.EnvelopeJson,'$.Address'))
-                OR EXISTS (SELECT 1 FROM chat_action_tokens t WHERE t.DeliveryMessageId=m.Id AND 'sha256:'||t.Hash=json_extract(i.EnvelopeJson,'$.ActionToken'))))
+                OR EXISTS (SELECT 1 FROM chat_action_tokens t WHERE t.DeliveryMessageId=m.Id AND 'sha256:'||t.Hash=json_extract(i.EnvelopeJson,'$.ActionToken')))))
             """).SingleAsync(ct);
         return new { Scrubbed = count,
             ContentRemaining = await notifications.CountAsync(n => n.Body != "" || n.PayloadJson != null, ct)

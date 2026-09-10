@@ -31,7 +31,8 @@ public sealed partial class ChatConfigurationService
             || write.ConversationPolicy == "topic" && !provider.Descriptor.Capabilities.Topics
             || write.ConversationPolicy == "thread" && !provider.Descriptor.Capabilities.Threads)
             throw new ChatConfigurationException("unsupported-conversation-policy");
-        if (write.Interactive && !ChatPluginInteractiveGate.IsAvailable)
+        if (write.Interactive && (!ChatPluginInteractiveGate.IsAvailable || options.Value.TelegramSlice.Enabled
+            || scope.Kind == "host" || !provider.Descriptor.Capabilities.Buttons || provider.Descriptor.Capabilities.Reception == ChatReceptionMode.None))
             throw new ChatConfigurationException("interactive-mode-unavailable", 409);
         if (write.CatalogVersion != 1) throw new ChatConfigurationException("unsupported-event-catalog");
         if (write.ContentMode is not ("metadata" or "redacted")) throw new ChatConfigurationException("unsupported-content-mode");
@@ -53,7 +54,7 @@ public sealed partial class ChatConfigurationService
         row.EventKindsJson = JsonSerializer.Serialize(kinds); row.ActivationGeneration = parent?.ActivationGeneration ?? 0; row.Revision++;
         if (parent is not null) parent.Revision++;
         foreach (var binding in await control.ChatConversationBindings.Where(b => b.SubscriptionId == id && b.RetiredAt == null).ToListAsync(ct))
-        { binding.RetiredAt = DateTimeOffset.UtcNow; binding.Revision++; }
+        { binding.SubscriptionRevision = row.Revision; binding.Revision++; }
         await this.SaveAsync(ct);
         await transaction.CommitAsync(ct);
         return row;

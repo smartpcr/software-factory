@@ -90,9 +90,12 @@ public sealed class HostIdentityStore
         return s.Enrollments[challenge.UserId];
     });
 
-    public OperatorLink? RedeemLinkChallenge(string token, string provider, string tenantId, string providerUserId) => this.Write(s =>
+    public OperatorLink? RedeemLinkChallenge(string token, string provider, string tenantId, string providerUserId)
+        => token.Length == 64 ? this.RedeemLinkChallengeHash(Hash(token), provider, tenantId, providerUserId) : null;
+
+    internal OperatorLink? RedeemLinkChallengeHash(string hash, string provider, string tenantId, string providerUserId) => this.Write(s =>
     {
-        var challenge = this.FindChallenge(s, token, "link");
+        var challenge = this.FindChallengeHash(s, hash, "link");
         if (challenge is null || challenge.Provider != provider || challenge.TenantId != tenantId || challenge.ProviderUserId != providerUserId)
             return null;
         s.Challenges.Remove(challenge);
@@ -122,7 +125,8 @@ public sealed class HostIdentityStore
         if (!s.Enrollments.TryGetValue(userId, out var e) || !e.Enabled)
             throw new InvalidOperationException("Needs operator enrollment.");
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        s.Challenges.RemoveAll(c => c.ExpiresAt <= this.clock.GetUtcNow() || (c.UserId == userId && c.Purpose == purpose));
+        s.Challenges.RemoveAll(c => c.ExpiresAt <= this.clock.GetUtcNow() || (c.UserId == userId && c.Purpose == purpose
+            && c.Provider == provider && c.TenantId == tenantId && c.ProviderUserId == providerUserId));
         s.Challenges.Add(new(Hash(token), userId, e.Revision, this.clock.GetUtcNow().AddMinutes(2), purpose, provider, tenantId, providerUserId));
         return token;
     });
@@ -130,7 +134,11 @@ public sealed class HostIdentityStore
     private OperatorChallenge? FindChallenge(IdentityState state, string token, string purpose)
     {
         if (token.Length != 64) return null;
-        var hash = Hash(token);
+        return this.FindChallengeHash(state, Hash(token), purpose);
+    }
+
+    private OperatorChallenge? FindChallengeHash(IdentityState state, string hash, string purpose)
+    {
         return state.Challenges.SingleOrDefault(c => c.Hash == hash && c.Purpose == purpose && c.ExpiresAt > this.clock.GetUtcNow()
             && state.Enrollments.TryGetValue(c.UserId, out var e) && e.Enabled && e.Revision == c.Revision);
     }

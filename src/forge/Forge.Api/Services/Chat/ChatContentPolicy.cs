@@ -7,6 +7,7 @@
 namespace Forge.Api.Services.Chat;
 
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Common.Chat;
 using Forge.Api.Persistence;
 using Microsoft.Extensions.Options;
@@ -26,7 +27,9 @@ public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
             "queue-strain" => "Forge · Queue pressure", "human-interaction" => "Forge · Host action needed", _ => "Forge notification",
         };
         var body = part.ControlsRetired ? "This request is closed. Open Forge for the current status." : "Open Forge to review the current status.";
-        if (part.ConfirmationActorId is not null && !part.ControlsRetired) body = "Confirm restart of this target. This resets its worktree and run. Confirmation expires in 30 seconds.";
+        if (part.ConfirmationActorId is not null && !part.ControlsRetired) body = part.ActionKind == "question.prompt"
+            ? "Reply to this message with your answer. Only the operator who requested this prompt can answer it. Expires in 10 minutes."
+            : "Confirm restart of this target. This resets its worktree and run. Confirmation expires in 30 seconds.";
         if (row.SpawnId is not null) body += $"\nTarget: {row.SpawnId} / {row.WorkstreamId ?? row.ArtifactKey ?? "parent"}";
         var question = ChatPayloadConverter.Read(row)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision);
         var allow = !part.ControlsRetired && this.AllowsQuestions(row.ScopeKind == "host" ? null : row.ProductId, subscriptionMode)
@@ -36,7 +39,19 @@ public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
         var linkStart = link.IndexOf("\n\n", StringComparison.Ordinal);
         if (linkStart >= 0) body += link[linkStart..];
         return new(row.Id, row.Kind, Redact(title, credentials), Redact(body, credentials), part.DesiredRevision,
-            allow ? actions : [], part.QuestionId);
+            allow ? actions : [], part.QuestionId, ForceReply: allow && part.ActionKind == "question.prompt");
+    }
+
+    public static IReadOnlyList<string> Choices(string? json, IEnumerable<string> credentials)
+    {
+        if (json is null) return [];
+        try
+        {
+            var values = JsonSerializer.Deserialize<string[]>(json);
+            // Unsupported/unsafe choices use the explicit custom-answer path, never a changed choice value.
+            return values is null || values.Length > 10 || values.Any(v => string.IsNullOrWhiteSpace(v) || v.Length > 200 || Redact(v, credentials) != v) ? [] : values;
+        }
+        catch (JsonException) { return []; }
     }
 
     public bool AcceptsAnswer(string? text, IEnumerable<string> credentials) => !string.IsNullOrWhiteSpace(text)

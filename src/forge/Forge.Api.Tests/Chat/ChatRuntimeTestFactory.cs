@@ -114,6 +114,7 @@ internal sealed class RuntimeCheckpointFailure : SaveChangesInterceptor
                 && db.Set<ChatDeliveryRow>().Local.Any(d => d.Id == e.Entity.DeliveryId && d.ConnectionId == "alpha-one")),
             "inbox" => db.ChangeTracker.Entries<ChatInboxRow>().Any(e => e.State == EntityState.Added),
             "dispatch" => db.ChangeTracker.Entries<ChatInboxRow>().Any(e => e.Entity.State == "processed"),
+            "response" => db.ChangeTracker.Entries<ChatInboxRow>().Any(e => e.Entity.ResponseState == "sent"),
             "event" => db.ChangeTracker.Entries<ChatNotificationRow>().Any(e => e.State == EntityState.Added && e.Entity.Platform == "plugins"),
             _ => false,
         };

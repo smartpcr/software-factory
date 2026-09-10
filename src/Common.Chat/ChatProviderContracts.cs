@@ -46,7 +46,7 @@ public sealed record ChatConversation(ChatAddress Address, string? RootMessageId
 public sealed record ChatMessageReference(ChatAddress Address, string MessageId);
 public sealed record ChatSemanticAction(string Label, string Token, string Kind);
 public sealed record ChatSemanticNotification(string Id, string Kind, string Title, string Body,
-    long Revision, IReadOnlyList<ChatSemanticAction> Actions, string? QuestionReference = null);
+    long Revision, IReadOnlyList<ChatSemanticAction> Actions, string? QuestionReference = null, bool ForceReply = false);
 public sealed record ChatSendReceipt(IReadOnlyList<ChatMessageReference> Messages);
 public sealed record ChatProviderFailure(ChatFailureKind Kind, string Code, TimeSpan? RetryAfter = null);
 
@@ -66,7 +66,8 @@ public sealed record ChatSettingsValidation(bool Valid, string? Code = null)
 
 public sealed record ChatInboundEnvelope(string ProviderId, string ConnectionId, string DeliveryKey,
     ChatAddress Address, string SenderId, string Kind, string? MessageId, string? ReplyToMessageId,
-    string? Text, string? ActionToken, DateTimeOffset ReceivedAt, int Version = 1);
+    string? Text, string? ActionToken, DateTimeOffset ReceivedAt, int Version = 1,
+    string? CallbackQueryId = null, string? Command = null, string? CommandArgument = null);
 public enum ChatInboundAcceptance { Accepted, Duplicate, Retry }
 
 public interface IChatInboundSink

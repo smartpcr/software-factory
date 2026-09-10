@@ -27,7 +27,7 @@ public static class ChatEventCatalog
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 
-public sealed record ChatQuestionPayload(string Id, long Revision, string? Text);
+public sealed record ChatQuestionPayload(string Id, long Revision, string? Text, IReadOnlyList<string>? Choices = null);
 public sealed record ChatEventPayload(int Version, string Title, string Body, IReadOnlyList<ChatQuestionPayload> Questions,
     IReadOnlyList<ChatSemanticAction> LegacyActions, string? StoryId = null);
 public sealed record ChatEventInput(string Kind, string DedupeKey, string? ProductId = null, string? SpawnId = null,

@@ -359,6 +359,8 @@ public static class PhaseMigrationCatalog
             ControlTables: new[] { "chat_inbox", "chat_connection_state", "chat_receiver_state" }, ProductTables: Array.Empty<string>()),
         new PhaseMigrationSpec(103, PhaseMigrationKind.Control,
             ControlTables: new[] { "chat_operator_links", "chat_link_challenges", "chat_action_tokens" }, ProductTables: Array.Empty<string>()),
+        new PhaseMigrationSpec(104, PhaseMigrationKind.Control,
+            ControlTables: new[] { "chat_inbox", "chat_action_tokens", "chat_conversation_bindings" }, ProductTables: Array.Empty<string>()),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

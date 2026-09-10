@@ -22,9 +22,9 @@ public static class ChatBridgeEndpoints
 {
     public static WebApplication MapChatBridgeEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/chat/availability", () => Results.Ok(new
+        app.MapGet("/api/chat/availability", (IOptions<ChatPluginOptions> options) => Results.Ok(new
         {
-            interactiveAvailable = ChatPluginInteractiveGate.IsAvailable,
+            interactiveAvailable = ChatPluginInteractiveGate.AvailableFor(options.Value),
             reason = ChatPluginInteractiveGate.Reason,
         })).WithName("ChatPluginAvailability");
 

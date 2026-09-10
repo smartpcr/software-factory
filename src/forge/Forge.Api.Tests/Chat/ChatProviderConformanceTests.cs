@@ -18,6 +18,34 @@ using Xunit;
 public sealed class ChatProviderConformanceTests
 {
     [Theory]
+    [InlineData("FakeAlpha")]
+    [InlineData("FakeBeta")]
+    [InlineData("telegram")]
+    public async Task Shared_provider_contract_qualifies_destinations_receipts_edits_and_unsupported_policies(string id)
+    {
+        using var telegram = new TelegramProviderFixture();
+        IChatProviderPlugin provider = id == "telegram" ? telegram.Provider : new FakeChatProvider(id, id == "FakeAlpha");
+        var config = id == "telegram" ? telegram.Configuration() : new ChatConnectionConfiguration("one", id, "installation", 1, 1,
+            ChatPluginTestFactory.EmptySettings, new Dictionary<string, ChatSecretReference>());
+        IChatSecretStore secrets = id == "telegram" ? telegram : new FakeSecretStore();
+        var registry = new ChatProviderRegistry([provider]); Assert.Same(provider, registry.Resolve(id));
+        await using var session = (await registry.Resolve(id)!.OpenSessionAsync(config, secrets)).Value!;
+        var address = id == "telegram" ? TelegramProviderFixture.Address(topic: null) : new ChatAddress("one", "tenant", "channel");
+        var destination = (await session.ValidateDestinationAsync(address)).Value!; Assert.Equal(address, destination.Address);
+        var flat = (await session.EnsureConversationAsync(destination, ChatConversationPolicy.Flat, "parent", "Forge")).Value!;
+        var notification = new ChatSemanticNotification("event", "open-questions", "Forge", "Hello café", 1,
+            [new("Answer", TelegramProviderFixture.Key, "question.answer")]);
+        var receipt = (await session.SendAsync(flat.Address, notification)).Value!;
+        Assert.All(receipt.Messages, message => { Assert.Equal(flat.Address, message.Address); Assert.False(string.IsNullOrEmpty(message.MessageId)); });
+        Assert.True((await session.EditAsync(receipt.Messages[0], notification with { Revision = 2, Actions = [] })).Succeeded);
+        Assert.False((await session.EditAsync(receipt.Messages[0] with { Address = address with { ConnectionId = "other" } }, notification)).Succeeded);
+        Assert.Equal(ChatFailureKind.InvalidPayload, (await session.SendAsync(flat.Address, notification with { Actions = [new("Answer", new string('界', 65), "question.answer")] })).Failure!.Kind);
+        var unsupported = provider.Descriptor.Capabilities.Topics ? ChatConversationPolicy.Thread : ChatConversationPolicy.Topic;
+        Assert.Equal(ChatFailureKind.NotSupported, (await session.EnsureConversationAsync(destination, unsupported, "unsupported", "Forge")).Failure!.Kind);
+        Assert.True((await session.RetireConversationAsync(flat)).Succeeded);
+    }
+
+    [Theory]
     [InlineData("FakeAlpha", true)]
     [InlineData("FakeBeta", false)]
     public async Task Connections_Conversations_And_Message_Addresses_Remain_Independent(string id, bool topics)

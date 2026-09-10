@@ -38,6 +38,7 @@ public sealed partial class ChatInboxService
                     row.NextAttemptAt = now + Math.Min(300000, 1000L << Math.Min(row.Attempts, 8));
                     if (row.State == "dead-letter") row.TerminalAt = now;
                 }
+                if (row.State is "processed" or "rejected" or "dead-letter") await this.QueueResponseAsync(row, ct);
                 await budget.SaveAsync(control, ct);
             }
         }
@@ -49,6 +50,9 @@ public sealed partial class ChatInboxService
         if (row.EnvelopeJson is null) return "content-expired";
         var envelope = JsonSerializer.Deserialize<ChatInboundEnvelope>(row.EnvelopeJson);
         if (envelope is not { Version: 1 }) return "unsupported-envelope";
+        var prepared = await this.PrepareInteractionAsync(row, envelope, ct);
+        if (prepared.Result is not null) return prepared.Result;
+        envelope = prepared.Envelope;
         ChatActionTokenRow? token = null;
         ChatDeliveryMessageRow? message = null;
         if (envelope.ActionToken is { Length: > 0 })
@@ -57,6 +61,16 @@ public sealed partial class ChatInboxService
             token = await control.ChatActionTokens.SingleOrDefaultAsync(t => t.Hash == hash, ct);
             if (token is null || token.State != "active" || token.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds()) return "stale-action";
             message = await control.ChatDeliveryMessages.SingleOrDefaultAsync(m => m.Id == token.DeliveryMessageId, ct);
+            if ((envelope.ProviderId == "telegram" || envelope.ReplyToMessageId is not null) && message?.MessageId != envelope.ReplyToMessageId) return "unmatched-message";
+        }
+        else if (envelope.Command?.StartsWith("legacy-", StringComparison.Ordinal) == true)
+        {
+            var aliases = await control.ChatDeliveryMessages.Where(m => m.MessageId == envelope.ReplyToMessageId && m.PartKey.StartsWith("legacy:") && !m.ControlsRetired).ToListAsync(ct);
+            var exact = aliases.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address).ToArray();
+            if (exact.Length != 1) return "legacy-alias-repair-required";
+            message = exact[0];
+            if (message.QuestionId is not null) return "select-one-question";
+            token = new() { Action = "workstream." + envelope.Command[7..], ExpectedRevision = message.ExpectedRevision };
         }
         else if (envelope.ReplyToMessageId is not null)
         {
@@ -69,8 +83,10 @@ public sealed partial class ChatInboxService
             || JsonSerializer.Deserialize<ChatAddress>(message.AddressJson) != envelope.Address) return "unmatched-message";
         var delivery = await control.ChatDeliveries.AsNoTracking().SingleAsync(d => d.Id == message.DeliveryId, ct);
         var notification = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == delivery.NotificationId, ct);
+        if (envelope.Command?.StartsWith("legacy-", StringComparison.Ordinal) == true && (notification.Kind != "workstream-stalled" || notification.WorkstreamId is null)) return "select-one-question";
         if (notification.ExpiresAt <= clock.GetUtcNow() || notification.Status is "resolved" or "superseded" or "expired") return "stale-action";
         var target = JsonSerializer.Deserialize<ChatDeliveryTarget>(delivery.TargetJson)!;
+        row.ContentScopesJson = JsonSerializer.Serialize(new[] { new { target.ProductId, target.SpawnId } });
         if (target.ConnectionId != envelope.ConnectionId || target.ProviderId != envelope.ProviderId) return "unmatched-connection";
         if (target.ScopeKind != "spawn") return "open-host-settings";
         using var validation = scopes.CreateScope();
@@ -82,7 +98,8 @@ public sealed partial class ChatInboxService
             WorkItemId: action == "question.answer" ? notification.WorkItemId : null,
             ArtifactKey: action.StartsWith("artifact.", StringComparison.Ordinal) ? notification.ArtifactKey : null);
         await validation.ServiceProvider.GetRequiredService<ForgeCapabilityAuthorizer>().RequireAsync(actor, action, actionTarget, ct);
-        if (token?.ActorId is { } boundActor && actor!.UserId != boundActor) return "confirmation-actor-mismatch";
+        if ((token?.ActorId ?? message.ConfirmationActorId) is { } boundActor && actor!.UserId != boundActor) return "confirmation-actor-mismatch";
+        if (message.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds()) return "stale-action";
         if (action.EndsWith(".restart", StringComparison.Ordinal) && token?.ActorId is null)
         {
             var key = "confirm:" + ChatEventCatalog.Hash(actor!.UserId + ":" + token!.ExpectedRevision);
@@ -108,7 +125,29 @@ public sealed partial class ChatInboxService
             var subscription = await control.ChatSubscriptions.AsNoTracking().SingleAsync(s => s.Id == delivery.SubscriptionId, ct);
             if (!policy.AllowsQuestions(product.Id, subscription.ContentMode)
                 || ChatPayloadConverter.Read(notification)?.Questions.Any(q => q.Id == message.QuestionId && q.Text is not null) != true) return "answer-in-forge";
-            if (string.IsNullOrWhiteSpace(envelope.Text)) return "answer-required";
+            var questionPayload = ChatPayloadConverter.Read(notification)?.Questions.SingleOrDefault(q => q.Id == message.QuestionId && q.Revision == revision);
+            if (token?.ChoiceIndex is { } choice)
+            {
+                if (questionPayload?.Choices is null || choice < 0 || choice >= questionPayload.Choices.Count) return "stale-action";
+                envelope = envelope with { Text = questionPayload.Choices[choice] };
+            }
+            if (string.IsNullOrWhiteSpace(envelope.Text))
+            {
+                if (token is null) return "answer-required";
+                var promptKey = "prompt:" + row.Id;
+                if (!await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.PartKey == promptKey, ct))
+                {
+                    control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, PartKey = promptKey, ActionKind = "question.prompt",
+                        QuestionId = message.QuestionId, ExpectedRevision = revision, ConfirmationActorId = actor!.UserId,
+                        ExpiresAt = clock.GetUtcNow().AddMinutes(10).ToUnixTimeMilliseconds() });
+                    var queued = await control.ChatDeliveries.SingleAsync(d => d.Id == delivery.Id, ct);
+                    queued.State = "pending"; queued.NextAttemptAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                    await budget.SaveAsync(control, ct); runtime.Signal();
+                }
+                return "answer-prompt-queued";
+            }
+            var connection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == delivery.ConnectionId, ct);
+            if (!policy.AcceptsAnswer(envelope.Text, await secrets.ValuesAsync(connection, ct))) return "safe-replacement-required";
             var latest = (await db.DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == notification.WorkItemId).ToListAsync(ct))
                 .Where(q => q.ExternalId.Equals(message.QuestionId, StringComparison.OrdinalIgnoreCase)).OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).FirstOrDefault();
             if (latest is null || latest.Id != revision) return "stale-revision";

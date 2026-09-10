@@ -36,7 +36,7 @@ public static class ChatPluginEndpoints
         api.MapGet("/chat/configuration", (IOptions<ChatPluginOptions> options) => new
         {
             options.Value.Enabled, options.Value.Engine, options.Value.HostId, options.Value.UnavailableReason,
-            InteractiveAvailable = ChatPluginInteractiveGate.IsAvailable,
+            InteractiveAvailable = ChatPluginInteractiveGate.AvailableFor(options.Value),
         }).WithMetadata(host);
         api.MapPost("/chat/retention/purge-content", async (ForgeActionContext action, ChatRetentionService retention, CancellationToken ct)
             => await retention.PurgeContentAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
@@ -54,6 +54,10 @@ public static class ChatPluginEndpoints
         }).WithMetadata(host);
         api.MapGet("/chat/connections/{connectionId}/destinations", async (string connectionId, string? productId, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
             => await service.ListDestinationsAsync(await action.ActorAsync(ct), connectionId, productId, ct)).WithMetadata(self);
+        api.MapGet("/chat/connections/{connectionId}/discovery", async (string connectionId, string? cursor, ForgeActionContext action, ChatProviderSetupService service, CancellationToken ct)
+            => await service.DiscoverAsync(await action.ActorAsync(ct), connectionId, cursor, ct)).WithMetadata(host);
+        api.MapPost("/chat/connections/{connectionId}/destinations/{id}/validate", async (string connectionId, string id, ForgeActionContext action, ChatProviderSetupService service, CancellationToken ct)
+            => await service.ValidateAsync(await action.ActorAsync(ct), connectionId, id, ct)).WithMetadata(host);
         api.MapPut("/chat/connections/{connectionId}/destinations/{id}", async (string connectionId, string id, ChatDestinationWrite request,
             ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
             => await service.PutDestinationAsync(await action.ActorAsync(ct), connectionId, id, request, ct)).WithMetadata(host);

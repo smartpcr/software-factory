@@ -92,7 +92,7 @@ public sealed class OperatorScopeSecurityTests
         Assert.True(await access.IsAllowedAsync(principal));
         sessions.RevokeUser("admin");
         Assert.False(await access.IsAllowedAsync(principal));
-        Assert.False(ChatPluginInteractiveGate.IsAvailable);
-        Assert.Throws<InvalidOperationException>(ChatPluginInteractiveGate.RequireAvailable);
+        Assert.False(ChatPluginInteractiveGate.AvailableFor(new ChatPluginOptions()));
+        Assert.Throws<InvalidOperationException>(() => ChatPluginInteractiveGate.RequireAvailable(new ChatPluginOptions()));
     }
 }

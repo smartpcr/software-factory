@@ -7,6 +7,7 @@
 namespace Forge.Api.Services.Chat;
 
 using Common.Chat;
+using Common.Chat.Telegram;
 using Forge.Api.Plugins;
 using Microsoft.Extensions.Options;
 
@@ -36,9 +37,14 @@ public static class ChatPluginRegistration
         services.AddSingleton<IWorkstreamPlugin, ChatWorkstreamPlugin>();
         services.AddSingleton<WorkstreamPluginRegistry>();
         services.AddScoped<ChatConfigurationService>();
+        services.AddScoped<ChatProviderSetupService>();
         services.AddHttpClient(TelegramNotificationProvider.ClientName, client => client.Timeout = TimeSpan.FromSeconds(15))
             .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-        services.AddSingleton<IChatProviderPlugin, TelegramNotificationProvider>();
+        services.AddHttpClient(TelegramProvider.ClientName, client => client.Timeout = TimeSpan.FromSeconds(30))
+            .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddSingleton<IChatProviderPlugin>(sp => sp.GetRequiredService<IOptions<ChatPluginOptions>>().Value.TelegramSlice.Enabled
+            ? new TelegramNotificationProvider(sp.GetRequiredService<IHttpClientFactory>())
+            : new TelegramProvider(sp.GetRequiredService<IHttpClientFactory>()));
         services.AddSingleton<ChatTestEnvironmentSecrets>();
         services.AddSingleton<ChatSliceCoordinator>();
         services.AddSingleton<ChatContentPolicy>();
@@ -49,6 +55,7 @@ public static class ChatPluginRegistration
         services.AddSingleton<ChatTelegramSliceWorker>();
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IChatSecretStore>(sp => sp.GetRequiredService<ChatTestEnvironmentSecrets>());
+        services.AddSingleton<IChatSecretStore>(sp => new ChatDpapiSecretStore(Path.Combine(sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>().Folder, "chat-secrets")));
         services.AddSingleton<ChatSecretResolver>();
         services.AddSingleton<ChatRuntimeState>();
         services.AddSingleton<ChatDbBudget>();
@@ -57,6 +64,8 @@ public static class ChatPluginRegistration
         services.AddScoped<ChatEventService>();
         services.AddScoped<ChatDeliveryService>();
         services.AddScoped<ChatInboxService>();
+        services.AddScoped<ChatInboxResponseService>();
+        services.AddScoped<ChatLegacyAliasService>();
         services.AddScoped<ChatDomainActionRunner>();
         services.AddScoped<ChatResultReconciler>();
         services.AddScoped<ChatScopeLifecycleService>();

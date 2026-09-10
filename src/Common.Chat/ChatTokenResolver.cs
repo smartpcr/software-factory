@@ -6,8 +6,6 @@
 
 namespace Common.Chat;
 
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -42,27 +40,9 @@ public static class ChatTokenResolver
 
     private static string? TryReadDpapiBlob(string? path, ILogger? log)
     {
-        if (string.IsNullOrWhiteSpace(path) || !OperatingSystem.IsWindows())
-        {
-            return null;
-        }
-
-        try
-        {
-            if (!File.Exists(path))
-            {
-                return null;
-            }
-
-            var encrypted = File.ReadAllBytes(path);
-            var plain = ProtectedData.Unprotect(encrypted, optionalEntropy: null, scope: DataProtectionScope.CurrentUser);
-            var token = Encoding.UTF8.GetString(plain).Trim();
-            return string.IsNullOrWhiteSpace(token) ? null : token;
-        }
-        catch (Exception ex)
-        {
-            log?.LogWarning(ex, "chat token blob present at {Path} but could not be read/decrypted; chat bridge stays idle.", path);
-            return null;
-        }
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        var token = ChatDpapiSecretStore.ReadBlob(path);
+        if (token is null) log?.LogDebug("Chat credential is unavailable; bridge stays idle.");
+        return token;
     }
 }

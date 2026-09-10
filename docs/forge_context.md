@@ -72,7 +72,8 @@ The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 0B validation](chat/chat-plugin-stage0b-validation.md) and
 [Stage 1 validation](chat/chat-plugin-stage1-validation.md) and
 [Stage 1S validation](chat/chat-plugin-stage1s-validation.md) and
-[Stage 2 validation](chat/chat-plugin-stage2-validation.md). Stage 0B replaced
+[Stage 2 validation](chat/chat-plugin-stage2-validation.md) and
+[Stage 3 validation](chat/chat-plugin-stage3-validation.md). Stage 0B replaced
 header-based operator authority with paired sessions and shared capabilities;
 the historical Phase 9 description below is not the current authorization boundary.
 
@@ -95,10 +96,17 @@ connection/app supervision, expected revisions and product action receipts, resu
 reconciliation, retirement hooks and bounded retention. Phases 100/102/103 register
 the delivery, reception and identity/action control increments; Phase 101 separately
 registers `chat_action_receipts` in product DBs. The general worker requires the plugin
-engine with the Stage 1S slice disabled. Its interactive tests use fake providers;
-public interactive configuration, real Slack and the full setup UI remain gated for
-later stages. See the validation documents for automated evidence and the existing
-`repos` catalog-test exclusion.
+engine with the Stage 1S slice disabled. Stage 3 extracts Telegram protocol into
+`src/Common.Chat.Telegram` while retaining the legacy transport adapter. The general
+registry now supports independent bots, durable reception/acknowledgement, explicit
+identity linking, question choices/custom prompts, scoped status and parent pause/
+resume, topic retirement and original-message aliases. Interactive configuration is
+available for capable spawn subscriptions; Stage 1S and Host alerts remain notification
+only. Phase 104 adds reply recovery, command revisions/content scopes, choice indexes
+and topic retirement fields to existing control tables. DPAPI credentials use the
+common secret-store interface. Slack, full setup UI and legacy import remain Stages
+4–6. See the validation documents for fixture evidence, the pending live test-bot
+exercise and the existing `repos` catalog-test exclusion.
 
 ## Foundational decisions (apply everywhere)
 

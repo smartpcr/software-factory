@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>Connection-scoped challenges and durable link history reuse the Stage 0B enrollment/link authority.</summary>
 public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore identities, ForgeActorResolver actors,
-    ForgeCapabilityAuthorizer authorizer, ChatRuntimeState runtime, TimeProvider clock)
+    ForgeCapabilityAuthorizer authorizer, ChatRuntimeState runtime, TimeProvider clock, ChatConnectionSupervisor supervisor)
 {
     public async Task<object> BeginAsync(ForgeActor? actor, string connectionId, string tenantId, string senderId, CancellationToken ct)
     {
@@ -21,20 +21,25 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
             ?? throw new ChatConfigurationException("connection-unavailable", 409);
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(senderId) || tenantId.Length > 512 || senderId.Length > 512)
             throw new ChatConfigurationException("invalid-link-target");
+        if (connection.ProviderId == "telegram" && tenantId != connection.InstallationId) throw new ChatConfigurationException("link-bot-mismatch");
         var token = identities.IssueLinkChallenge(actor!.UserId, connection.ProviderId, tenantId, senderId);
         control.ChatLinkChallenges.Add(new() { Hash = ChatEventCatalog.Hash(token), ConnectionId = connectionId, ConnectionRevision = connection.Revision,
             UserId = actor.UserId, ExternalTenantId = tenantId, ExternalUserId = senderId, ExpiresAt = clock.GetUtcNow().AddMinutes(2).ToUnixTimeMilliseconds(),
             PreviousLinkId = identities.FindLink(connection.ProviderId, tenantId, senderId)?.Id });
         await control.SaveChangesAsync(ct);
-        return new { Token = token, ExpiresInSeconds = 120 };
+        var session = connection.ProviderId == "telegram" ? await supervisor.GetAsync(connection, ct) : null;
+        var deepLink = session?.Provider is Common.Chat.Telegram.TelegramSession telegram ? $"https://t.me/{telegram.BotUsername}?start={token}" : null;
+        return new { Token = token, ExpiresInSeconds = 120, DeepLink = deepLink };
     }
 
-    public async Task<ForgeActor?> RedeemAsync(string token, string connectionId, string tenantId, string senderId, CancellationToken ct)
+    public Task<ForgeActor?> RedeemAsync(string token, string connectionId, string tenantId, string senderId, CancellationToken ct)
+        => this.RedeemHashAsync(ChatEventCatalog.Hash(token), connectionId, tenantId, senderId, ct);
+
+    internal async Task<ForgeActor?> RedeemHashAsync(string hash, string connectionId, string tenantId, string senderId, CancellationToken ct, string? inboxId = null)
     {
         await runtime.InboxGate.WaitAsync(ct);
         try
         {
-            var hash = ChatEventCatalog.Hash(token);
             var challenge = await control.ChatLinkChallenges.SingleOrDefaultAsync(c => c.Hash == hash, ct);
             var connection = await control.ChatConnections.AsNoTracking().SingleOrDefaultAsync(c => c.Id == connectionId && c.Enabled && c.DeletedAt == null, ct);
             if (connection is null || challenge is null || challenge.ConnectionId != connectionId || challenge.ConnectionRevision != connection.Revision
@@ -44,7 +49,7 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
             if (challenge.State == "pending")
             {
                 challenge.State = "redeeming"; await control.SaveChangesAsync(ct);
-                link = identities.RedeemLinkChallenge(token, connection.ProviderId, tenantId, senderId);
+                link = identities.RedeemLinkChallengeHash(hash, connection.ProviderId, tenantId, senderId);
             }
             else
             {
@@ -52,7 +57,9 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
                 if (link?.Id == challenge.PreviousLinkId) link = null;
             }
             if (link?.UserId != challenge.UserId) { challenge.State = "rejected"; await control.SaveChangesAsync(ct); return null; }
-            await this.RecordAsync(link, ct); challenge.State = "consumed"; await control.SaveChangesAsync(ct);
+            await this.RecordAsync(link, ct); challenge.State = "consumed";
+            if (inboxId is not null && await control.ChatInbox.FindAsync([inboxId], ct) is { } inbox) inbox.Result = "linked";
+            await control.SaveChangesAsync(ct);
             return await actors.FromProviderAsync(connection.ProviderId, tenantId, senderId, ct);
         }
         finally { runtime.InboxGate.Release(); }

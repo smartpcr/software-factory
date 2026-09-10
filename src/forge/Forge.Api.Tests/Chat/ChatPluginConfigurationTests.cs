@@ -229,7 +229,7 @@ public sealed class ChatPluginConfigurationTests
         var valid = new ChatSubscriptionWrite(0, parent.Revision, "dest-beta", "thread");
         foreach (var request in new[] { valid with { ConversationPolicy = "topic" }, valid with { EventKinds = ["queue-strain"] },
             valid with { EventKinds = ["future-kind"] }, valid with { EventKinds = ["open-questions", "open-questions"] },
-            valid with { CatalogVersion = 99 }, valid with { Interactive = true } })
+            valid with { CatalogVersion = 99 }, valid with { ContentMode = "unsafe" } })
             await Assert.ThrowsAsync<ChatConfigurationException>(() => app.RunAsync("owner-p", (s, a) => s.PutSubscriptionAsync(a, scope, "bad", request)));
         var invalidSettings = ChatPluginTestFactory.Plugin(parent.Revision) with { Settings = JsonSerializer.SerializeToElement(new { unknown = true }) };
         await Assert.ThrowsAsync<ChatConfigurationException>(() => app.RunAsync("owner-p", (s, a) => s.PutPluginAsync(a, "p", "shared", invalidSettings)));

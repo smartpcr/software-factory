@@ -61,6 +61,8 @@ public sealed class ChatResultReconciler(ControlDbContext control, IProductDbCon
                 {
                     var questionClosed = part.QuestionId is not null && latest is not null
                         && (!latest.TryGetValue(part.QuestionId, out var question) || question.Id != part.ExpectedRevision || !string.IsNullOrEmpty(question.Answer));
+                    if (part.PartKey.StartsWith("legacy:", StringComparison.Ordinal) && notification.Kind == "open-questions" && latest is not null)
+                        questionClosed = latest.Count == 0 || latest.Values.All(q => !string.IsNullOrEmpty(q.Answer));
                     var domainChanged = part.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds()
                         || part.QuestionId is null && domainRevision is { } currentRevision && currentRevision != part.ExpectedRevision;
                     if (part.ControlsRetired || !retired && !questionClosed && !domainChanged) continue;
@@ -73,7 +75,8 @@ public sealed class ChatResultReconciler(ControlDbContext control, IProductDbCon
                 {
                     // An uncertain external operation remains visible for repair even after its controls expire.
                     if (delivery.State is not ("uncertain" or "sending")) delivery.State = retired ? "cancelled" : "resolved";
-                    delivery.TerminalAt = clock.GetUtcNow().ToUnixTimeMilliseconds(); delivery.LastError = reason;
+                    delivery.TerminalAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                    if (reason is not null || delivery.State != "uncertain") delivery.LastError = reason;
                 }
             }
             if (control.ChangeTracker.HasChanges()) await budget.SaveAsync(control, ct);

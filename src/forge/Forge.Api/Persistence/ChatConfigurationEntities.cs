@@ -89,6 +89,8 @@ public sealed class ChatConversationBindingRow
     public string? RootMessageId { get; set; }
     public long Revision { get; set; } = 1;
     public string ProvisioningState { get; set; } = "pending";
+    public string RetirementState { get; set; } = "none";
+    public long RetirementNextAttemptAt { get; set; }
     public string? OperationOwner { get; set; }
     public DateTimeOffset? RecoveryDeadline { get; set; }
     public DateTimeOffset? RetiredAt { get; set; }

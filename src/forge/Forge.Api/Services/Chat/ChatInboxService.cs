@@ -54,8 +54,8 @@ public sealed partial class ChatInboxService(ControlDbContext control, ChatRunti
                         var safe = safeEnvelopes[(envelope.ConnectionId, envelope.DeliveryKey)];
                         var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
                         control.ChatInbox.Add(new() { ConnectionId = envelope.ConnectionId, ProviderId = envelope.ProviderId, DeliveryKey = envelope.DeliveryKey,
-                            EnvelopeJson = safe ? JsonSerializer.Serialize(envelope with { ActionToken = envelope.ActionToken is null ? null : "sha256:" + ChatEventCatalog.Hash(envelope.ActionToken) }) : null, ReceivedAt = now,
-                            State = safe ? "pending" : "rejected", Result = safe ? null : "safe-replacement-required", TerminalAt = safe ? null : now });
+                            EnvelopeJson = JsonSerializer.Serialize(NormalizeStored(envelope, safe)), ReceivedAt = now,
+                            State = "pending", Result = safe ? null : "safe-replacement-required" });
                         accepted = true;
                         acceptedConnections.Add(envelope.ConnectionId);
                     }
@@ -81,5 +81,21 @@ public sealed partial class ChatInboxService(ControlDbContext control, ChatRunti
             foreach (var connectionId in envelopes.Select(e => e.ConnectionId)) runtime.RecordHealth(connectionId, "degraded", "inbox-storage-unavailable", null, null);
             return ChatInboundAcceptance.Retry;
         }
+    }
+
+    private static ChatInboundEnvelope NormalizeStored(ChatInboundEnvelope envelope, bool safe)
+    {
+        var command = envelope.Command; var argument = envelope.CommandArgument ?? "";
+        if (command is not (null or "start" or "link" or "unlink" or "status" or "pause" or "resume" or "questions" or "answer")) command = "unknown";
+        if (command is "start" or "link") argument = argument is { Length: 64 } ? "sha256:" + ChatEventCatalog.Hash(argument) : "";
+        else if (command is "status" or "pause" or "resume" or "questions")
+            argument = argument is { Length: <= 128 } && argument.All(c => char.IsAsciiLetterOrDigit(c) || c is ':' or '-' or '_' or '.') ? argument : "invalid-scope";
+        else if (command == "answer") argument = argument is { Length: <= 128 } && argument.All(char.IsAsciiDigit) ? argument : "invalid-message";
+        else argument = null;
+        var action = envelope.ActionToken;
+        if (action is "act|retry" or "act|accept" or "act|cancel" or "act|restart")
+        { command = "legacy-" + action[4..]; action = null; }
+        return envelope with { Text = safe ? envelope.Text : null, Kind = safe ? envelope.Kind : "rejected",
+            ActionToken = action is null ? null : "sha256:" + ChatEventCatalog.Hash(action), Command = command, CommandArgument = argument };
     }
 }

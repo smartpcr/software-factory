@@ -13,6 +13,7 @@
   <ItemGroup>
     <!-- Chat bridge transport + channel map + inbound pump (reusable lib). -->
     <ProjectReference Include="..\..\Common.Chat\Common.Chat.csproj" />
+    <ProjectReference Include="..\..\Common.Chat.Telegram\Common.Chat.Telegram.csproj" />
   </ItemGroup>
 
   <ItemGroup>

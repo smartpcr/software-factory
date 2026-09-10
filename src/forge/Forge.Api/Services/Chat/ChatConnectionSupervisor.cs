@@ -67,7 +67,11 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromSeconds(30));
                 var opened = await plugin.OpenSessionAsync(new(row.Id, row.ProviderId, row.InstallationId, row.SettingsVersion, row.Revision,
                     settings.RootElement.Clone(), references), secrets, timeout.Token);
-                if (!opened.Succeeded || opened.Value!.ConnectionId != row.Id) return null;
+                if (!opened.Succeeded || opened.Value!.ConnectionId != row.Id)
+                {
+                    if (opened.Value is not null) await opened.Value.DisposeAsync();
+                    runtime.RecordHealth(row.Id, "degraded", SafeProviderReason(opened.Failure?.Code), null, null); return null;
+                }
                 var session = new Session(row, opened.Value, new CancellationTokenSource());
                 this.sessions.Add(row.Id, session);
                 runtime.RecordHealth(row.Id, "ready", null, null, null);
@@ -138,7 +142,7 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
                 {
                     try { await first.Provider.ReceiveAsync(new ReceptionSink(this, key), cancellation.Token); }
                     catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
-                    catch { runtime.RecordHealth(first.Configuration.Id, "degraded", "receiver-disconnected", null, null); }
+                    catch (Exception ex) { runtime.RecordHealth(first.Configuration.Id, "degraded", SafeProviderReason(ex is InvalidOperationException ? ex.Message : null), null, null); }
                 }, CancellationToken.None);
                 this.receivers[key] = new(first.Configuration.ProviderId, first.Provider.ReceptionKey, cancellation, task);
             }
@@ -153,6 +157,14 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         try { await this.CheckpointHealthCoreAsync(ct); }
         finally { this.gate.Release(); }
     }
+
+    internal static string SafeProviderReason(string? code) => code switch
+    {
+        "telegram-webhook-conflict" or "duplicate-telegram-bot" or "telegram-receiver-conflict" or "telegram-token-revoked"
+            or "telegram-token-required" or "telegram-secret-unavailable" or "telegram-identity-mismatch" or "telegram-membership-denied"
+            or "telegram-rate-limited" => code,
+        _ => "session-unavailable",
+    };
 
     private async Task CheckpointHealthCoreAsync(CancellationToken ct)
     {

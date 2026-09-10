@@ -1,6 +1,6 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A, 0B and 1 implemented. Stage 1 has 194 passing focused checks (26 new); the pre-existing catalog-test mismatch and broader fixture limits are documented. Stage 1S onward remains planned. Updated 2026-09-09.
+**Status:** Stages 0A, 0B, 1, 2 and 3 implemented. Stage 1S automated checks pass; its real-bot/manual gate remains pending. Stage 3 has 314 passing backend checks and one skipped live-provider test; see the validation report. Stages 4–6 remain planned. Updated 2026-09-10.
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
@@ -69,7 +69,7 @@ Paths marked **new** are proposed files/projects, not existing implementations.
 |---|---|---|
 | Authentication/authorization prerequisite | `Auth/{ForgeUser,RequireRole}.cs`, `Persistence/ProductScope.cs`, user/role mutation endpoints | Authenticated host-paired sessions, stable user identities and `ForgeCapabilityAuthorizer`; protect web/chat action and grant/role mutation paths before remote control |
 | Shared chat contract | `src/Common.Chat/{IChatTransport,ChatTransportOptions,ChatChannelMap,ChatInboundPump,ChatServiceCollectionExtensions}.cs` | Add provider registry/session contracts, capability descriptors, semantic messages and normalized inbound envelopes; retire Telegram assumptions after compatibility migration |
-| Telegram | `src/Common.Chat/TelegramTransport.cs`, `ChatTokenResolver.cs` | Move protocol/rendering into **new** `src/Common.Chat.Telegram`; connection-specific state and common secret-store seam |
+| Telegram | `src/Common.Chat.Telegram/`, `src/Common.Chat/ChatTokenResolver.cs` | Stage 3 extracted protocol/rendering; legacy adapter retained; connection-specific state and common secret-store seam |
 | Slack | No adapter exists | **New** `src/Common.Chat.Slack/{SlackProviderPlugin,SlackConnectionSession,SlackApiClient,SlackSocketReceiver,SlackMessageRenderer}.cs` |
 | Workstream plugins | No workstream plugin model exists | **New** minimal `src/forge/Forge.Api/Plugins/{IWorkstreamPlugin,WorkstreamPluginRegistry}.cs`; explicit `story-spawn` scope; `ChatWorkstreamPlugin` consumes parent subscriptions |
 | Routing and delivery | `Services/Chat/{ChatNotifier,ChatBridgeService,ChatInboundDispatcher,ForgeChatRoutes,ForgeChatChannelStore,ForgeChatCursorStore}.cs` | Scoped subscriptions, independent deliveries, inbox processing, operator linking and connection supervision |
@@ -524,22 +524,22 @@ send outcomes. No test may claim exactly-once network delivery without evidence.
 
 ### Stage 3 — Telegram provider extraction and interaction repair
 
-- [ ] Create `Common.Chat.Telegram`, move its protocol implementation and add its
+- [x] Create `Common.Chat.Telegram`, move its protocol implementation and add its
       provider descriptor. Retain the old engine through a compatibility adapter.
-- [ ] Replace the global Telegram options/cursor with connection-scoped settings
+- [x] Replace the global Telegram options/cursor with connection-scoped settings
       and reception; guard against two sessions owning the same bot.
-- [ ] Add token/chat/forum/membership validation and destination discovery through
+- [x] Add token/chat/forum/membership validation and destination discovery through
       the existing receiver. Detect webhook conflicts without deleting them.
-- [ ] Add `/start` linking, addressed-command parsing, same-topic responses, and
+- [x] Add `/start` linking, addressed-command parsing, same-topic responses, and
       callback acknowledgements using the retained callback query ID.
-- [ ] Replace the allowlist/duplicate-row linking behavior with explicit identity
+- [x] Replace the allowlist/duplicate-row linking behavior with explicit identity
       linking and revocation; preserve pending challenges and clear error states.
-- [ ] Add multi-question selection/custom answers, correct pause semantics, scoped
+- [x] Add multi-question selection/custom answers, correct pause semantics, scoped
       status, and feedback for unsupported input in a bound conversation.
-- [ ] Implement topic provisioning/retirement and DM/flat-chat capability handling;
+- [x] Implement topic provisioning/retirement and DM/flat-chat capability handling;
       use one topic per parent subscription, an in-process claim and recovery record
       for uncertain creation results. Future children reuse the parent's topic.
-- [ ] Enforce the 25-byte server lookup-key format, Telegram UTF-8 callback limit
+- [x] Enforce the 25-byte server lookup-key format, Telegram UTF-8 callback limit
       and visible render failures. Preserve original message aliases for targetless
       legacy callbacks when splitting into per-question messages.
 
@@ -547,6 +547,12 @@ send outcomes. No test may claim exactly-once network delivery without evidence.
 do not share cursors. A reply stays in its topic. Answering one of several questions
 leaves the others usable. Re-linking an already bootstrapped user does not violate
 the subscriber uniqueness constraint. Off/paused scopes cannot drive domain actions.
+
+**Validation (2026-09-10):** All eight implementation items and the acceptance
+scenarios are covered by protocol HTTP fixtures and isolated host/database tests.
+See [Stage 3 validation](chat-plugin-stage3-validation.md) for the gap review,
+schema registration, commands and exact test evidence. The Stage 1S live-bot/manual
+row gate remains pending; Slack, the full setup UI and legacy import remain later stages.
 
 ### Stage 4 — Slack provider
 

@@ -92,7 +92,7 @@ public sealed class TelegramSliceTests
         Assert.DoesNotContain(TelegramSliceTestFactory.Token, JsonSerializer.Serialize(outbox));
         Assert.False(app.Services.GetRequiredService<IOptions<ChatBridgeOptions>>().Value.Enabled);
         Assert.False(app.Services.GetRequiredService<IOptions<ChatTransportOptions>>().Value.Enabled);
-        Assert.False(ChatPluginInteractiveGate.IsAvailable);
+        Assert.False(ChatPluginInteractiveGate.AvailableFor(app.Services.GetRequiredService<IOptions<ChatPluginOptions>>().Value));
     }
 
     [Fact]

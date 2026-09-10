@@ -1,17 +1,22 @@
+// -----------------------------------------------------------------------
+// <copyright file="ChatPluginInteractiveGate.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
 namespace Forge.Api.Services.Chat;
 
 /// <summary>
-/// The shared identity prerequisite does not enable the future plugin runtime.
-/// Stage 1/2 must replace this gate only after connection grants, subscriptions,
-/// action receipts and confirmations have passed their own acceptance gates.
-/// Configuration alone cannot advertise or activate unfinished plugin actions.
+/// The Stage 2 durable action boundary and Stage 3 provider interactions are available.
+/// Each subscription still requires provider capabilities, scope grants and explicit opt-in.
 /// </summary>
 public static class ChatPluginInteractiveGate
 {
-    public static bool IsAvailable => false;
-    public static string Reason => "Chat plugin interactive mode is unavailable until the plugin runtime and action delivery stages are complete.";
-    public static void RequireAvailable()
+    public static bool IsAvailable => true;
+    public static bool AvailableFor(ChatPluginOptions options) => IsAvailable && options.PluginsEnabled && !options.TelegramSlice.Enabled;
+    public static string Reason => "Interactive chat requires an enabled provider and an authorized, interactive workstream subscription.";
+    public static void RequireAvailable(ChatPluginOptions options)
     {
-        if (!IsAvailable) throw new InvalidOperationException(Reason);
+        if (!AvailableFor(options)) throw new InvalidOperationException(Reason);
     }
 }

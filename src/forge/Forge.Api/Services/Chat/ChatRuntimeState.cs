@@ -27,6 +27,8 @@ public sealed class ChatRuntimeState(IForgeDbPaths paths) : IDisposable
     public SemaphoreSlim InboxGate { get; } = new(1, 1);
     public SemaphoreSlim DomainGate { get; } = new(1, 1);
     public SemaphoreSlim DispatchGate { get; } = new(1, 1);
+    public SemaphoreSlim ResponseGate { get; } = new(1, 1);
+    public ConcurrentDictionary<string, (ChatSendReceipt Receipt, bool Uncertain)> ResponseCheckpoints { get; } = new();
     public string? LastScheduledChannel { get; set; }
     public string? LastReconciledDelivery { get; set; }
     public Channel<bool> Wake { get; } = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
@@ -81,7 +83,7 @@ public sealed class ChatRuntimeState(IForgeDbPaths paths) : IDisposable
 }
 
 public sealed record ChatOperationCheckpoint(string Kind, string Id, ChatSendReceipt? Send = null,
-    ChatConversation? Conversation = null, long Revision = 0);
+    ChatConversation? Conversation = null, long Revision = 0, bool Uncertain = false);
 
 public sealed class ChatDbBudget(ChatRuntimeState runtime)
 {

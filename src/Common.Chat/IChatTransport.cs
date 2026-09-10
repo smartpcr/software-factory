@@ -8,7 +8,7 @@ namespace Common.Chat;
 
 /// <summary>
 /// Platform-agnostic chat transport seam. Telegram is the first implementation
-/// (<see cref="TelegramTransport"/>); Discord slots in later behind the same
+/// (in Common.Chat.Telegram); Discord slots in later behind the same
 /// contract. Consumers (outbound pumps, inbound dispatchers) depend only on
 /// this interface so they never know which platform they're on.
 /// </summary>
