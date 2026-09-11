@@ -2,12 +2,11 @@
 
 Date: 2026-09-10. Baseline: `ceee7e9c` (`chat plugin: stage 3`).
 
-The Slack adapter and its host integration are implemented. Of the ten Stage 4
-checklist items, **nine are complete and one is partial**: item 10's rate limiting,
-failure reporting and repair APIs are complete, but its connection-UI acceptance
-belongs to the still-unimplemented Stage 5 settings screens. That parent checkbox
-remains open rather than claiming a working repair screen. No other implementation
-gap was found in this review. Real-workspace verification remains a separate gate.
+The Slack adapter and its host integration are implemented. The original Stage 4
+review completed nine items and left item 10's connection UI for Stage 5. The
+[Stage 5 implementation and validation](chat-plugin-stage5-validation.md) now close
+that dependency: **all ten items are complete**. The automated evidence below
+records the original Stage 4 run. Real-workspace verification remains a separate gate.
 
 ## Requirement mapping
 
@@ -22,7 +21,7 @@ gap was found in this review. Real-workspace verification remains a separate gat
 | 7 | [x] Complete | A singleton app receiver owns workspace sessions through `IChatSharedReceptionSession`. The supervisor detaches one member without cancelling remaining members. Events match the app, workspace and authorized bot; unroutable events produce bounded durable diagnostics containing a safe code and workspace ID. The two-workspace/private-public/Telegram fixture proves routing and receiver survival. |
 | 8 | [x] Complete | `SlackSocketReceiver.Normalize` filters bot/self/edit/delete events, rejects mismatched app/installations and cross-workspace actions, and normalizes buttons/replies. Inbox keys use Events API `event_id` or interactive `envelope_id`. The existing expected-revision domain receipts prevent repeated actions even with different envelope IDs. Cross-provider tests prove one accepted question answer and control retirement on all copies. |
 | 9 | [x] Complete | `ChatInboxService.Interactions` treats a thread reply as a root-scoped candidate, never an implicit reply to a particular question. Multiple questions or custom selections require an explicit decimal message ID. Custom selections remain actor-bound and expire. `ChatLinkService` issues workspace/sender/revision-bound channel challenges; `!forge link`, `unlink`, `status`, `questions`, `answer`, `pause` and `resume` use ordinary message events. |
-| 10 | [ ] Partial — Stage 5 UI | `SlackRequestBudget` paces workspace/method and channel requests and carries 429 hints without blocking other workspaces. Setup/health/delivery APIs expose repair codes; current revision updates, destination validation and explicit failed-delivery retry support repairs. Tests prove restored membership/archive/credential access retries a failed question without recreating its known root. The connection repair screen itself remains Stage 5 work. |
+| 10 | [x] Complete — Stage 5 follow-up | `SlackRequestBudget` paces workspace/method and channel requests and carries 429 hints without blocking other workspaces. Revision, validation and explicit retry APIs support repairs without recreating known roots. Stage 5 adds `ChatIntegrations`, `ChatConnectionEditor` and verification/history panels; browser cases cover membership, archived channels and revoked credentials. See [Stage 5 evidence](chat-plugin-stage5-validation.md). |
 
 `auth.test` normally exposes workspace and bot-user identity, not the bot's app ID.
 The app token is verified by hello, and Events API authorizations must match the
@@ -57,7 +56,8 @@ Ignored local evidence: `.tmp-build/chat-stage4-regression.log` and
 intermediate runs. The existing `Catalog_ClassificationMatchesDbBoundary` exclusion
 is unchanged: historical Phase 83 calls `repos` product data while its boundary
 classification remains control. Stage 4's own migration and boundary assertions
-are included and pass. No frontend files changed or browser tests were run.
+are included and pass. During Stage 4, no frontend files changed or browser tests
+were run; Stage 5 records the subsequent browser validation separately.
 
 ## Gaps found and addressed
 
@@ -78,9 +78,9 @@ are included and pass. No frontend files changed or browser tests were run.
 
 ## Remaining gates
 
-- [ ] Stage 5 connection UI: display separate setup/health failures, replace
+- [x] Stage 5 connection UI: display separate setup/health failures, replace
   credential references or credentials, validate channel repairs and expose explicit
-  retry. Stage 4 item 10 remains open until this screen is implemented and tested.
+  retry. Completed and tested on 2026-09-10; see [Stage 5 validation](chat-plugin-stage5-validation.md).
 - [ ] Approved live Slack workspaces plus Telegram: concurrent answers, cross-copy
   resolution, installation/scope checks, disconnect recovery, two workspace
   installations on one receiver, and continued Telegram reception. Fixtures do not

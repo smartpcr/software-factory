@@ -74,7 +74,8 @@ The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 1S validation](chat/chat-plugin-stage1s-validation.md) and
 [Stage 2 validation](chat/chat-plugin-stage2-validation.md) and
 [Stage 3 validation](chat/chat-plugin-stage3-validation.md) and
-[Stage 4 validation](chat/chat-plugin-stage4-validation.md). Stage 0B replaced
+[Stage 4 validation](chat/chat-plugin-stage4-validation.md) and
+[Stage 5 validation](chat/chat-plugin-stage5-validation.md). Stage 0B replaced
 header-based operator authority with paired sessions and shared capabilities;
 the historical Phase 9 description below is not the current authorization boundary.
 
@@ -110,11 +111,21 @@ edits, bounded Block Kit rendering, channel discovery, channel-based operator li
 and one Socket Mode receiver per app shared across workspace connections. Replies
 use root-scoped question selection; event/envelope dedupe and domain receipts prevent
 repeated actions across Slack and Telegram. Phase 105 adds durable receiver diagnostics
-and completion/reopening root state to the existing control tables. Nine Stage 4
-checklist items are complete; the final item's repair APIs are implemented and its
-connection UI remains Stage 5. Full setup UI and legacy import remain Stages 5-6.
-See [Slack setup](chat/slack-setup.md), the validation reports, the pending live
-provider gate and the existing `repos` catalog-test exclusion.
+and completion/reopening root state to the existing control tables. Stage 5 closes
+the remaining Stage 4 connection UI dependency and all 14 setup requirements.
+`ChatIntegrations` provides connection repair, separate verification states, confirmed
+self-links and permanent Host alerts. `ChatRowControl` shares a guided drawer across
+row/detail views; `chatStore` caches by product/spawn/revision. `ChatSummaryService`
+uses one control query per 100 existing parents; row detail fetches omit aggregation.
+`ChatConfigurationService.Setup` saves all routes and introduction intents atomically,
+preserving unchanged subscriptions and running agents. `ChatManagementService` and
+`ChatConnectionCheckService` add protected credential writes, redacted previews,
+scoped health/history and explicit send/reply checks. No Stage 5 migration is needed.
+The Telegram helper uses paired APIs instead of patching files. Legacy import remains
+Stage 6. See [current setup](chat/chat-plugin-setup.md), [Slack setup](chat/slack-setup.md),
+the validation reports, the pending live-provider gates and the existing `repos`
+catalog-test exclusion. Loading the new backend requires an operator-approved restart;
+implementation did not restart services or send real provider messages.
 
 ## Foundational decisions (apply everywhere)
 

@@ -1,23 +1,22 @@
 # Host-user chat configuration
 
-Stage 0A is implemented (2026-09-09). The legacy Telegram bridge supports
-notifications and per-spawn forum topics. Workstream plugin settings, Slack, and
-the shared authorization boundary remain later stages of the plugin plan.
+This is the Stage 0A legacy configuration reference (2026-09-09). The legacy
+Telegram bridge supports notifications and per-spawn forum topics. For current
+plugin settings, Slack, operator linking and the API-based Telegram helper, use
+the [Stage 5 setup guide](chat-plugin-setup.md). Legacy import remains Stage 6.
 
 ## Setup and opt-in
 
 Forge.Api reads `%LOCALAPPDATA%\Forge\chat-settings.json` for the Windows account
 running the host. This works both with `scripts/run-forge-ui.ps1` (repo-root working
-directory, Development environment) and direct project starts. The setup helper
-writes this same file; it no longer edits tracked application JSON.
+directory, Development environment) and direct project starts. Edit this local
+file only for an installation still using the legacy engine; do not place personal
+configuration in tracked application JSON.
 
-Run `scripts/setup-telegram-bridge.ps1 -WriteConfig` to discover and verify a
-Telegram destination and explicitly enable notifications. The helper still
-performs its documented Telegram smoke test unless `-SkipSmokeTest` is supplied.
-Without `-WriteConfig`, saving requires a `y` response. Token storage alone does
-not enable chat. Setup leaves `AllowRemoteActions=false` and does not sign in to
-Forge or mint `/link` tokens. The old `ForgeUser`, `ForgeApiUrl`, and `AuthKind`
-parameters remain accepted for script compatibility and have no effect.
+The Stage 5 `scripts/setup-telegram-bridge.ps1` now calls paired Forge plugin APIs.
+Its old `-WriteConfig`, `-StoreToken` and `-SkipSmokeTest` parameters are retired.
+It no longer writes this file, installs a desktop app or performs an automatic
+smoke send. Follow the current guide for its parameters and explicit `-SendTest`.
 
 The host file has this shape; replace the destination IDs locally, and set
 `Enabled=true` only when ready to receive notifications:
@@ -73,8 +72,8 @@ host file, and remove obsolete indexed environment variables when changing lists
 The launcher passes explicit environment values through unchanged and no longer
 exports project chat JSON. If an older launcher populated chat variables in an
 existing PowerShell session, start a fresh shell or remove those obsolete process
-variables before launching. Windows user environment changes reach new shells;
-setup's `-StoreToken env` also updates its current process for its restart option.
+variables before launching. Windows user environment changes reach new shells.
+The current helper does not alter process or user environment variables.
 
 Restart Forge.Api at an operator-chosen time after editing the host file or
 environment. Host-file edits are intentionally loaded at startup, not watched.
@@ -102,10 +101,9 @@ from that cursor when remote handling is later enabled.
 
 `POST /api/chat/link-token` returns 409 in disabled or notification-only mode;
 `POST /api/chat/test-send` remains available when the bridge is enabled, subject
-to its existing role check. Keep `AllowRemoteActions=false` until Stage 0B delivers
-shared authenticated authorization. The legacy true setting exists for explicit
-compatibility/testing; it is not an authorization boundary or a substitute for
-Stage 0B, and setup never enables it.
+to shared authenticated authorization added in Stage 0B. Keep `AllowRemoteActions=false`
+for notification-only legacy use. The legacy true setting is an explicit feature
+opt-in, separate from authorization. The current helper never changes this setting.
 
 ## Stage 0A implementation review
 

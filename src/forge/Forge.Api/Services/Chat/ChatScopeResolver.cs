@@ -76,7 +76,8 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
             || destination.ConnectionId != connection.Id || destination.ExternalTenantId != target.ExternalTenantId || destination.ChannelId != target.ChannelId
             || subscription is null || subscription.Paused || subscription.RetiredAt is not null
             || subscription.Revision != target.SubscriptionRevision || subscription.DestinationId != target.DestinationId
-            || subscription.ActivationGeneration != target.ActivationGeneration || !ChatEventCatalog.Matches(subscription, notification.Kind)) return "route-retired";
+            || subscription.ActivationGeneration != target.ActivationGeneration
+            || !(notification.Platform == "plugins" && notification.Kind == "setup" && !action) && !ChatEventCatalog.Matches(subscription, notification.Kind)) return "route-retired";
         if (action && !subscription.Interactive) return "notifications-only";
         if (target.ScopeKind == "host") return target.HostId == options.Value.HostId && subscription.HostId == target.HostId ? null : "route-retired";
         if (!await control.ChatConnectionProducts.AnyAsync(g => g.ConnectionId == connection.Id && g.ProductId == target.ProductId, ct)) return "grant-revoked";

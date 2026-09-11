@@ -53,9 +53,11 @@ public sealed partial class ChatInboxService(ControlDbContext control, ChatRunti
                             || control.ChatInbox.Local.Any(i => i.ConnectionId == envelope.ConnectionId && i.DeliveryKey == envelope.DeliveryKey)) continue;
                         var safe = safeEnvelopes[(envelope.ConnectionId, envelope.DeliveryKey)];
                         var now = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                        var checkReply = safe && await ChatConnectionCheckService.AcceptReplyAsync(control, envelope, revision, clock.GetUtcNow(), token);
                         control.ChatInbox.Add(new() { ConnectionId = envelope.ConnectionId, ProviderId = envelope.ProviderId, DeliveryKey = envelope.DeliveryKey,
-                            EnvelopeJson = JsonSerializer.Serialize(NormalizeStored(envelope, safe)), ReceivedAt = now,
-                            State = "pending", Result = safe ? null : "safe-replacement-required" });
+                            EnvelopeJson = checkReply ? null : JsonSerializer.Serialize(NormalizeStored(envelope, safe)), ReceivedAt = now,
+                            State = checkReply ? "processed" : "pending", TerminalAt = checkReply ? now : null,
+                            Result = checkReply ? "connection-check" : safe ? null : "safe-replacement-required" });
                         accepted = true;
                         acceptedConnections.Add(envelope.ConnectionId);
                     }

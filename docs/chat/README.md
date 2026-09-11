@@ -1,8 +1,8 @@
 # Forge chat
 
-## Current design work
+## Current implementation
 
-The next revision adds **Chat / Remote control** to each top-level row on the
+Stage 5 adds **Chat / Remote control** to each top-level row on the
 Workstreams screen: enable it, select Telegram or Slack, and pick a channel.
 Each row (a story spawn in the data model) owns its settings and covers all its
 child workstreams. Multiple providers and channels may be attached to the same row.
@@ -12,13 +12,15 @@ child workstreams. Multiple providers and channels may be attached to the same r
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
 
-**Status (2026-09-10): Stages 0A, 0B, 1, 2 and 3 implemented; Stage 4 Slack adapter implemented, with connection UI acceptance pending Stage 5. Stage 1S live gate pending.** The legacy bridge uses
+**Status (2026-09-10): Stages 0A, 0B, 1, 2, 3, 4 and 5 implemented. Stage 1S and the separate real-provider live gates remain pending; Stage 6 migration/cutover is planned.** The legacy bridge uses
 explicit host-user configuration and safe defaults. Authenticated operator pairing
 and shared capabilities are implemented. Stage 1 adds provider/plugin contracts,
 the six control-DB configuration tables, scoped configuration APIs, Host alerts
 setup state, revision checks and protection against reused spawn IDs.
 
-- [Host chat configuration](host-chat-configuration.md) — legacy setup and defaults.
+- [Chat plugin setup](chat-plugin-setup.md) — current settings, row drawer, verification,
+  APIs, Telegram helper and host activation.
+- [Host chat configuration](host-chat-configuration.md) — legacy configuration reference.
 - [Stage 0B validation](chat-plugin-stage0b-validation.md) — identity and authorization.
 - [Stage 1 validation](chat-plugin-stage1-validation.md) — all seven requirements,
   194 passing focused checks, the existing catalog-test limitation and API usage.
@@ -28,8 +30,10 @@ setup state, revision checks and protection against reused spawn IDs.
   schema registration, 37 new durability/recovery tests and complete regression evidence.
 - [Stage 3 validation](chat-plugin-stage3-validation.md) — Telegram extraction, commands,
   linking, topic lifecycle, callback correlation, and the eight-item gap review.
-- [Stage 4 validation](chat-plugin-stage4-validation.md) - Slack Socket Mode, workspace
-  routing, thread replies/choices, 369 passing checks and the remaining UI/live gates.
+- [Stage 4 validation](chat-plugin-stage4-validation.md) — Slack Socket Mode, workspace
+  routing, thread replies/choices and the connection UI follow-up completed in Stage 5.
+- [Stage 5 validation](chat-plugin-stage5-validation.md) — all 14 requirements,
+  381 backend checks, 197 UI unit tests, eight browser cases and remaining live gates.
 - [Slack setup](slack-setup.md) and [app manifest](slack-app-manifest.yaml).
 
 The active engine still defaults to `legacy`. Stage 1S adapts `TelegramTransport`
@@ -44,11 +48,15 @@ for the general engine, supports per-bot reception, identity linking, scoped com
 question choices/custom replies and parent topics, and opens interactive subscriptions
 for capable providers. Enable `Forge:Chat:Enabled`, select the `plugins` engine and
 leave `TelegramSlice:Enabled` false to use it. Existing configuration APIs and
-secret references provide setup. Stage 4 adds `Common.Chat.Slack`, one Socket Mode
+secret references remain supported. Stage 4 adds `Common.Chat.Slack`, one Socket Mode
 receiver per app, workspace-qualified inbox routing, Web API threads and Block Kit
-controls, channel linking and root completion/retirement updates. The full
-administration/repair UI and legacy import remain Stages 5-6. Automated HTTP and host fixtures are distinguished from the real
-Telegram exercise, which has not run.
+controls, channel linking and root completion/retirement updates. Stage 5 adds
+Settings → Integrations → Chat, connection repair and verification, Host alerts,
+confirmed identity linking and one shared row/detail drawer. Atomic saves queue
+introductions and preserve running work; shared product/spawn summaries avoid
+per-row chat queries. The Telegram helper now calls the same authenticated APIs.
+Legacy import remains Stage 6. New backend code needs an operator-approved host
+restart; implementation did not restart services or send real provider messages.
 
 **Review status (round 1, 2026-09-09): all 15 comments fixed in documentation.**
 The inline `REVIEW-D-nn` / `REVIEW-P-nn` records preserve the original feedback and

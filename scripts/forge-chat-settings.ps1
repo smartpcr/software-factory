@@ -1,4 +1,4 @@
-# Shared non-secret host configuration for setup-telegram-bridge.ps1.
+# Legacy non-secret host configuration, retained for host loading and import fixtures.
 # Forge.Api reads the same path directly; run-forge-ui.ps1 preserves env overrides.
 
 function Get-ForgeChatSettingsPath {

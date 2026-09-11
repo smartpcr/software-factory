@@ -1,9 +1,10 @@
 # Slack setup for the Chat plugin
 
 Stage 4 supports internal Slack workspace installations through Socket Mode.
-Use the [versioned manifest](slack-app-manifest.yaml). The guided connection and
-repair screens are Stage 5; the authenticated configuration, validation, linking,
-health and retry APIs below are available now. Live-workspace verification remains
+Use the [versioned manifest](slack-app-manifest.yaml). Stage 5 provides guided
+connection and repair screens under Settings → Integrations → Chat; follow the
+[current setup guide](chat-plugin-setup.md). The authenticated configuration,
+validation, linking, health and retry APIs below remain available. Live-workspace verification remains
 the separate integration gate in the [implementation plan](chat-plugin-implementation-plan.md).
 
 ## Create and install the app

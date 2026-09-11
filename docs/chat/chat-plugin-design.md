@@ -1,10 +1,11 @@
 # Forge workstream chat plugins — design
 
-**Status:** plugin design proposed; standalone Stage 0A defaults/configuration
-maintenance implemented and verified, 2026-09-09. Implementation is tracked in
-[the implementation plan](chat-plugin-implementation-plan.md). Existing code was
-examined at `70103c83`. This design supersedes the single-provider and global-target
-assumptions in the earlier chat plans for the next revision.
+**Status (2026-09-10):** implementation through Stage 5 is covered by automated
+validation; real-provider exercises and Stage 6 migration/cutover remain pending.
+See [the implementation plan](chat-plugin-implementation-plan.md) and the current
+[setup/API guide](chat-plugin-setup.md). The historical baseline examined for this
+design was `70103c83`. This design supersedes the single-provider and global-target
+assumptions in the earlier chat plans.
 
 ---
 

@@ -75,6 +75,13 @@ public sealed class ChatStatusService(ControlDbContext control, IProductDbContex
         };
     }
 
+    public async Task<object> SpawnHistoryAsync(ForgeActor? actor, string productId, string spawnId, CancellationToken ct)
+    {
+        var product = await authorizer.ResolveProductAsync(productId, ct) ?? throw new ForgeAccessDeniedException();
+        await authorizer.RequireAsync(actor, ForgeCapabilities.SpawnRead, new(product.Id, spawnId), ct);
+        return await this.HistoryAsync(product.Id, spawnId, null, ct);
+    }
+
     private async Task<object> HistoryAsync(string? productId, string? spawnId, string? hostId, CancellationToken ct)
     {
         var events = await control.ChatNotifications.AsNoTracking().Where(n => n.Platform == "plugins" && (hostId != null

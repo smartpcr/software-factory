@@ -47,7 +47,7 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
 
   useEffect(() => {
     let cancelled = false;
-    void forgeApi.getStorySpawn(spawn.storyId)
+    void forgeApi.getStorySpawn(spawn.storyId, false)
       .then((d) => { if (!cancelled) setDetail(d); })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -189,7 +189,10 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
       <div className="sr-num">{String(index + 1).padStart(2, '0')}</div>
       <div className="sr-meta">
         <div className="sr-id">{spawn.storyId}</div>
-        <div className="sr-title">{spawn.storyTitle}</div>
+        <div className="chat-story-heading">
+          <div className="sr-title">{spawn.storyTitle}</div>
+          {spawn.productId && <ChatRowControl key={`${spawn.productId}:${spawn.id}`} productId={spawn.productId} spawnId={spawn.id} title={spawn.storyTitle} summary={spawn.chatSummary} />}
+        </div>
         <div className="sr-sub">
           <span className="seg"><b>{wsCount}</b> workstreams</span>
           {mergingCount > 0 && <span className="seg" style={{ color: 'var(--sc-cyan)' }}><b>{mergingCount}</b> merging</span>}
@@ -201,7 +204,6 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
         {!!spawn.chatSummary?.unroutedCount && <span className="sr-chip" title={Object.entries(spawn.chatSummary.unroutedReasons).map(([reason, count]) => `${reason.replaceAll('-', ' ')}: ${count}`).join('; ')}>
           {spawn.chatSummary.unroutedCount} chat alerts unrouted
         </span>}
-        {spawn.productId && <ChatRowControl key={`${spawn.productId}:${spawn.id}`} productId={spawn.productId} spawnId={spawn.id} title={spawn.storyTitle} />}
       </div>
       {(() => {
         // docs/forge/e2e.md Stage 8.3 — `phase==='qa'` is a legacy

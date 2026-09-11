@@ -39,6 +39,8 @@ public static class ChatPluginRegistration
         services.AddSingleton<WorkstreamPluginRegistry>();
         services.AddScoped<ChatConfigurationService>();
         services.AddScoped<ChatProviderSetupService>();
+        services.AddScoped<ChatManagementService>();
+        services.AddScoped<ChatConnectionCheckService>();
         services.AddHttpClient(TelegramNotificationProvider.ClientName, client => client.Timeout = TimeSpan.FromSeconds(15))
             .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddHttpClient(TelegramProvider.ClientName, client => client.Timeout = TimeSpan.FromSeconds(30))

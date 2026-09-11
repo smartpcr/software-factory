@@ -12,6 +12,7 @@ import { SwarmMasterPanel, type Selection } from './SwarmMasterPanel';
 import { SwarmDetailPanel, type DetailTab } from './SwarmDetailPanel';
 import { ChromeCollapseButton } from '@/shell/ChromeCollapseButton';
 import { Toaster } from '@/board/Toaster';
+import { ChatRowControl } from './plugins/ChatRowControl';
 
 /** Map the StorySpawn lifecycle phase to one of the three swarm-control modes. */
 function modeForPhase(p: StorySpawnPhase): SwarmMode {
@@ -341,6 +342,7 @@ export function SwarmStoryView() {
   return (
     <div className="swarm-ctrl">
       <div className="shell">
+        {detail.spawn.productId && <div className="chat-detail-control"><ChatRowControl productId={detail.spawn.productId} spawnId={detail.spawn.id} title={detail.spawn.storyTitle} summary={detail.spawn.chatSummary} /></div>}
         {spawnHeaderCollapsed ? (
           <div className="swarm-header-collapsed">
             <div className="swarm-header-collapsed-eyebrow">SWARM // {detail.spawn.storyId}</div>

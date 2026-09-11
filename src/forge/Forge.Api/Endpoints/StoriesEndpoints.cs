@@ -1574,12 +1574,12 @@ public static class StoriesEndpoints
             rows = (await q.ToListAsync()).Select(spawn => (Spawn: spawn, ProductId: productId)).ToList();
         }
         rows.Sort((a, b) => b.Spawn.UpdatedAt.CompareTo(a.Spawn.UpdatedAt));
-        var chatSummaries = await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, rows, ctx.RequestAborted);
+        var chatSummaries = await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, rows, ctx.RequestAborted, ctx.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptions<Forge.Api.Services.Chat.ChatPluginOptions>>().Value);
         return Results.Ok(rows.Select(row => ToContract(row.Spawn, row.ProductId,
             chatSummaries.GetValueOrDefault(Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(row.ProductId, row.Spawn.Id).Key))).ToList());
     }
 
-    private static async Task<IResult> GetSpawn(string storyId, ControlDbContext control, ProductDbContext db)
+    private static async Task<IResult> GetSpawn(string storyId, ControlDbContext control, ProductDbContext db, Microsoft.Extensions.Options.IOptions<Forge.Api.Services.Chat.ChatPluginOptions> chatOptions, bool includeChatSummary = true)
     {
         var spawn = await db.StorySpawns.AsNoTracking()
             .FirstOrDefaultAsync(s => s.StoryId == storyId);
@@ -1902,11 +1902,12 @@ public static class StoriesEndpoints
             };
         }).ToArray();
 
-        var owner = await control.Products.Where(p => p.Slug == db.ProductSlug).Select(p => p.Id).SingleAsync();
-        var summaries = await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, new[] { (spawn, owner) });
+        var owner = await db.Repos.Where(r => r.Id == spawn.RepoId).Select(r => r.ProductId).SingleOrDefaultAsync()
+            ?? await control.Products.Where(p => p.Slug == db.ProductSlug).Select(p => p.Id).SingleAsync();
+        var summaries = includeChatSummary ? await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, new[] { (spawn, owner) }, options: chatOptions.Value) : null;
         return Results.Ok(new
         {
-            spawn = ToContract(spawn, owner, summaries[Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(owner, spawn.Id).Key]),
+            spawn = ToContract(spawn, owner, summaries?.GetValueOrDefault(Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(owner, spawn.Id).Key)),
             // Phase 50 — top-level sibling so the strip can colour the QA-PR
             // rect (release stage) without fetching the PR row separately.
             // Sibling rather than inside `spawn` because ToContract is reused

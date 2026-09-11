@@ -22,7 +22,10 @@ public sealed class ChatRetentionService(ControlDbContext control, IProductDbCon
         var day7 = now.AddDays(-7); var day30 = now.AddDays(-30); var day90 = now.AddDays(-90);
         var ms7 = day7.ToUnixTimeMilliseconds(); var ms30 = day30.ToUnixTimeMilliseconds(); var ms90 = day90.ToUnixTimeMilliseconds();
         var expiry = now.AddDays(-1).ToUnixTimeMilliseconds(); var nowMs = now.ToUnixTimeMilliseconds();
-        var count = 0;
+        var count = await control.Database.ExecuteSqlInterpolatedAsync($"""
+            DELETE FROM chat_notifications WHERE Id IN (SELECT Id FROM chat_notifications WHERE Platform='plugins-check'
+              AND Status!='uncertain' AND julianday(CreatedAt)<=julianday({day90}) LIMIT 100)
+            """, ct);
         var activeLinks = identities.ActiveProviderLinks.Select(l => l.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var link in (await control.ChatOperatorLinks.Where(l => l.RevokedAt == null).ToListAsync(ct)).Where(l => !activeLinks.Contains(l.Id)).Take(100))
             link.RevokedAt = nowMs;

@@ -20,7 +20,7 @@ using Microsoft.Extensions.Options;
 /// <summary>Configuration only. No domain execution, provider send, or receiver is started here.</summary>
 public sealed partial class ChatConfigurationService(
     ControlDbContext control, IProductDbContextFactory products, ForgeCapabilityAuthorizer authorizer,
-    IChatProviderRegistry providers, WorkstreamPluginRegistry plugins, IOptions<ChatPluginOptions> options, ChatTelegramSliceService slice)
+    IChatProviderRegistry providers, WorkstreamPluginRegistry plugins, IOptions<ChatPluginOptions> options, ChatTelegramSliceService slice, TimeProvider clock)
 {
     private static readonly string[] SpawnKinds = ["open-questions", "workstream-stalled"];
     private static readonly string[] HostKinds = ["queue-strain", "human-interaction"];
@@ -157,7 +157,7 @@ public sealed partial class ChatConfigurationService(
     {
         var reason = this.ConnectionReason(row);
         return new(row.Id, row.ProviderId, row.DisplayName, row.Enabled, row.Revision, row.SettingsVersion,
-            !row.Enabled ? "off" : reason is not null ? "paused" : "configured", reason);
+            !row.Enabled ? "off" : reason is not null ? "paused" : "configured", reason, row.InstallationId);
     }
 
     private string? ConnectionReason(ChatConnectionRow row)

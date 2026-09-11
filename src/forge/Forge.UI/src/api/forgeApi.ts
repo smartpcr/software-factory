@@ -100,7 +100,7 @@ export interface StorySpawn {
   id: string;
   /** Explicit ownership from the list response, including the all-products view. */
   productId?: string | null;
-  chatSummary?: { state: string; unroutedCount: number; unroutedReasons: Record<string, number>; pendingCount: number; failedCount: number; sentCount: number };
+  chatSummary?: import('../swarm/plugins/chatApi').ChatSummary;
   storyId: string;
   storyTitle: string;
   repoId: string | null;
@@ -1477,8 +1477,8 @@ export const forgeApi = {
   },
 
   /** GET /api/stories/{storyId}/spawn — full spawn state + child workstreams. */
-  async getStorySpawn(storyId: string): Promise<StorySpawnDetail> {
-    return fetchJson<StorySpawnDetail>(`/api/stories/${encodeURIComponent(storyId)}/spawn`);
+  async getStorySpawn(storyId: string, includeChatSummary = true): Promise<StorySpawnDetail> {
+    return fetchJson<StorySpawnDetail>(`/api/stories/${encodeURIComponent(storyId)}/spawn${includeChatSummary ? "" : "?includeChatSummary=false"}`);
   },
 
   /**

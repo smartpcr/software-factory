@@ -1,5 +1,6 @@
 import { OperatorSessionSettings } from '@/auth/OperatorGate';
 import { useEffect, useState } from 'react';
+import { ChatIntegrations } from '../swarm/plugins/ChatIntegrations';
 import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
 import { useCurrentUserStore } from '@/state/useCurrentUserStore';
 import type { UserSettings } from '@/types';
@@ -471,6 +472,7 @@ export function SettingsView() {
   return (
     <section className="view active" id="view-settings">
       <OperatorSessionSettings />
+      <ChatIntegrations />
       <div className="page-head">
         <div className="page-head-left">
           <div className="page-eyebrow">

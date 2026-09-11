@@ -33,6 +33,20 @@ public static class ChatPluginEndpoints
             => await service.BeginAsync(await action.ActorAsync(ct), id, request.ExternalTenantId, request.ExternalUserId, ct)).WithMetadata(self);
         api.MapDelete("/chat/operator-links/self", async (ForgeActionContext action, ChatLinkService service, CancellationToken ct) =>
         { await service.RevokeAsync(await action.ActorAsync(ct), ct); return Results.NoContent(); }).WithMetadata(self);
+        api.MapGet("/chat/management", async (ForgeActionContext action, ChatManagementService service, CancellationToken ct)
+            => await service.ReadAsync(await action.ActorAsync(ct), ct)).WithMetadata(self);
+        api.MapPost("/chat/preview", async (ChatPreviewRequest request, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
+            => await service.PreviewAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(self);
+        api.MapGet("/chat/connections/{id}/health", async (string id, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
+            => await service.HealthAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(host);
+        api.MapPut("/chat/connections/{id}/credentials/{name}", async (string id, string name, ChatCredentialWrite request, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
+            => await service.CredentialAsync(await action.ActorAsync(ct), id, name, request, ct)).WithMetadata(host);
+        api.MapGet("/chat/connections/{connectionId}/destinations/{id}/checks", async (string connectionId, string id, ForgeActionContext action, ChatConnectionCheckService service, CancellationToken ct)
+            => await service.ReadAsync(await action.ActorAsync(ct), connectionId, id, ct)).WithMetadata(host);
+        api.MapPost("/chat/connections/{connectionId}/destinations/{id}/checks", async (string connectionId, string id, ChatCheckRequest request, ForgeActionContext action, ChatConnectionCheckService service, CancellationToken ct)
+            => await service.SendAsync(await action.ActorAsync(ct), connectionId, id, request, ct)).WithMetadata(host);
+        api.MapGet("/products/{productId}/chat/summaries", async (string productId, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
+            => await service.SummariesAsync(await action.ActorAsync(ct), productId, ct)).WithMetadata(self);
         api.MapGet("/chat/configuration", (IOptions<ChatPluginOptions> options) => new
         {
             options.Value.Enabled, options.Value.Engine, options.Value.HostId, options.Value.UnavailableReason,
@@ -69,6 +83,12 @@ public static class ChatPluginEndpoints
         }).WithMetadata(host);
 
         const string SpawnPath = "/products/{productId}/story-spawns/{spawnId}/plugins/chat";
+        api.MapGet(SpawnPath + "/setup", async (string productId, string spawnId, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
+            => await service.SetupAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
+        api.MapPut(SpawnPath + "/setup", async (string productId, string spawnId, ChatSetupWrite request, ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
+            => await service.SaveSetupAsync(await action.ActorAsync(ct), productId, spawnId, request, ct)).WithMetadata(write);
+        api.MapGet(SpawnPath + "/history", async (string productId, string spawnId, ForgeActionContext action, ChatStatusService service, CancellationToken ct)
+            => await service.SpawnHistoryAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
         api.MapGet(SpawnPath + "/status", async (string productId, string spawnId, ForgeActionContext action, ChatStatusService service, CancellationToken ct)
             => await service.SpawnAsync(await action.ActorAsync(ct), productId, spawnId, ct)).WithMetadata(read);
         api.MapGet("/chat/host/status", async (ForgeActionContext action, ChatStatusService service, CancellationToken ct)

@@ -42,7 +42,7 @@ public sealed class ChatResultReconciler(ControlDbContext control, IProductDbCon
                     catch (Microsoft.Data.Sqlite.SqliteException) { continue; }
                 }
             }
-            if (notification.ScopeKind == "spawn" && notification.Kind != "open-questions")
+            if (notification.ScopeKind == "spawn" && notification.Kind is not ("open-questions" or "setup"))
             {
                 var product = await control.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == notification.ProductId, ct);
                 if (product is not null && resolver.ProductAvailable(product))

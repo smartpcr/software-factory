@@ -1,13 +1,13 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A, 0B, 1, 2 and 3 implemented. Stage 4 Slack adapter and host integration implemented: nine checklist items complete; item 10 awaits its Stage 5 connection UI. Stage 1S automated checks pass; its real-bot/manual gate remains pending. Stage 4 has 369 passing backend checks and one skipped live-provider test; see the validation report. Stages 5-6 remain planned. Updated 2026-09-10.
+**Status:** Stages 0A, 0B, 1, 2, 3, 4 and 5 implemented. All 14 Stage 5 items and Stage 4's connection-repair UI dependency are complete, with 381 passing backend checks, one skipped live-provider test, 197 passing UI unit tests and eight passing browser cases. The Stage 1S manual exercise and the separate real-provider integration gate remain pending. Stage 6 remains planned. Updated 2026-09-10. See [Stage 5 validation](chat-plugin-stage5-validation.md).
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
 This document plans the implementation of the requested workstream plugin model,
 multiple chat providers/connections/channels, and Slack support. Implementation
-checkboxes are checked only for completed Stages 0A, 0B and 1 work; checked review items
-record documentation resolutions only.
+checkboxes record completed implementation with stage-specific evidence; checked
+review items record documentation resolutions only. Live gates remain separate.
 Historical completed phases in the older chat plans do not count as completion of
 this revision.
 
@@ -577,11 +577,12 @@ row gate remains pending; Slack, the full setup UI and legacy import remain late
       events. Use event/envelope dedupe plus logical action idempotency.
 - [x] Implement question disambiguation for thread replies and channel-based linking
       challenges. Initial support must not require direct-message or user tokens.
-- [ ] Respect provider rate-limit hints and make removed channel membership, revoked
+- [x] Respect provider rate-limit hints and make removed channel membership, revoked
       tokens and archived channels repairable from the connection UI.
 
     - [x] Provider pacing, safe failure codes, validation and revision/retry APIs.
-    - [ ] Connection repair screen and browser acceptance: owned by Stage 5.
+    - [x] Connection repair screen and browser acceptance: completed in Stage 5;
+          see [Stage 5 validation](chat-plugin-stage5-validation.md).
 
 **Acceptance:** fixtures exercise public/private channel replies, buttons, split
 messages, duplicate envelopes, reconnects, 429s and revoked credentials. Two Slack
@@ -590,7 +591,7 @@ one workspace leaves the other receiving. A channel reply with an ambiguous
 question never answers an arbitrary work item. No history polling is required.
 
 See [Stage 4 validation](chat-plugin-stage4-validation.md) for all ten requirements,
-fixture evidence, the remaining Stage 5 UI dependency and the gap review.
+fixture evidence and the gap review. Stage 5 closes its connection UI dependency.
 Use the [Slack setup guide](slack-setup.md) and [manifest](slack-app-manifest.yaml).
 
 <a id="provider-integration-gate"></a>
@@ -601,6 +602,9 @@ Slack workspace connections to the same app receiver while Telegram remains live
 Fixtures alone do not close this gate. Missing workspace approval marks it pending,
 not passed. Enable redacted question content explicitly for answer-interaction tests.
 
+- [ ] Run and record the approved real-provider exercise above. Stage 5's isolated
+      protocol, host and browser fixtures do not mark this gate passed.
+
 Protocol references: [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/),
 [message posting](https://docs.slack.dev/reference/methods/chat.postMessage/),
 [message updates](https://docs.slack.dev/reference/methods/chat.update/),
@@ -609,41 +613,46 @@ Protocol references: [Socket Mode](https://docs.slack.dev/apis/events-api/using-
 
 ### Stage 5 — guided UI, API, and live enablement
 
-- [ ] Implement the proposed connection, destination, identity-link, health and
+**Implemented and verified (2026-09-10).** All 14 items below map to code and tests
+in [Stage 5 validation](chat-plugin-stage5-validation.md). See the current
+[setup and API guide](chat-plugin-setup.md). Runtime activation requires loading
+the new backend at an operator-approved restart; no running service was restarted.
+
+- [x] Implement the proposed connection, destination, identity-link, health and
       delivery APIs with explicit verbs/DTOs, authorization, revisions and redaction.
-- [ ] Add Settings → Integrations → Chat. Persist incomplete setup and expose
+- [x] Add Settings → Integrations → Chat. Persist incomplete setup and expose
       credentials/destination/outbound/inbound/link/permission verification separately.
-- [ ] Include permanent Host alerts provider/channel selection, default host event
+- [x] Include permanent Host alerts provider/channel selection, default host event
       filters, unrouted counts, orphaned scopes and separate host permissions.
       Add metadata-only/redacted-summary policy selection and a redacted preview;
       explain that retiring a subscription does not remove provider-held messages.
-- [ ] Add an always-visible Chat control to each `SwarmStoryRow` in `SwarmIndexView`,
+- [x] Add an always-visible Chat control to each `SwarmStoryRow` in `SwarmIndexView`,
       including done rows. Show off/needs-setup/ready/degraded status and provider/
       channel or destination count without opening the child graph.
-- [ ] Add a shared **Remote control · {row title}** drawer reachable from that row
+- [x] Add a shared **Remote control · {row title}** drawer reachable from that row
       and its `SwarmStoryView` header. Stop row-navigation propagation and support
       keyboard activation, focus return, scrolling and the existing dense row layout.
-- [ ] Implement the exact flow: **Enable chat remote control → Provider → Channel →
+- [x] Implement the exact flow: **Enable chat remote control → Provider → Channel →
       Save and enable**. Default to interactive remote control; offer notification-only
       as an explicit alternative. Show connection selection only when needed.
-- [ ] Support inline connection setup with return to the same row/draft, channel
+- [x] Support inline connection setup with return to the same row/draft, channel
       discovery by name, validation failures, explicit save/cancel and **Add provider/
       channel** for additional destinations. Changing provider clears an incompatible
       channel selection; cancellation never activates chat or creates a topic.
-- [ ] Include chat summaries in spawn list/detail data or a batched product-scoped
+- [x] Include chat summaries in spawn list/detail data or a batched product-scoped
       endpoint; cache/update by product/spawn and revision. Render without per-row
       provider calls; refresh the list and detail header from the same saved state.
-- [ ] Aggregate summaries using the existing spawn list plus one chunked control-DB
+- [x] Aggregate summaries using the existing spawn list plus one chunked control-DB
       query; test query counts to prevent per-row cross-database reads.
-- [ ] Add explicit copy-destinations between top-level rows. All current/future
+- [x] Add explicit copy-destinations between top-level rows. All current/future
       children are covered by their parent's subscription without individual switches.
-- [ ] Implement user-confirmed identity linking and revoke/re-link flows. Verify
+- [x] Implement user-confirmed identity linking and revoke/re-link flows. Verify
       linkage before offering domain actions; keep notification-only mode usable.
-- [ ] Apply configuration revisions live to the affected connection/subscription;
+- [x] Apply configuration revisions live to the affected connection/subscription;
       show externally managed credentials and any host-refresh limitation accurately.
-- [ ] Add test-send/reply checks, delivery history, next-retry information and retry
+- [x] Add test-send/reply checks, delivery history, next-retry information and retry
       controls. Never send a test merely by viewing or validating a settings page.
-- [ ] Update the Telegram helper to call these APIs. Retire configuration-file
+- [x] Update the Telegram helper to call these APIs. Retire configuration-file
       patching and redundant desktop installation/sign-in prompts from normal setup.
 
 **Acceptance:** use a five-row fixture matching the supplied screenshot. Enable

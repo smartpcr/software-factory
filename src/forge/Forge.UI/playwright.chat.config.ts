@@ -6,7 +6,7 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: 'list',
-  outputDir: '../../../.tmp-build/chat-stage1s/browser-results',
+  outputDir: '../../../.tmp-build/chat-stage5/browser-results',
   use: { baseURL: 'http://127.0.0.1:5389', ...devices['Desktop Chrome'], channel: process.env.FORGE_CHAT_BROWSER_CHANNEL || undefined, screenshot: 'only-on-failure' },
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 5389',

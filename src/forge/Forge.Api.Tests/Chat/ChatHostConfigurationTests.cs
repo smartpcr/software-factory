@@ -217,6 +217,59 @@ public class ChatHostConfigurationTests : IDisposable
             """, Path.Combine(this.folder, "unused.json"));
     }
 
+    [Fact]
+    public async Task Plugin_setup_helper_uses_authenticated_APIs_and_sends_only_when_requested()
+    {
+        await this.RunPowerShellAsync("""
+            $ErrorActionPreference = 'Stop'
+            $global:chatFixtureCalls = [System.Collections.Generic.List[string]]::new()
+            $global:chatFixtureRevision = 1
+            function Invoke-RestMethod {
+                param($Uri, $Method, $WebSession, $Headers, $MaximumRedirection, $Body, $ContentType)
+                $path = ([uri]$Uri).AbsolutePath
+                if ($MaximumRedirection -ne 0) { throw 'Credential requests must not follow redirects' }
+                $global:chatFixtureCalls.Add("$Method $path")
+                if ($path -eq '/api/operator/csrf') { return @{ token = 'fixture-csrf' } }
+                if ($Headers['X-Forge-CSRF'] -ne 'fixture-csrf') { throw 'Missing request protection' }
+                if ($path -eq '/api/chat/management') { return @{ canManageConnections = $true } }
+                if ($path.EndsWith('/validate')) { return @{ succeeded = $true } }
+                if ($path.EndsWith('/checks')) { return @{ state = 'sent' } }
+                if ($path.EndsWith('/setup')) {
+                    if ($Method -eq 'GET') {
+                        return @{ plugin = @{ revision = 4; subscriptions = @(@{ destinationId = 'other-channel'; conversationPolicy = 'thread';
+                            interactive = $false; contentMode = 'metadata'; eventKindsJson = '["open-questions"]'; paused = $true }) } }
+                    }
+                    $value = $Body | ConvertFrom-Json
+                    $other = $value.destinations | Where-Object { $_.destinationId -eq 'other-channel' }
+                    if (-not $other.paused -or $value.destinations.Count -ne 2 -or $value.expectedRevision -ne 4) { throw 'Existing row destination changed' }
+                    return @{}
+                }
+                if ($path.EndsWith('/credentials/bot-token')) {
+                    $value = $Body | ConvertFrom-Json
+                    if ($value.value -ne 'fixture-token' -or $value.expectedRevision -ne $global:chatFixtureRevision) { throw 'Credential contract mismatch' }
+                    $global:chatFixtureRevision++; return @{ revision = $global:chatFixtureRevision }
+                }
+                if ($path.EndsWith('/destinations')) { return @(@{ id = 'saved-channel'; externalTenantId = '12345'; channelId = '-100'; revision = 1 }) }
+                if ($Method -eq 'PUT') { $global:chatFixtureRevision++; return @{ revision = $global:chatFixtureRevision } }
+                return @{ revision = $global:chatFixtureRevision; displayName = 'Fixture'; secretReferences = @{}; productIds = @('p') }
+            }
+            $arguments = @{ BotId = '12345'; ChannelId = '-100'; ProductIds = @('p');
+                BotToken = (ConvertTo-SecureString 'fixture-token' -AsPlainText -Force);
+                WebSession = [Microsoft.PowerShell.Commands.WebRequestSession]::new() }
+            & (Join-Path $env:CHAT_FIXTURES 'setup-telegram-bridge.ps1') @arguments
+            if ($global:chatFixtureCalls -match '/checks') { throw 'Normal setup sent a test message' }
+            if (-not ($global:chatFixtureCalls -match '/validate')) { throw 'Normal setup did not validate access' }
+            if (Test-Path $env:FORGE_CHAT_SETTINGS_PATH) { throw 'Normal setup patched configuration files' }
+            $global:chatFixtureCalls.Clear()
+            & (Join-Path $env:CHAT_FIXTURES 'setup-telegram-bridge.ps1') @arguments -SendTest
+            if (@($global:chatFixtureCalls | Where-Object { $_ -match '/checks' }).Count -ne 1) { throw 'Expected one explicit test send' }
+            $global:chatFixtureCalls.Clear()
+            & (Join-Path $env:CHAT_FIXTURES 'setup-telegram-bridge.ps1') @arguments -SpawnId 'parent'
+            if (-not ($global:chatFixtureCalls -match 'PUT .*/setup')) { throw 'Parent configuration was not saved' }
+            if ($global:chatFixtureCalls -match '/checks') { throw 'Row setup sent an unrequested test' }
+            """, Path.Combine(this.folder, "api-setup-must-not-write.json"));
+    }
+
     private async Task RunPowerShellAsync(string script, string settingsPath)
     {
         var scriptPath = this.WriteSettings($"fixture-{Guid.NewGuid():N}.ps1", "$ErrorActionPreference = 'Stop'\n" + script);

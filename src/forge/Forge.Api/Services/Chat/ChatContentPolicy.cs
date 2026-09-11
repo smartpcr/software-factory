@@ -24,9 +24,11 @@ public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
         var title = row.Kind switch
         {
             "open-questions" => "Forge · Open questions", "workstream-stalled" => "Forge · Workstream needs attention",
-            "queue-strain" => "Forge · Queue pressure", "human-interaction" => "Forge · Host action needed", _ => "Forge notification",
+            "queue-strain" => "Forge · Queue pressure", "human-interaction" => "Forge · Host action needed",
+            "setup" => "Forge · Chat enabled", _ => "Forge notification",
         };
         var body = part.ControlsRetired ? "This request is closed. Open Forge for the current status." : "Open Forge to review the current status.";
+        if (row.Kind == "setup" && !part.ControlsRetired) body = "Chat is enabled for this parent. Every current and future child shares this conversation. Link your Forge operator account before using work actions.";
         if (part.ConfirmationActorId is not null && !part.ControlsRetired) body = part.ActionKind == "question.prompt"
             ? "Reply to this message with your answer. Only the operator who requested this prompt can answer it. Expires in 10 minutes."
             : "Confirm restart of this target. This resets its worktree and run. Confirmation expires in 30 seconds.";

@@ -23,6 +23,7 @@ public sealed class ChatRuntimeState(IForgeDbPaths paths) : IDisposable
     private bool ownsHost;
     public string ProcessId { get; } = Guid.NewGuid().ToString("N");
     public SemaphoreSlim EnqueueGate { get; } = new(1, 1);
+    public SemaphoreSlim CheckGate { get; } = new(1, 1);
     public SemaphoreSlim DeliveryGate { get; } = new(1, 1);
     public SemaphoreSlim InboxGate { get; } = new(1, 1);
     public SemaphoreSlim DomainGate { get; } = new(1, 1);
