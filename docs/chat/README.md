@@ -11,6 +11,9 @@ child workstreams. Multiple providers and channels may be attached to the same r
   routing, persistence, provider behavior, and compatibility.
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
+- [Validation matrix execution](chat-plugin-validation-matrix.md) — deployment,
+  all 28 scenario mappings, 408 backend checks, 197 UI unit tests, 12 browser
+  cases and the remaining shared-conformance and real-provider gates.
 
 **Status (2026-09-10): Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. The Stage 1S manual exercise and the separate real-provider live gates remain pending; Stage 6 cutover/rollback is rehearsed in isolated fixtures.** The legacy bridge uses
 explicit host-user configuration and safe defaults. Authenticated operator pairing

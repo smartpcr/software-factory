@@ -51,7 +51,7 @@ public sealed partial class ChatMigrationService
         }
         await control.SaveChangesAsync(ct);
         var issues = new List<ChatMigrationIssue>();
-        var invalidTopics = new Dictionary<string, string>();
+        var invalidTopics = new Dictionary<(string ProductId, string SpawnId, string ChannelId), string>();
         var routes = new Dictionary<string, (ChatSubscriptionRow Sub, ChatConversationBindingRow Binding, SpawnPluginRow? Parent)>();
         foreach (var destination in destinations.Values)
             routes["host:" + destination.Id] = await this.RouteAsync(state, source, destination, null, null, false, activate, ct);
@@ -64,7 +64,7 @@ public sealed partial class ChatMigrationService
             if (reason is not null)
             {
                 issues.Add(new("topic", topic.SpawnId, reason));
-                invalidTopics[ScopeKey(owned.Product?.Id ?? topic.ProductId, topic.SpawnId) + ":" + topic.ChatId] = reason;
+                invalidTopics[(owned.Product?.Id ?? topic.ProductId, topic.SpawnId, topic.ChatId)] = reason;
                 continue;
             }
             var destination = destinations[topic.ChatId];
@@ -77,7 +77,7 @@ public sealed partial class ChatMigrationService
             var owned = await this.OwnedAsync(notification, ct);
             var destination = destinations.GetValueOrDefault(notification.ChatId ?? "") ?? destinations[source.GlobalChannel];
             var reason = owned.Reason ?? (string.IsNullOrWhiteSpace(notification.ChatId) ? "destination-missing" : null);
-            if (owned.Spawn is not null && invalidTopics.TryGetValue(ScopeKey(owned.Product!.Id, owned.Spawn.Id) + ":" + destination.ChannelId, out var topicReason)) reason = topicReason;
+            if (owned.Spawn is not null && invalidTopics.TryGetValue((owned.Product!.Id, owned.Spawn.Id, destination.ChannelId), out var topicReason)) reason = topicReason;
             var key = owned.Spawn is not null && reason is null ? ScopeKey(owned.Product!.Id, owned.Spawn.Id) + ":" + destination.Id : "host:" + destination.Id;
             if (!routes.TryGetValue(key, out var route))
             {

@@ -7,6 +7,7 @@ async function mockApi(page: Page, owner = true, host = true) {
   const writes: { path: string; body: any }[] = [];
   const reads: string[] = [];
   let conflict = false;
+  let hostReason: string | null = null;
   let validationFailure = '';
   let links: any[] = [];
   let hostSubscriptions: any[] = [];
@@ -38,11 +39,11 @@ async function mockApi(page: Page, owner = true, host = true) {
           const draft = body as ChatDraft; const old = plugin(p, s);
           plugins.set(`${p}:${s}`, { ...old, enabled: draft.enabled, revision: old.revision + 1, subscriptions: draft.destinations.map((d, i) => ({ ...d, id: `sub-${s}-${i}`, revision: 1, paused: false, eventKindsJson: JSON.stringify(d.eventKinds ?? ['open-questions', 'workstream-stalled']) })) });
         }
-        json = { plugin: plugin(p, s), canManage: owner, canManageConnections: host, interactiveAvailable: true, redactedContentAllowed: true, hostReason: null };
+        json = { plugin: plugin(p, s), canManage: owner, canManageConnections: host, interactiveAvailable: true, redactedContentAllowed: true, hostReason };
       }
     } else if (path.endsWith('/chat/summaries')) {
       const p = path.split('/')[3]; json = titles.map((title, i) => ({ spawnId: 'row-' + i, title, summary: summary(p, 'row-' + i) }));
-    } else if (path === '/api/chat/management') json = { canManageConnections: host, canManageHostAlerts: host, hostReason: null, interactiveAvailable: true, hostRedactedContentAllowed: true,
+    } else if (path === '/api/chat/management') json = { canManageConnections: host, canManageHostAlerts: host, hostReason, interactiveAvailable: true, hostRedactedContentAllowed: true,
       products: [{ id: 'p', name: 'Product P' }, { id: 'q', name: 'Product Q' }], links, secretStores: [{ id: 'dpapi', available: true, externallyManaged: false }, { id: 'environment', available: true, externallyManaged: true }] };
     else if (path === '/api/chat/connections') json = connections;
     else if (connection) {
@@ -80,7 +81,8 @@ async function mockApi(page: Page, owner = true, host = true) {
     else { await route.fulfill({ status: 404, json: {} }); return; }
     await route.fulfill({ json });
   });
-  return { writes, reads, setConflict: () => { conflict = true; }, failValidation: (code = 'slack-membership-required') => { validationFailure = code; } };
+  return { writes, reads, setConflict: () => { conflict = true; }, failValidation: (code = 'slack-membership-required') => { validationFailure = code; },
+    startWithoutConnections: () => { connections.splice(0); destinations.splice(0); hostReason = 'legacy-engine-active'; } };
 }
 const rowButton = (page: Page, title: string) => page.getByRole('button', { name: `Chat for ${title}`, exact: true });
 async function choose(page: Page, provider: string, channel: string, index = 0) {
@@ -137,14 +139,48 @@ test('copy destinations stays a draft and stale revisions preserve the draft', a
   await page.getByRole('button', { name: 'Save and enable' }).click(); await expect(page.getByRole('alert')).toContainText('changed in another window'); await expect(page.getByRole('combobox', { name: 'Channel', exact: true })).toHaveValue('slack-render');
 });
 
+for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
+  for (const provider of ['telegram', 'slack']) {
+    test(`${provider} setup form is immediately visible and returns to the draft at ${viewport.width}px`, async ({ page }) => {
+      const mock = await mockApi(page); mock.startWithoutConnections(); await page.setViewportSize(viewport);
+      await page.goto('/e2e/chat/fixture.html'); const row = rowButton(page, '3D-RENDER'); await row.click();
+      const enabled = page.getByRole('checkbox', { name: 'Enable chat remote control' }); await enabled.check();
+      const providerSelect = page.getByRole('combobox', { name: 'Provider', exact: true }); await providerSelect.selectOption(provider);
+      const trigger = page.getByRole('button', { name: 'Set up connection', exact: true }); await trigger.click();
+      const name = page.getByRole('textbox', { name: 'Connection name', exact: true });
+      // Assert before filling: Playwright's fill would scroll a hidden-below-the-fold editor into view.
+      await expect(name).toBeInViewport({ ratio: 1 }); await expect(name).toBeFocused();
+      await expect(page.getByRole('heading', { name: 'Set up connection', exact: true })).toBeInViewport();
+      await expect(providerSelect).toBeDisabled(); await name.fill('Unsaved connection');
+      await page.getByRole('button', { name: 'Cancel connection setup', exact: true }).click();
+      await expect(name).toHaveCount(0); await expect(trigger).toBeEnabled();
+      await expect(trigger).toBeInViewport({ ratio: 1 }); await expect(trigger).toBeFocused();
+      await expect(providerSelect).toHaveValue(provider); await expect(enabled).toBeChecked();
+      await page.keyboard.press('Enter'); await expect(name).toBeInViewport({ ratio: 1 });
+      await expect(name).toBeFocused(); await expect(name).toHaveValue('');
+      await page.keyboard.press('Escape'); await expect(row).toBeFocused(); await expect(row).toContainText('Off');
+      expect(mock.writes.filter(w => /\/connections\/|\/setup$|\/checks$/.test(w.path))).toHaveLength(0);
+    });
+  }
+}
+
 test('inline connection and discovery return to the same row without activating it on cancel', async ({ page }) => {
   const mock = await mockApi(page); await page.goto('/e2e/chat/fixture.html'); await rowButton(page, 'BEYOND-AST').click();
   await page.getByRole('checkbox', { name: 'Enable chat remote control' }).check(); await page.getByRole('combobox', { name: 'Provider', exact: true }).selectOption('telegram');
-  await page.getByRole('button', { name: 'Set up connection', exact: true }).click(); await page.getByLabel('Connection name').fill('Second bot'); await page.getByLabel('Bot ID', { exact: true }).fill('22222');
+  const connectionTrigger = page.getByRole('button', { name: 'Set up connection', exact: true }); await connectionTrigger.click();
+  await expect(page.getByLabel('Connection name')).toBeInViewport({ ratio: 1 }); await expect(page.getByLabel('Connection name')).toBeFocused();
+  await page.getByLabel('Connection name').fill('Second bot'); await page.getByLabel('Bot ID', { exact: true }).fill('22222');
   await page.getByLabel('Bot token', { exact: true }).fill('fixture-secret'); await page.getByRole('checkbox', { name: 'Enable connection', exact: true }).check(); await page.getByRole('button', { name: 'Save connection', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Remote control · BEYOND-AST' })).toBeVisible();
-  await page.getByRole('button', { name: 'Discover or add channel', exact: true }).click(); await page.getByRole('button', { name: 'Discover channels', exact: true }).click();
+  await expect(connectionTrigger).toBeInViewport({ ratio: 1 }); await expect(connectionTrigger).toBeFocused();
+  const channelTrigger = page.getByRole('button', { name: 'Discover or add channel', exact: true }); await channelTrigger.click();
+  const discover = page.getByRole('button', { name: 'Discover channels', exact: true });
+  await expect(discover).toBeInViewport({ ratio: 1 }); await expect(discover).toBeFocused();
+  await page.getByRole('button', { name: 'Cancel channel setup', exact: true }).click();
+  await expect(channelTrigger).toBeInViewport({ ratio: 1 }); await expect(channelTrigger).toBeFocused();
+  await page.keyboard.press('Enter'); await expect(discover).toBeInViewport({ ratio: 1 }); await expect(discover).toBeFocused(); await discover.click();
   await page.getByLabel('Find channel by name').fill('New'); await page.getByRole('button', { name: 'New Ops', exact: true }).click(); await page.getByRole('button', { name: 'Save channel', exact: true }).click();
+  await expect(channelTrigger).toBeInViewport({ ratio: 1 }); await expect(channelTrigger).toBeFocused();
   await expect(page.getByRole('combobox', { name: 'Channel', exact: true })).not.toHaveValue(''); await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(rowButton(page, 'BEYOND-AST')).toContainText('Off'); expect(mock.writes.filter(w => w.path.endsWith('/setup') || w.path.endsWith('/checks'))).toHaveLength(0);
 });

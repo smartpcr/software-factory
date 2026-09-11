@@ -751,36 +751,38 @@ and no sent notification is replayed solely because of cutover or rollback.
 
 ## 4. Validation matrix
 
-| Scenario | Expected evidence |
-|---|---|
-| All four current notifier kinds | Spawn questions/stalls and host crew/sign-in alerts each reach their explicit scope; host delivery survives legacy retirement |
-| Zero matching subscriptions and future kind IDs | Persisted unrouted reason/count; no automatic replay; new kinds remain opt-in |
-| Failed earlier actionable event followed by a newer event | Subscription ordering survives retries; superseded retries cannot restore stale controls; other subscriptions continue |
-| Forged header, empty users, `productId=all`, web alias | Shared capability boundary denies before mutation; browser and chat authority match |
-| Unsupported provider/settings version versus duplicate ID | Degraded instance versus fatal chat registry; Forge UI/agents still boot |
-| Seed prune, spawn deletion, missing product DB | Orphan retirement or degraded pause as specified; batched summary reads have no per-row DB growth |
-| Busy DB before send or after provider success | No unrecorded fresh send; checkpoint-only retry after success; bounded reception ack budget |
-| Unicode oversized payload, source/secret-bearing agent text, expiry | Visible render failure, outbound redaction/metadata fallback, and retention without breaking live dedupe |
-| Five top-level rows in the supplied screen | Each exposes Enable remote control, Provider and Channel; no child selection required |
-| Parent with 32 children plus a newly generated child | One parent topic/thread per destination; all verified child events/actions route within it |
-| Chat configured while the parent has no child workstreams yet | Planning/artifact questions route to the parent's channel |
-| Two top-level rows choose the same channel | Distinct parent conversations; actions cannot cross their boundaries |
-| Done row enabled; draft cancelled; row filtered/reordered | No work restarted; cancellation has no effects; saved settings remain tied to spawn ID |
-| Parent Pause/Resume versus disable Chat | Only the explicit work control changes execution; disabling Chat prevents all its child chat actions |
-| Same IDs in different products/workspaces/channels | Correct scope; no cross-product answer or delivery |
-| Chat off on workstream A, on for B | Only B produces subscribed deliveries; both workstreams continue executing |
-| Telegram + Slack + second Telegram destination | Independent sends/retries; one domain answer updates all copies |
-| Connection/destination removed during an in-flight send | Defined operation completion and cancellation behavior; no retargeting |
-| Multiple unanswered questions in a single thread | Explicit selection; remaining questions stay actionable |
-| Answer in UI or stale button in another provider | Consistent final result; stale action cannot overwrite it |
-| Expired/replayed link or restart confirmation | Rejected without mutation; re-link remains usable |
-| Revoked operator or lost product permission | New actions rejected even if a button or link was previously valid |
-| Rate limit, socket refresh, bad token, network outage | Scoped degraded status, bounded retries, recovery without agent restart |
-| Provider receipt followed by process crash | Inbox resumes handling; duplicate provider receipt does not repeat effects |
-| Domain action followed by control-DB failure | Receipt reconciliation updates all deliveries after recovery |
-| Legacy spawn topic shared by multiple child workstreams | One parent binding retained; reply/action IDs target exactly; ambiguous text asks for selection |
-| Setup through UI, helper script, and normal launcher | Same persisted effective settings; no Development/base JSON mismatch |
-| Secret value in provider exception or URL | Redacted logs, API responses and setup diagnostics |
+**Execution started 2026-09-10:** Stage 6 and its tested legacy-topic repair are deployed. All 28 scenarios have passing automated evidence: 408 backend tests, 197 UI unit tests and 12 browser cases, including the Telegram/Slack setup navigation repair verified on the running UI. The shared conformance audit, real-provider gates and separate background story-detail HTTP 403 finding remain open in the [execution report](chat-plugin-validation-matrix.md).
+
+| # | Automated | Scenario | Expected evidence |
+|---|---|---|---|
+| VM-01 | [x] | All four current notifier kinds | Spawn questions/stalls and host crew/sign-in alerts each reach their explicit scope; host delivery survives legacy retirement |
+| VM-02 | [x] | Zero matching subscriptions and future kind IDs | Persisted unrouted reason/count; no automatic replay; new kinds remain opt-in |
+| VM-03 | [x] | Failed earlier actionable event followed by a newer event | Subscription ordering survives retries; superseded retries cannot restore stale controls; other subscriptions continue |
+| VM-04 | [x] | Forged header, empty users, `productId=all`, web alias | Shared capability boundary denies before mutation; browser and chat authority match |
+| VM-05 | [x] | Unsupported provider/settings version versus duplicate ID | Degraded instance versus fatal chat registry; Forge UI/agents still boot |
+| VM-06 | [x] | Seed prune, spawn deletion, missing product DB | Orphan retirement or degraded pause as specified; batched summary reads have no per-row DB growth |
+| VM-07 | [x] | Busy DB before send or after provider success | No unrecorded fresh send; checkpoint-only retry after success; bounded reception ack budget |
+| VM-08 | [x] | Unicode oversized payload, source/secret-bearing agent text, expiry | Visible render failure, outbound redaction/metadata fallback, and retention without breaking live dedupe |
+| VM-09 | [x] | Five top-level rows in the supplied screen | Each exposes Enable remote control, Provider and Channel; no child selection required |
+| VM-10 | [x] | Parent with 32 children plus a newly generated child | One parent topic/thread per destination; all verified child events/actions route within it |
+| VM-11 | [x] | Chat configured while the parent has no child workstreams yet | Planning/artifact questions route to the parent's channel |
+| VM-12 | [x] | Two top-level rows choose the same channel | Distinct parent conversations; actions cannot cross their boundaries |
+| VM-13 | [x] | Done row enabled; draft cancelled; row filtered/reordered | No work restarted; cancellation has no effects; saved settings remain tied to spawn ID |
+| VM-14 | [x] | Parent Pause/Resume versus disable Chat | Only the explicit work control changes execution; disabling Chat prevents all its child chat actions |
+| VM-15 | [x] | Same IDs in different products/workspaces/channels | Correct scope; no cross-product answer or delivery |
+| VM-16 | [x] | Chat off on workstream A, on for B | Only B produces subscribed deliveries; both workstreams continue executing |
+| VM-17 | [x] | Telegram + Slack + second Telegram destination | Independent sends/retries; one domain answer updates all copies |
+| VM-18 | [x] | Connection/destination removed during an in-flight send | Defined operation completion and cancellation behavior; no retargeting |
+| VM-19 | [x] | Multiple unanswered questions in a single thread | Explicit selection; remaining questions stay actionable |
+| VM-20 | [x] | Answer in UI or stale button in another provider | Consistent final result; stale action cannot overwrite it |
+| VM-21 | [x] | Expired/replayed link or restart confirmation | Rejected without mutation; re-link remains usable |
+| VM-22 | [x] | Revoked operator or lost product permission | New actions rejected even if a button or link was previously valid |
+| VM-23 | [x] | Rate limit, socket refresh, bad token, network outage | Scoped degraded status, bounded retries, recovery without agent restart |
+| VM-24 | [x] | Provider receipt followed by process crash | Inbox resumes handling; duplicate provider receipt does not repeat effects |
+| VM-25 | [x] | Domain action followed by control-DB failure | Receipt reconciliation updates all deliveries after recovery |
+| VM-26 | [x] | Legacy spawn topic shared by multiple child workstreams | One parent binding retained; reply/action IDs target exactly; ambiguous text asks for selection |
+| VM-27 | [x] | Setup through UI, helper script, and normal launcher | Same persisted effective settings; no Development/base JSON mismatch |
+| VM-28 | [x] | Secret value in provider exception or URL | Redacted logs, API responses and setup diagnostics |
 
 Use the existing `src/forge/Forge.Api.Tests/Chat` suite as the baseline and add
 provider contract fixtures plus fake HTTP/WebSocket peers. Keep provider tests

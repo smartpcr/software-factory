@@ -138,6 +138,16 @@ the validation reports, the pending live-provider gates and the existing `repos`
 catalog-test exclusion. Loading the new backend requires an operator-approved restart;
 implementation did not restart services or send real provider messages.
 
+Section 4 validation subsequently deployed Stage 6 from `498ff3b8`, found an empty
+legacy product ID that broke migration preview, and deployed a tested repair after
+separate restart approval. Preview now reports unscoped topics for repair without
+creating parent authority. The current run has 408 passing backend tests, 197 UI
+unit tests, 12 browser cases, and actual Workstreams drawer checks. Connection and
+channel setup now scroll into view and receive focus; save/cancel restores the
+route button and draft. Both providers were checked at desktop/narrow sizes.
+The [validation matrix execution report](chat/chat-plugin-validation-matrix.md)
+tracks all 28 scenarios and the remaining shared-conformance/live-provider gates.
+
 ## Foundational decisions (apply everywhere)
 
 These were resolved up front *(P "Resolved decisions" Q1–Q11)* and later phases must respect them:

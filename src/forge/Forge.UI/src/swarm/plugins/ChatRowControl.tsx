@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { chatApi, chatReason, type ChatConnection, type ChatDestination, type ChatManagement, type ChatRoute, type ChatSetup, type ChatSummary } from './chatApi';
 import { reloadChatSummaries, useChatSummary } from './chatStore';
@@ -16,7 +16,7 @@ export function changeChatProvider(route: ChatRouteDraft, providerId: string, co
 }
 export function ChatRouteFields({ route, connections, destinations, canManageConnections, notificationOnlySlice, onChange, onSetup, onChannelSetup, onRemove }: {
   route: ChatRouteDraft; connections: ChatConnection[]; destinations: ChatDestination[]; canManageConnections: boolean; notificationOnlySlice?: boolean;
-  onChange: (r: ChatRouteDraft) => void; onSetup: () => void; onChannelSetup: () => void; onRemove: () => void;
+  onChange: (r: ChatRouteDraft) => void; onSetup: (trigger: HTMLButtonElement) => void; onChannelSetup: (trigger: HTMLButtonElement) => void; onRemove: () => void;
 }) {
   const choices = connections.filter(c => c.providerId === route.providerId);
   const channels = destinations.filter(d => d.connectionId === route.connectionId);
@@ -28,7 +28,7 @@ export function ChatRouteFields({ route, connections, destinations, canManageCon
     {choices.length > 1 && <label>Connection<select value={route.connectionId} onChange={e => onChange({ ...route, connectionId: e.target.value, destinationId: '' })}>
       <option value="">Choose connection</option>{choices.map(c => <option key={c.id} value={c.id}>{c.displayName}{c.enabled ? '' : ' · disabled'}</option>)}</select></label>}
     {!!route.providerId && !choices.length && <p className="chat-notice">No {route.providerId} connection is available for this product.</p>}
-    {!!route.providerId && canManageConnections && <button type="button" className="chat-text-button" onClick={onSetup}>Set up connection</button>}
+    {!!route.providerId && canManageConnections && <button type="button" className="chat-text-button" onClick={e => onSetup(e.currentTarget)}>Set up connection</button>}
     {!!route.connectionId && <>
       {connections.find(c => c.id === route.connectionId)?.enabled === false && <p className="chat-notice">This connection is disabled. A host administrator can enable it in Chat settings.</p>}
       <label>Find saved channel<input type="search" value={filter} onChange={e => setFilter(e.target.value)} /></label>
@@ -36,7 +36,7 @@ export function ChatRouteFields({ route, connections, destinations, canManageCon
         const d = channels.find(d => d.id === e.target.value);
         onChange({ ...route, destinationId: e.target.value, conversationPolicy: route.providerId === 'slack' ? 'thread' : d?.kind.includes('forum') ? 'topic' : 'flat' });
       }}><option value="">Choose channel</option>{channels.filter(d => d.id === route.destinationId || d.displayName.toLowerCase().includes(filter.toLowerCase())).map(d => <option key={d.id} value={d.id}>{d.displayName}{d.accessState === 'unavailable' ? ' · needs repair' : ''}</option>)}</select></label>
-      {canManageConnections && <button type="button" className="chat-text-button" onClick={onChannelSetup}>Discover or add channel</button>}
+      {canManageConnections && <button type="button" className="chat-text-button" onClick={e => onChannelSetup(e.currentTarget)}>Discover or add channel</button>}
     </>}
     <label>Mode<select value={route.interactive ? 'interactive' : 'notifications'} onChange={e => onChange({ ...route, interactive: e.target.value === 'interactive' })}>
       <option value="interactive" disabled={notificationOnlySlice}>Interactive remote control</option><option value="notifications">Notification-only</option></select></label>
@@ -75,6 +75,9 @@ export function ChatRowControl({ productId, spawnId, title, summary: initial }: 
 
 function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const panelBody = useRef<HTMLDivElement>(null);
+  const editorArea = useRef<HTMLDivElement>(null);
+  const editorReturn = useRef<{ trigger: HTMLButtonElement; scrollTop: number } | null>(null);
   const close = () => { dialog.current?.close(); onClose(); };
   const [saved, setSaved] = useState<ChatSetup | null>(null);
   const [enabled, setEnabled] = useState(false);
@@ -109,6 +112,25 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
     }).catch(e => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [productId, spawnId, loadCatalog]);
+  function openEditor(key: string, kind: 'connection' | 'channel', trigger: HTMLButtonElement) {
+    editorReturn.current = { trigger, scrollTop: panelBody.current?.scrollTop ?? 0 };
+    setEditor({ key, kind });
+  }
+  useLayoutEffect(() => {
+    const body = panelBody.current;
+    if (!body) return;
+    if (editor && editorArea.current) {
+      // Inline setup follows the disabled parent draft and can start below the fold.
+      const area = editorArea.current;
+      body.scrollTop += area.getBoundingClientRect().top - body.getBoundingClientRect().top;
+      area.querySelector<HTMLElement>('input:enabled, select:enabled, textarea:enabled, button:enabled')?.focus();
+    } else if (!editor && editorReturn.current) {
+      const { trigger, scrollTop } = editorReturn.current;
+      body.scrollTop = scrollTop;
+      if (trigger.isConnected) trigger.focus();
+      editorReturn.current = null;
+    }
+  }, [editor]);
   const edited = routes.find(r => r.key === editor?.key);
   const update = (route: ChatRouteDraft) => setRoutes(old => old.map(r => r.key === route.key ? route : r));
   async function save() {
@@ -140,7 +162,7 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
     <div className="chat-panel-layout"><header className="chat-panel-header"><span className="chat-eyebrow">CHAT INTEGRATION</span>
       <h2 id="chat-panel-title">Remote control · {title}</h2><button type="button" className="chat-close" aria-label="Close remote control" disabled={busy} onClick={close}>×</button>
       <p className="chat-help">One parent conversation per destination covers every current and future child.</p></header>
-    <div className="chat-panel-body">
+    <div ref={panelBody} className="chat-panel-body">
       {!saved && !error && <p role="status">Loading saved settings…</p>}
       {saved && <>
         {saved.hostReason && <p className="chat-notice">{chatReason(saved.hostReason)} Configuration can still be saved.</p>}
@@ -150,7 +172,7 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
             <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /></label>
           {enabled && <>
             {routes.map(route => <ChatRouteFields key={route.key} route={route} connections={connections} destinations={destinations} canManageConnections={saved.canManageConnections} notificationOnlySlice={saved.notificationOnlySlice}
-              onChange={update} onSetup={() => setEditor({ key: route.key, kind: 'connection' })} onChannelSetup={() => setEditor({ key: route.key, kind: 'channel' })}
+              onChange={update} onSetup={trigger => openEditor(route.key, 'connection', trigger)} onChannelSetup={trigger => openEditor(route.key, 'channel', trigger)}
               onRemove={() => setRoutes(old => old.filter(r => r.key !== route.key))} />)}
             <button type="button" disabled={saved.notificationOnlySlice && routes.length > 0} onClick={() => setRoutes(old => [...old, emptyChatRoute(!saved.notificationOnlySlice)])}>Add provider/channel</button>
             <details><summary>Copy destinations from another row</summary><label>Source row<select value={source} onChange={e => setSource(e.target.value)}>
@@ -158,10 +180,12 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
               <button type="button" disabled={!source} onClick={() => void copy()}>Copy into draft</button><p className="chat-help">Review the copied destinations, then save to enable them for this row.</p></details>
           </>}
         </fieldset>
-        {edited && editor?.kind === 'connection' && management && <ChatConnectionEditor providerId={edited.providerId} productId={productId} management={management}
-          onCancel={() => setEditor(null)} onSaved={id => { void loadCatalog().then(() => { update({ ...edited, connectionId: id, destinationId: '' }); setEditor(null); }).catch(e => setError(e.message)); }} />}
-        {edited && editor?.kind === 'channel' && connections.find(c => c.id === edited.connectionId) && <ChatDestinationSetup connection={connections.find(c => c.id === edited.connectionId)!}
-          onCancel={() => setEditor(null)} onSaved={d => { setDestinations(old => [...old, d]); update({ ...edited, destinationId: d.id, conversationPolicy: edited.providerId === 'slack' ? 'thread' : d.kind.includes('forum') ? 'topic' : 'flat' }); setEditor(null); }} />}
+        {edited && editor && <div ref={editorArea}>
+          {editor.kind === 'connection' && management && <ChatConnectionEditor providerId={edited.providerId} productId={productId} management={management}
+            onCancel={() => setEditor(null)} onSaved={id => { void loadCatalog().then(() => { update({ ...edited, connectionId: id, destinationId: '' }); setEditor(null); }).catch(e => setError(e.message)); }} />}
+          {editor.kind === 'channel' && connections.find(c => c.id === edited.connectionId) && <ChatDestinationSetup connection={connections.find(c => c.id === edited.connectionId)!}
+            onCancel={() => setEditor(null)} onSaved={d => { setDestinations(old => [...old, d]); update({ ...edited, destinationId: d.id, conversationPolicy: edited.providerId === 'slack' ? 'thread' : d.kind.includes('forum') ? 'topic' : 'flat' }); setEditor(null); }} />}
+        </div>}
         {enabled && routes.some(r => r.contentMode === 'redacted') && !saved.redactedContentAllowed && <p className="chat-notice">This product currently permits metadata only. A host administrator must opt in to redacted content and refresh the host before question text and answer controls are available.</p>}
         {enabled && <ChatPreview productId={productId} contentMode={routes.some(r => r.contentMode === 'redacted') ? 'redacted' : 'metadata'} />}
         {management && enabled && routes.some(r => r.interactive) && <ChatIdentityLink connections={connections.filter(c => routes.some(r => r.connectionId === c.id && r.interactive))} management={management} onRefresh={refreshManagement} />}

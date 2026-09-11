@@ -5,6 +5,10 @@ All eleven Stage 6 implementation requirements are complete: **11 complete,
 0 partial, 0 missing**. Real-provider gates and an actual operator cutover remain
 separate. See the [migration guide](chat-plugin-migration.md) for commands and limits.
 
+The later [section 4 execution report](chat-plugin-validation-matrix.md) records
+actual deployment, the unscoped historical-topic preview/import regression found
+on that host, its tested and deployed repair, and the current validation gates.
+
 | # | Status | Requirement and evidence |
 |---|---|---|
 | 1 | [x] | `ChatMigrationService.PreviewAsync` reads options, references, counts, cursor, confirmed links and verified scopes. The read-only preview test proves no configuration writes or provider calls. |

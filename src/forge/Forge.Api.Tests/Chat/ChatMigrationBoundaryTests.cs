@@ -21,6 +21,40 @@ using Xunit;
 
 public class ChatMigrationBoundaryTests
 {
+    [Theory]
+    [InlineData("", "unscoped-parent")]
+    [InlineData("p", "")]
+    public async Task Unscoped_legacy_topics_are_reported_and_imported_for_repair_without_creating_parent_authority(string productId, string spawnId)
+    {
+        var original = ChatMigrationTestFactory.Notification("unscoped", "pending", "open-questions", productId);
+        original.SpawnId = spawnId;
+        await using var f = new ChatMigrationTestFactory(); await f.SetupAsync(original);
+        await f.WithAsync(async sp =>
+        {
+            var db = sp.GetRequiredService<ControlDbContext>();
+            db.ChatSpawnTopics.Add(new() { ProductId = productId, SpawnId = spawnId, ChatId = "-100", ThreadId = "19", CreatedAt = DateTimeOffset.UtcNow.AddDays(-1) });
+            await db.SaveChangesAsync();
+        });
+        using var client = await f.PairedClientAsync("admin");
+        using var response = await client.GetAsync("/api/chat/migration/preview");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var preview = (await response.Content.ReadFromJsonAsync<ChatMigrationPreview>())!;
+        Assert.Contains(preview.Scopes, s => s.ProductId == productId && s.SpawnId == spawnId && s.TopicId == "19" && s.Reason == "unresolved-scope");
+        Assert.Contains(preview.Issues, i => i.Kind == "topic" && i.SourceId == spawnId && i.Reason == "unresolved-scope");
+        Assert.Equal(0, await f.ReadAsync(sp => sp.GetRequiredService<ControlDbContext>().ChatConnections.CountAsync()));
+        await f.ImportAsync(); await f.ImportAsync(); await f.CutoverAsync(); await f.TickAsync();
+        await f.WithAsync(async sp =>
+        {
+            var db = sp.GetRequiredService<ControlDbContext>();
+            var delivery = await db.ChatDeliveries.SingleAsync(); Assert.Equal("blocked", delivery.State);
+            var sub = await db.ChatSubscriptions.SingleAsync(s => s.Id == delivery.SubscriptionId); Assert.Equal("host", sub.ScopeKind);
+            var part = await db.ChatDeliveryMessages.SingleAsync(); Assert.True(part.ControlsRetired);
+            Assert.Equal("19", JsonSerializer.Deserialize<ChatAddress>(part.AddressJson)!.ConversationId);
+            Assert.All(await db.SpawnPlugins.ToListAsync(), p => Assert.False(p.Enabled));
+        });
+        Assert.Empty(f.Http.Calls);
+    }
+
     [Fact]
     public async Task Reused_parent_ids_do_not_rebind_earlier_topics_or_messages_to_a_new_run()
     {

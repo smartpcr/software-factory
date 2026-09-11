@@ -65,7 +65,8 @@ public sealed partial class ChatMigrationService(ControlDbContext control, IProd
         var topics = await control.ChatSpawnTopics.AsNoTracking().ToListAsync(ct);
         var notifications = await control.ChatNotifications.AsNoTracking().Where(n => n.Platform == "telegram" || n.Platform == ""
             || control.ChatMigrationItems.Any(m => m.Kind == "notification" && m.SourceId == n.Id)).ToListAsync(ct);
-        var rows = new Dictionary<string, ChatMigrationScope>(StringComparer.Ordinal);
+        // Legacy rows may predate product ownership. Preview keys are not validated configuration scopes.
+        var rows = new Dictionary<(string ProductId, string SpawnId), ChatMigrationScope>();
         var issues = new List<ChatMigrationIssue>();
         if (state is not null) issues.AddRange(JsonSerializer.Deserialize<ChatMigrationIssue[]>(state.IssuesJson) ?? []);
         if (!source.UsesPublicTelegramEndpoint || !source.IsTelegram) issues.Add(new("configuration", ConnectionId, "legacy-provider-settings-not-supported"));
@@ -77,7 +78,7 @@ public sealed partial class ChatMigrationService(ControlDbContext control, IProd
             if (reason is null && owned.Spawn is not null && topic.CreatedAt < owned.Spawn.CreatedAt) reason = "topic-from-earlier-run";
             if (topics.Count(t => t.ChatId == topic.ChatId && t.ThreadId == topic.ThreadId) > 1) reason = "ambiguous-topic";
             var productId = owned.Product?.Id ?? topic.ProductId;
-            rows[ScopeKey(productId, topic.SpawnId)] = new(productId, topic.SpawnId, owned.Spawn?.StoryTitle ?? topic.SpawnId,
+            rows[(productId, topic.SpawnId)] = new(productId, topic.SpawnId, owned.Spawn?.StoryTitle ?? topic.SpawnId,
                 topic.ChatId, topic.ThreadId, reason);
             if (reason is not null) issues.Add(new("topic", topic.SpawnId, reason));
         }
@@ -85,7 +86,7 @@ public sealed partial class ChatMigrationService(ControlDbContext control, IProd
         {
             var owned = await this.OwnedAsync(notification, ct);
             if (owned.Spawn is not null && owned.Product is not null)
-                rows.TryAdd(ScopeKey(owned.Product.Id, owned.Spawn.Id), new(owned.Product.Id, owned.Spawn.Id, owned.Spawn.StoryTitle, notification.ChatId, null, owned.Reason));
+                rows.TryAdd((owned.Product.Id, owned.Spawn.Id), new(owned.Product.Id, owned.Spawn.Id, owned.Spawn.StoryTitle, notification.ChatId, null, owned.Reason));
             else if (!ChatEventCatalog.HostDefaults.Contains(notification.Kind)) issues.Add(new("notification", notification.Id, owned.Reason ?? "unresolved-scope"));
             if (owned.Reason is not null) issues.Add(new("notification", notification.Id, owned.Reason));
             if (notification.Status is "sending" or "uncertain") issues.Add(new("notification", notification.Id, "external-outcome-unknown"));
