@@ -1,6 +1,6 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A, 0B, 1, 2, 3, 4 and 5 implemented. All 14 Stage 5 items and Stage 4's connection-repair UI dependency are complete, with 381 passing backend checks, one skipped live-provider test, 197 passing UI unit tests and eight passing browser cases. The Stage 1S manual exercise and the separate real-provider integration gate remain pending. Stage 6 remains planned. Updated 2026-09-10. See [Stage 5 validation](chat-plugin-stage5-validation.md).
+**Status:** Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. All 11 Stage 6 requirements are covered, with 404 passing backend checks and one skipped live-provider test. Stage 5's UI evidence remains 197 unit tests and eight browser cases. The Stage 1S manual exercise and separate real-provider integration gate remain pending; no real host cutover was performed. Updated 2026-09-10. See [Stage 6 validation](chat-plugin-stage6-validation.md) and the [migration guide](chat-plugin-migration.md).
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
@@ -109,7 +109,7 @@ boundary classification and are also listed in the altering phase's catalog.
 | Stage 2 reception (Phase102) | [x] `chat_inbox`; [x] `chat_connection_state`; [x] `chat_receiver_state` | Each `Control` / `Global` |
 | Stage 2 identities/actions (Phase103) | [x] `chat_operator_links`; [x] `chat_link_challenges`; [x] `chat_action_tokens` | Each `Control` / `Global` |
 | Stage 2 domain receipts (Phase101, product) | [x] `chat_action_receipts`, with required `ProductId` | `Product` / `DirectProductId`, partition column `ProductId` |
-| Stage 6 cutover | [ ] `chat_migration_state`; [ ] legacy-alias additions to `chat_delivery_messages` | Each `Control` / `Global` |
+| Stage 6 cutover (Phase106) | [x] `chat_migration_state`; [x] `chat_migration_items`; [x] existing `chat_delivery_messages` alias fields reused | Each `Control` / `Global` |
 
 `chat_action_receipts` is the only new **product-DB** chat table. Do not put it in
 a control or mixed phase. Authentication enrollment is an OS-protected host store
@@ -666,6 +666,12 @@ Chat configuration changes; parent pause/resume runs only from an explicit work 
 
 ### Stage 6 — migration, cutover, and compatibility
 
+**Status: implemented and rehearsed in isolated fixtures (2026-09-10).** All 11
+requirements are checked below. [Stage 6 validation](chat-plugin-stage6-validation.md)
+maps the implementation and 22 migration cases to each requirement. Use the
+[migration/rollback guide](chat-plugin-migration.md) for an explicit operator cutover;
+the separate real-provider gates remain open.
+
 > <a id="review-p-04"></a>
 > ### 🟠 REVIEW-P-04 — Major: a fix-now repo-hygiene issue is deferred behind six stages [FIXED]
 >
@@ -702,32 +708,32 @@ Chat configuration changes; parent pause/resume runs only from an explicit work 
 >       also still claims "Phase 1 ships options + transport + POST /api/chat/test-send
 >       only", which no longer matches the shipped bridge.
 
-- [ ] Implement a read-only migration preview: legacy options/token source, configured
+- [x] Implement a read-only migration preview: legacy options/token source, configured
       destinations, topic bindings, operator links, cursor and notification counts.
-- [ ] Import into a named `legacy-telegram` connection using stable migration keys;
+- [x] Import into a named `legacy-telegram` connection using stable migration keys;
       keep the DPAPI secret by reference and do not print its decrypted value.
-- [ ] Import crew/account alerts and the legacy global destination into permanent
+- [x] Import crew/account alerts and the legacy global destination into permanent
       Host alerts; retiring old-engine compatibility never disables this destination.
-- [ ] Backfill one delivery per existing notification with the old target/message
+- [x] Backfill one delivery per existing notification with the old target/message
       state. Preserve terminal, pending, failed and resolving states and timestamps.
-- [ ] Preserve old spawn-topic addresses as parent bindings: one subscription per
+- [x] Preserve old spawn-topic addresses as parent bindings: one subscription per
       verified product/spawn/destination, not one per child. Associate target children
       and artifacts through verified ownership. Keep ambiguous
       and unscoped rows in permanent Host alerts attention or flag them for repair.
-- [ ] Require explicit activation for selected top-level rows. New children within
+- [x] Require explicit activation for selected top-level rows. New children within
       an enabled row use it automatically; unrelated future rows remain off.
-- [ ] Quiesce the old sender and receiver, wait for in-flight operations, record the final
+- [x] Quiesce the old sender and receiver, wait for in-flight operations, record the final
       cursor/state, complete the import and atomically transfer connection ownership
       before starting the plugin session. Stop producer routing to the legacy engine
       at the same cutover revision; events during the handoff remain durable.
-- [ ] Preserve aliases for old reply messages and callback formats. Validate scope
+- [x] Preserve aliases for old reply messages and callback formats. Validate scope
       and operator permissions before dispatching old controls through the new core.
-- [ ] Keep old endpoints as wrappers for the selected migrated connection. Correct
+- [x] Keep old endpoints as wrappers for the selected migrated connection. Correct
       test-send destination selection to honor the selected destination/group.
-- [ ] Replace the launcher chat-settings export only after the new engine uses the
+- [x] Replace the launcher chat-settings export only after the new engine uses the
       persisted settings service. Import the operator's Stage 0A local settings;
       tracked defaults have already been fixed in the standalone change.
-- [ ] Implement and rehearse a rollback command that stops plugin sessions, transfers
+- [x] Implement and rehearse a rollback command that stops plugin sessions, transfers
       the latest Telegram cursor and supported delivery/message states, and restarts
       the legacy path with exclusive ownership. Never reset to the pre-cutover cursor.
 

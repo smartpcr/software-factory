@@ -35,9 +35,10 @@ public sealed class ChatRuntimeBoundaryTests
             {
                 await Phase100Migration.ApplyAsync(control, product); await Phase101Migration.ApplyAsync(control, product);
                 await Phase102Migration.ApplyAsync(control, product); await Phase103Migration.ApplyAsync(control, product);
+                await Phase106Migration.ApplyAsync(control, product);
             }
             var report = await sp.GetRequiredService<SplitDryRunService>().AnalyzeAsync();
-            foreach (var phase in new[] { 100, 102, 103 })
+            foreach (var phase in new[] { 100, 102, 103, 106 })
             {
                 var spec = PhaseMigrationCatalog.ByPhase[phase]; Assert.Equal(PhaseMigrationKind.Control, spec.Kind);
                 Assert.Contains(phase, PhaseMigrationRunner.ExecutionOrder);

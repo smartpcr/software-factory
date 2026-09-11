@@ -12,18 +12,21 @@ using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 
-public sealed record ChatCheckRequest(string RequestId, long ConnectionRevision, long DestinationRevision);
+public sealed record ChatCheckRequest(string RequestId, long ConnectionRevision, long DestinationRevision, string? Text = null);
 public sealed record ChatCheckView(string Id, string State, string? Reason, DateTimeOffset CreatedAt, DateTimeOffset? SentAt, DateTimeOffset? ReplyAt, long ConnectionRevision, long DestinationRevision);
 public sealed record ChatCheckTarget(string ConnectionId, long Revision, ChatAddress Address, long DestinationRevision);
 
 /// <summary>Explicit, idempotent transport checks. The durable intent is uncertain before network I/O and is never automatically replayed.</summary>
 public sealed class ChatConnectionCheckService(ControlDbContext control, ForgeCapabilityAuthorizer authorizer,
-    ChatConnectionSupervisor supervisor, ChatRuntimeState runtime, TimeProvider clock)
+    ChatConnectionSupervisor supervisor, ChatRuntimeState runtime, TimeProvider clock, ChatEngineCoordinator engine, ChatSecretResolver secrets)
 {
     public async Task<ChatCheckView> SendAsync(ForgeActor? actor, string connectionId, string destinationId, ChatCheckRequest request, CancellationToken ct)
     {
+        using var lease = await engine.EnterAsync("plugins", ct) ?? throw new ChatConfigurationException("plugin-engine-not-owner", 409);
+        using var continuation = engine.ContinueLease();
         await authorizer.RequireAsync(actor, ForgeCapabilities.ConnectionManage, new(), ct);
         if (!Guid.TryParse(request.RequestId, out var requestId)) throw new ChatConfigurationException("request-id-required");
+        if (request.Text?.Length > 2000) throw new ChatConfigurationException("check-text-too-long");
         var id = "check-" + requestId.ToString("N");
         await runtime.CheckGate.WaitAsync(ct);
         try
@@ -50,8 +53,9 @@ public sealed class ChatConnectionCheckService(ControlDbContext control, ForgeCa
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, session.Cancellation.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
             try
             {
-                var result = await session.Provider.SendAsync(address, new(id, "connection-check", "Forge · Connection check",
-                    "Reply to this message with check within 10 minutes to verify inbound delivery. This check does not change work or link an identity.", 1, [], ForceReply: true), timeout.Token);
+                var body = "Reply to this message with check within 10 minutes to verify inbound delivery. This check does not change work or link an identity.";
+                if (!string.IsNullOrWhiteSpace(request.Text)) body = ChatContentPolicy.Redact(request.Text, await secrets.ValuesAsync(connection, ct)) + "\n\n" + body;
+                var result = await session.Provider.SendAsync(address, new(id, "connection-check", "Forge · Connection check", body, 1, [], ForceReply: true), timeout.Token);
                 var acknowledged = result.Succeeded && result.Value?.Messages.Count == 1 && result.Value.Messages[0].Address == address;
                 row.Status = acknowledged ? "sent" : result.Succeeded || result.Failure?.Kind == ChatFailureKind.UnknownOutcome ? "uncertain" : "failed";
                 row.LastError = result.Succeeded ? null : ChatConnectionSupervisor.SafeProviderReason(result.Failure?.Code);

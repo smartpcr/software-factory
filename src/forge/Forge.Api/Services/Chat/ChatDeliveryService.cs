@@ -15,10 +15,13 @@ using Microsoft.EntityFrameworkCore;
 /// <summary>Per-copy scheduling with durable claims and memory-only successful-result checkpoints.</summary>
 public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRuntimeState runtime, ChatDbBudget budget,
     ChatScopeResolver resolver, ChatConnectionSupervisor supervisor, ChatSecretResolver secrets, ChatContentPolicy policy,
-    IChatProviderRegistry providers, TimeProvider clock)
+    IChatProviderRegistry providers, TimeProvider clock, ChatEngineCoordinator engine)
 {
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
+        using var lease = await engine.EnterAsync("plugins", ct);
+        if (lease is null) return;
+        using var continuation = engine.ContinueLease();
         using var limits = ChatDbBudget.Limit(control);
         if (!runtime.EnsureHostOwnership()) return;
         await runtime.DeliveryGate.WaitAsync(ct);

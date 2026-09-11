@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>Connection-scoped challenges and durable link history reuse the Stage 0B enrollment/link authority.</summary>
 public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore identities, ForgeActorResolver actors,
-    ForgeCapabilityAuthorizer authorizer, ChatRuntimeState runtime, TimeProvider clock, ChatConnectionSupervisor supervisor)
+    ForgeCapabilityAuthorizer authorizer, ChatRuntimeState runtime, TimeProvider clock, ChatConnectionSupervisor supervisor, ChatMigratedIdentity migrated)
 {
     public async Task<object> BeginAsync(ForgeActor? actor, string connectionId, string tenantId, string senderId, CancellationToken ct)
     {
@@ -70,7 +70,7 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
     public async Task<ForgeActor?> ResolveAsync(string provider, string tenant, string sender, CancellationToken ct)
     {
         var actor = await actors.FromProviderAsync(provider, tenant, sender, ct);
-        if (actor is null) return null;
+        if (actor is null) return await migrated.ResolveAsync(provider, tenant, sender, ct);
         var link = identities.FindLink(provider, tenant, sender);
         if (link is null) return null;
         await this.RecordAsync(link, ct);

@@ -13,10 +13,12 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>Host-authorized provider checks share the supervisor's session; discovery never opens its own receiver.</summary>
 public sealed class ChatProviderSetupService(ControlDbContext control, ForgeCapabilityAuthorizer authorizer,
-    ChatConnectionSupervisor supervisor, TimeProvider clock, ChatRuntimeState runtime)
+    ChatConnectionSupervisor supervisor, TimeProvider clock, ChatRuntimeState runtime, ChatEngineCoordinator engine)
 {
     public async Task<ChatProviderResult<ChatDestinationPage>> DiscoverAsync(ForgeActor? actor, string connectionId, string? cursor, CancellationToken ct)
     {
+        using var lease = await engine.EnterAsync("plugins", ct) ?? throw new ChatConfigurationException("plugin-engine-not-owner", 409);
+        using var continuation = engine.ContinueLease();
         await authorizer.RequireAsync(actor, ForgeCapabilities.ConnectionManage, new(), ct);
         var connection = await this.ConnectionAsync(connectionId, ct);
         var session = await supervisor.GetAsync(connection, ct);
@@ -28,6 +30,8 @@ public sealed class ChatProviderSetupService(ControlDbContext control, ForgeCapa
     }
     public async Task<ChatProviderResult<ChatDestination>> ValidateAsync(ForgeActor? actor, string connectionId, string destinationId, CancellationToken ct)
     {
+        using var lease = await engine.EnterAsync("plugins", ct) ?? throw new ChatConfigurationException("plugin-engine-not-owner", 409);
+        using var continuation = engine.ContinueLease();
         await authorizer.RequireAsync(actor, ForgeCapabilities.ConnectionManage, new(), ct);
         var connection = await this.ConnectionAsync(connectionId, ct);
         var destination = await control.ChatDestinations.SingleOrDefaultAsync(d => d.Id == destinationId && d.ConnectionId == connectionId && d.DeletedAt == null, ct)

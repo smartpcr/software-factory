@@ -69,6 +69,8 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                 : subscriptions.Count == 0 ? owned.Reason ?? "no-destination" : "filtered";
             await using var tx = await control.Database.BeginTransactionAsync(ct);
             control.ChatNotifications.Add(notification);
+            if (input.LegacyDedupeKey is not null && await control.ChatMigrationState.AnyAsync(ct))
+                control.ChatMigrationItems.Add(new() { Key = "producer-dedupe:" + notification.Id, Kind = "producer-dedupe", SourceId = notification.Id, TargetId = input.LegacyDedupeKey });
             if (notification.RouteReason is "filtered" or "no-destination" or "unresolved-scope")
             {
                 foreach (var sub in subscriptions.Where(s => !s.Paused && ChatEventCatalog.Matches(s, input.Kind)))

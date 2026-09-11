@@ -227,7 +227,7 @@ public sealed class ChatNotifier : IChatNotifier
     }
 
     /// <summary>Deterministic short hash (stable across process restarts, unlike <c>string.GetHashCode</c>).</summary>
-    private static string StableHash(string? value)
+    internal static string StableHash(string? value)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty));
         return Convert.ToHexString(bytes, 0, 4).ToLowerInvariant();

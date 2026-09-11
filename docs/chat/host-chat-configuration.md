@@ -3,7 +3,9 @@
 This is the Stage 0A legacy configuration reference (2026-09-09). The legacy
 Telegram bridge supports notifications and per-spawn forum topics. For current
 plugin settings, Slack, operator linking and the API-based Telegram helper, use
-the [Stage 5 setup guide](chat-plugin-setup.md). Legacy import remains Stage 6.
+the [setup guide](chat-plugin-setup.md). Stage 6 now provides explicit
+[legacy import, cutover and rollback](chat-plugin-migration.md), preserving the
+original credential reference and loading engine ownership from the control DB.
 
 ## Setup and opt-in
 

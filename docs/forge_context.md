@@ -121,8 +121,19 @@ uses one control query per 100 existing parents; row detail fetches omit aggrega
 preserving unchanged subscriptions and running agents. `ChatManagementService` and
 `ChatConnectionCheckService` add protected credential writes, redacted previews,
 scoped health/history and explicit send/reply checks. No Stage 5 migration is needed.
-The Telegram helper uses paired APIs instead of patching files. Legacy import remains
-Stage 6. See [current setup](chat/chat-plugin-setup.md), [Slack setup](chat/slack-setup.md),
+The Telegram helper uses paired APIs instead of patching files. Stage 6 adds Phase
+106's `chat_migration_state` and `chat_migration_items` control/global tables.
+`ChatEngineCoordinator` loads persisted ownership before either engine starts,
+drains operations for a handoff and synchronizes producer routing with the commit.
+`ChatMigrationService` previews/imports the legacy configuration and credential
+references, verifies parent/topic ownership, preserves original deliveries and
+operator aliases, and implements latest-cursor rollback and compatibility retirement.
+`migrate-chat-plugin.ps1` exposes these paired APIs with explicit revisions; retirement
+preserves Host alerts and rollback retains unsupported routes and history. All 11
+requirements and 22 migration cases are covered, with 404 passing focused backend
+checks. See [Stage 6 validation](chat/chat-plugin-stage6-validation.md),
+[migration/rollback](chat/chat-plugin-migration.md),
+[current setup](chat/chat-plugin-setup.md), [Slack setup](chat/slack-setup.md),
 the validation reports, the pending live-provider gates and the existing `repos`
 catalog-test exclusion. Loading the new backend requires an operator-approved restart;
 implementation did not restart services or send real provider messages.

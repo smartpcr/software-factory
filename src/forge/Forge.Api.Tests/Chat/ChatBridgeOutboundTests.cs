@@ -241,8 +241,10 @@ public class ChatBridgeOutboundTests : IAsyncLifetime
         Assert.Equal(1, result.Sent);
         Assert.Equal(ChatNotificationStatuses.Sent, (await this.GetAsync("good")).Status);
         var bad = await this.GetAsync("bad");
-        Assert.Equal(ChatNotificationStatuses.Pending, bad.Status);
+        Assert.Equal("uncertain", bad.Status);
         Assert.Equal(1, bad.Attempts);
         Assert.False(string.IsNullOrEmpty(bad.LastError));
+        await this.NewService(transport).RunOutboundOnceAsync(default);
+        Assert.Equal(1, (await this.GetAsync("bad")).Attempts);
     }
 }

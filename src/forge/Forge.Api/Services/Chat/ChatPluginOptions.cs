@@ -65,6 +65,16 @@ public static class ChatPluginRegistration
         services.AddSingleton<IChatSecretStore>(sp => new ChatDpapiSecretStore(Path.Combine(sp.GetRequiredService<Forge.Api.Persistence.IForgeDbPaths>().Folder, "chat-secrets")));
         services.AddSingleton<ChatSecretResolver>();
         services.AddSingleton<ChatRuntimeState>();
+        services.AddSingleton<ChatLegacySource>();
+        services.AddSingleton<IChatSecretStore>(sp => sp.GetRequiredService<ChatLegacySource>());
+        services.AddSingleton<ChatEngineCoordinator>();
+        services.AddScoped<ChatMigrationRouting>();
+        services.AddSingleton<IChatOperationGate>(sp => sp.GetRequiredService<ChatEngineCoordinator>());
+        services.AddSingleton<TelegramTransport>();
+        services.AddSingleton<IChatTransport, ChatOwnedLegacyTransport>();
+        services.AddScoped<ChatMigrationService>();
+        services.AddScoped<ChatMigratedIdentity>();
+        services.AddScoped<ChatMigrationCompatibility>();
         services.AddSingleton<ChatDbBudget>();
         services.AddSingleton<ChatConnectionSupervisor>();
         services.AddScoped<ChatScopeResolver>();

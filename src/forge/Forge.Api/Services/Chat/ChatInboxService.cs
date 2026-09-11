@@ -12,7 +12,7 @@ using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 public sealed partial class ChatInboxService(ControlDbContext control, ChatRuntimeState runtime, ChatDbBudget budget,
-    ChatSecretResolver secrets, ChatContentPolicy policy, TimeProvider clock, IServiceScopeFactory scopes)
+    ChatSecretResolver secrets, ChatContentPolicy policy, TimeProvider clock, IServiceScopeFactory scopes, ChatEngineCoordinator engine)
 {
     public async ValueTask<ChatInboundAcceptance> AcceptBatchAsync(IReadOnlyList<ChatInboundEnvelope> envelopes,
         IReadOnlyList<ChatAcceptedCursor> cursors, IReadOnlyDictionary<string, long> revisions, CancellationToken ct = default)
@@ -97,8 +97,17 @@ public sealed partial class ChatInboxService(ControlDbContext control, ChatRunti
                 : argument.All(char.IsAsciiDigit)) ? argument : "invalid-message";
         else argument = null;
         var action = envelope.ActionToken;
-        if (action is "act|retry" or "act|accept" or "act|cancel" or "act|restart")
-        { command = "legacy-" + action[4..]; action = null; }
+        if (envelope.ProviderId == "telegram" && action is { Length: <= 512 })
+        {
+            var fields = action.Split('|');
+            static bool SafeId(string value) => value.Length is > 0 and <= 128 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or ':');
+            if (fields.Length is 2 or 3 && fields[0] == "act" && fields[1] is "retry" or "accept" or "cancel" or "restart" && (fields.Length == 2 || SafeId(fields[2])))
+            { command = "legacy-" + fields[1]; argument = fields.Length == 3 ? fields[2] : null; action = null; }
+            else if (fields.Length == 3 && fields[0] == "oq" && SafeId(fields[1]) && int.TryParse(fields[2], out var index) && index is >= 0 and < 10)
+            { command = "legacy-question"; argument = fields[1] + "|" + index; action = null; }
+            else if (fields.Length >= 2 && fields[0] is "hi" or "strain")
+            { command = "legacy-host"; argument = null; action = null; }
+        }
         return envelope with { Text = safe ? envelope.Text : null, Kind = safe ? envelope.Kind : "rejected",
             ActionToken = action is null ? null : "sha256:" + ChatEventCatalog.Hash(action), Command = command, CommandArgument = argument };
     }

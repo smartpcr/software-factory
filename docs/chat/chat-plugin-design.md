@@ -1,7 +1,8 @@
 # Forge workstream chat plugins — design
 
-**Status (2026-09-10):** implementation through Stage 5 is covered by automated
-validation; real-provider exercises and Stage 6 migration/cutover remain pending.
+**Status (2026-09-10):** implementation through Stage 6 is covered by automated
+validation, including migration/cutover and rollback rehearsals. Real-provider
+exercises and an actual operator cutover remain pending. See [Stage 6 validation](chat-plugin-stage6-validation.md).
 See [the implementation plan](chat-plugin-implementation-plan.md) and the current
 [setup/API guide](chat-plugin-setup.md). The historical baseline examined for this
 design was `70103c83`. This design supersedes the single-provider and global-target

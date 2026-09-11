@@ -16,6 +16,9 @@ public sealed partial class ChatInboxService
 {
     public async Task DispatchOnceAsync(CancellationToken ct = default)
     {
+        using var lease = await engine.EnterAsync("plugins", ct);
+        if (lease is null) return;
+        using var continuation = engine.ContinueLease();
         using var limits = ChatDbBudget.Limit(control);
         await runtime.DispatchGate.WaitAsync(ct);
         try
@@ -65,17 +68,21 @@ public sealed partial class ChatInboxService
         }
         else if (envelope.Command?.StartsWith("legacy-", StringComparison.Ordinal) == true)
         {
-            var aliases = await control.ChatDeliveryMessages.Where(m => m.MessageId == envelope.ReplyToMessageId && m.PartKey.StartsWith("legacy:") && !m.ControlsRetired).ToListAsync(ct);
+            var aliases = await control.ChatDeliveryMessages.AsNoTracking().Where(m => m.MessageId == envelope.ReplyToMessageId && m.PartKey.StartsWith("legacy:") && !m.ControlsRetired).ToListAsync(ct);
             var exact = aliases.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address).ToArray();
             if (exact.Length != 1) return "legacy-alias-repair-required";
             message = exact[0];
-            if (message.QuestionId is not null) return "select-one-question";
-            token = new() { Action = "workstream." + envelope.Command[7..], ExpectedRevision = message.ExpectedRevision };
+            if (envelope.Command is not ("legacy-question" or "legacy-host"))
+            {
+                if (message.QuestionId is not null) return "select-one-question";
+                token = new() { Action = "workstream." + envelope.Command[7..], ExpectedRevision = message.ExpectedRevision };
+            }
         }
         else if (envelope.ReplyToMessageId is not null)
         {
             var candidates = await control.ChatDeliveryMessages.AsNoTracking().Where(m => m.MessageId == envelope.ReplyToMessageId && !m.ControlsRetired).ToListAsync(ct);
-            var exact = candidates.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address && m.QuestionId is not null).ToArray();
+            var exact = candidates.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address
+                && (m.QuestionId is not null || m.PartKey.StartsWith("legacy:", StringComparison.Ordinal))).ToArray();
             if (exact.Length != 1) return "select-one-question";
             message = exact[0];
         }
@@ -83,12 +90,39 @@ public sealed partial class ChatInboxService
             || JsonSerializer.Deserialize<ChatAddress>(message.AddressJson) != envelope.Address) return "unmatched-message";
         var delivery = await control.ChatDeliveries.AsNoTracking().SingleAsync(d => d.Id == message.DeliveryId, ct);
         var notification = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == delivery.NotificationId, ct);
-        if (envelope.Command?.StartsWith("legacy-", StringComparison.Ordinal) == true && (notification.Kind != "workstream-stalled" || notification.WorkstreamId is null)) return "select-one-question";
+        if (token?.Action.StartsWith("workstream.", StringComparison.Ordinal) == true && envelope.Command?.StartsWith("legacy-", StringComparison.Ordinal) == true
+            && (notification.Kind != "workstream-stalled" || notification.WorkstreamId is null)) return "select-one-question";
+        if (token?.Action.StartsWith("workstream.", StringComparison.Ordinal) == true && envelope.CommandArgument is { Length: > 0 }
+            && envelope.CommandArgument != notification.WorkstreamId) return "unmatched-message";
         if (notification.ExpiresAt <= clock.GetUtcNow() || notification.Status is "resolved" or "superseded" or "expired") return "stale-action";
         var target = JsonSerializer.Deserialize<ChatDeliveryTarget>(delivery.TargetJson)!;
         row.ContentScopesJson = JsonSerializer.Serialize(new[] { new { target.ProductId, target.SpawnId } });
         if (target.ConnectionId != envelope.ConnectionId || target.ProviderId != envelope.ProviderId) return "unmatched-connection";
         if (target.ScopeKind != "spawn") return "open-host-settings";
+        if (message.PartKey.StartsWith("legacy:", StringComparison.Ordinal) && notification.Kind == "open-questions" && token is null)
+        {
+            var payload = ChatPayloadConverter.Read(notification);
+            var questions = payload?.Questions ?? [];
+            int? choice = null;
+            if (envelope.Command == "legacy-question")
+            {
+                var selector = (envelope.CommandArgument ?? "").Split('|');
+                if (selector.Length != 2 || !int.TryParse(selector[1], out var selectedChoice)) return "stale-action";
+                questions = questions.Where(q => q.Id == selector[0]).ToArray(); choice = selectedChoice;
+            }
+            else if (message.QuestionId is not null) questions = questions.Where(q => q.Id == message.QuestionId).ToArray();
+            else
+            {
+                var owner = await control.Products.AsNoTracking().SingleAsync(p => p.Id == target.ProductId, ct);
+                using var questionScope = scopes.CreateScope();
+                var current = await questionScope.ServiceProvider.GetRequiredService<IProductDbContextFactory>().CreateFor(owner.Slug)
+                    .DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == notification.WorkItemId && (q.Answer == null || q.Answer == "")).ToListAsync(ct);
+                questions = questions.Where(q => current.Any(c => c.Id == q.Revision && c.ExternalId == q.Id)).ToArray();
+            }
+            if (questions.Count != 1) return "select-one-question";
+            message.QuestionId = questions[0].Id; message.ExpectedRevision = questions[0].Revision;
+            token = new() { Action = "question.answer", ExpectedRevision = questions[0].Revision, ChoiceIndex = choice };
+        }
         using var validation = scopes.CreateScope();
         if (await validation.ServiceProvider.GetRequiredService<ChatScopeResolver>().ValidateAsync(target, notification, ct, action: true) is { } reason) return reason;
         var actor = await validation.ServiceProvider.GetRequiredService<ChatLinkService>().ResolveAsync(envelope.ProviderId, envelope.Address.ExternalTenantId, envelope.SenderId, ct);

@@ -85,7 +85,8 @@ browser results and isolated build artifacts). The known historical
   concurrent answers, cross-copy resolution, failure isolation, shared app receiver,
   reconnect and continuing Telegram reception. This is the plan's separate live gate.
 - [ ] Earlier Stage 1S real-bot/manual exercise.
-- [ ] Stage 6 legacy migration/import and cutover.
+- [x] Stage 6 implementation and isolated migration/rollback rehearsal: see
+  [Stage 6 validation](chat-plugin-stage6-validation.md). Actual host cutover remains explicit.
 
 This work does not restart the running Forge.Api host or contact real providers.
 The new backend services, routes and summary behavior require an operator-approved

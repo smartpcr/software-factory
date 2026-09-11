@@ -70,6 +70,8 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
         var connection = await control.ChatConnections.AsNoTracking().SingleOrDefaultAsync(c => c.Id == target.ConnectionId, ct);
         var destination = await control.ChatDestinations.AsNoTracking().SingleOrDefaultAsync(d => d.Id == target.DestinationId, ct);
         var subscription = await control.ChatSubscriptions.AsNoTracking().SingleOrDefaultAsync(s => s.Id == target.SubscriptionId, ct);
+        var importedHistory = !action && await control.ChatMigrationItems.AnyAsync(i => i.Kind == "notification" && i.SourceId == notification.Id
+            && control.ChatDeliveries.Any(d => d.Id == i.TargetId && d.SubscriptionId == target.SubscriptionId), ct);
         if (target.Version != 1 || connection is null || !connection.Enabled || connection.DeletedAt is not null
             || connection.Revision != target.ConnectionRevision || connection.ProviderId != target.ProviderId
             || destination is null || destination.DeletedAt is not null || destination.Revision != target.DestinationRevision
@@ -77,7 +79,7 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
             || subscription is null || subscription.Paused || subscription.RetiredAt is not null
             || subscription.Revision != target.SubscriptionRevision || subscription.DestinationId != target.DestinationId
             || subscription.ActivationGeneration != target.ActivationGeneration
-            || !(notification.Platform == "plugins" && notification.Kind == "setup" && !action) && !ChatEventCatalog.Matches(subscription, notification.Kind)) return "route-retired";
+            || !importedHistory && !(notification.Platform == "plugins" && notification.Kind == "setup" && !action) && !ChatEventCatalog.Matches(subscription, notification.Kind)) return "route-retired";
         if (action && !subscription.Interactive) return "notifications-only";
         if (target.ScopeKind == "host") return target.HostId == options.Value.HostId && subscription.HostId == target.HostId ? null : "route-retired";
         if (!await control.ChatConnectionProducts.AnyAsync(g => g.ConnectionId == connection.Id && g.ProductId == target.ProductId, ct)) return "grant-revoked";

@@ -22,7 +22,12 @@ public static class ChatBridgeEndpoints
 {
     public static WebApplication MapChatBridgeEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/chat/availability", (IOptions<ChatPluginOptions> options) => Results.Ok(new
+        var api = app.MapGroup("/api/chat").AddEndpointFilter(async (context, next) =>
+        {
+            try { return await next(context); }
+            catch (ChatConfigurationException ex) { return Results.Problem(title: ex.Code, statusCode: ex.Status); }
+        });
+        api.MapGet("/availability", (IOptions<ChatPluginOptions> options) => Results.Ok(new
         {
             interactiveAvailable = ChatPluginInteractiveGate.AvailableFor(options.Value),
             reason = ChatPluginInteractiveGate.Reason,
@@ -31,7 +36,7 @@ public static class ChatBridgeEndpoints
         // POST /api/chat/test-send — prove an outbound round-trip to the chat
         // platform. Body: { chatId?, text? }. chatId defaults to the first
         // configured AllowedChatId.
-        app.MapPost("/api/chat/test-send", async (
+        api.MapPost("/test-send", async (
             HttpContext ctx,
             [FromBody] ChatTestSendRequest? req,
             ControlDbContext control,
@@ -41,6 +46,14 @@ public static class ChatBridgeEndpoints
         {
             await ctx.RequestServices.GetRequiredService<ForgeActionContext>()
                 .RequireAsync(ForgeCapabilities.ConnectionManage, new(), ct);
+
+            await ctx.RequestServices.GetRequiredService<ChatEngineCoordinator>().InitializeAsync(ct);
+            if (ctx.RequestServices.GetRequiredService<IOptions<ChatPluginOptions>>().Value.Engine == "plugins")
+            {
+                var migrated = await ctx.RequestServices.GetRequiredService<ChatMigrationCompatibility>().TestSendAsync(
+                    await ctx.RequestServices.GetRequiredService<ForgeActionContext>().ActorAsync(ct), req?.ChatId, req?.Text, ct);
+                return Results.Json(migrated, statusCode: migrated.Ok ? StatusCodes.Status200OK : StatusCodes.Status502BadGateway);
+            }
 
             var opt = options.CurrentValue;
             if (!opt.Enabled)
@@ -53,7 +66,7 @@ public static class ChatBridgeEndpoints
 
             var chatId = !string.IsNullOrWhiteSpace(req?.ChatId)
                 ? req!.ChatId!.Trim()
-                : opt.Telegram.AllowedChatIds.FirstOrDefault().ToString();
+                : opt.Telegram.SupergroupChatId != 0 ? opt.Telegram.SupergroupChatId.ToString() : opt.Telegram.AllowedChatIds.FirstOrDefault().ToString();
             if (string.IsNullOrWhiteSpace(chatId) || chatId == "0")
             {
                 return Results.Problem(
@@ -77,11 +90,15 @@ public static class ChatBridgeEndpoints
         // POST /api/chat/link-token — mint a one-time token for the current user.
         // The operator then sends `/link <token>` from the chat app to bind their
         // chat account to this authenticated Forge user.
-        app.MapPost("/api/chat/link-token", async (
+        api.MapPost("/link-token", async (
             HttpContext ctx, ChatLinkRequest req, ForgeActionContext action, HostIdentityStore identities,
             IOptionsMonitor<ChatBridgeOptions> options, CancellationToken ct) =>
         {
             var actor = await action.RequireAsync(ForgeCapabilities.LinkSelf, new(), ct);
+            ctx.Response.Headers.CacheControl = "no-store";
+            await ctx.RequestServices.GetRequiredService<ChatEngineCoordinator>().InitializeAsync(ct);
+            if (ctx.RequestServices.GetRequiredService<IOptions<ChatPluginOptions>>().Value.Engine == "plugins")
+                return Results.Ok(await ctx.RequestServices.GetRequiredService<ChatMigrationCompatibility>().LinkAsync(actor, req.Provider, req.TenantId, req.ProviderUserId, ct));
             var opt = options.CurrentValue;
             if (!opt.Enabled || !opt.AllowRemoteActions)
                 return Results.Problem(title: "Chat remote actions disabled", statusCode: 409);
@@ -93,10 +110,10 @@ public static class ChatBridgeEndpoints
             var token = identities.IssueLinkChallenge(actor.UserId, req.Provider, req.TenantId, req.ProviderUserId);
             return Results.Ok(new { token, expiresInSeconds = 120, instructions = "Send /link followed by this token from the selected provider user in the selected destination." });
         }).WithTags("ChatBridge").WithName("ChatBridgeLinkToken");
-        app.MapDelete("/api/chat/link", async (ForgeActionContext action, HostIdentityStore identities, CancellationToken ct) =>
+        api.MapDelete("/link", async (ForgeActionContext action, ChatLinkService links, CancellationToken ct) =>
         {
             var actor = await action.RequireAsync(ForgeCapabilities.LinkSelf, new(), ct);
-            identities.RevokeLinks(actor.UserId);
+            await links.RevokeAsync(actor, ct);
             return Results.NoContent();
         }).WithTags("ChatBridge").WithName("ChatBridgeRevokeLink");
 

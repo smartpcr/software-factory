@@ -35,7 +35,7 @@ public sealed class ChatSecretResolver(IEnumerable<IChatSecretStore> stores) : I
 
 /// <summary>Immutable connection revisions; a reception key owns one receiver, including a shared Slack app socket.</summary>
 public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatProviderRegistry providers, ChatSecretResolver secrets,
-    ChatRuntimeState runtime, TimeProvider clock, IOptions<ChatPluginOptions> options) : IAsyncDisposable, IDisposable
+    ChatRuntimeState runtime, TimeProvider clock, IOptions<ChatPluginOptions> options, ChatEngineCoordinator engine) : IAsyncDisposable, IDisposable
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<string, Session> sessions = new(StringComparer.Ordinal);
@@ -49,6 +49,9 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
 
     public async Task<Session?> GetAsync(ChatConnectionRow row, CancellationToken ct)
     {
+        using var lease = await engine.EnterAsync("plugins", ct);
+        if (lease is null) return null;
+        using var continuation = engine.ContinueLease();
         if (!runtime.EnsureHostOwnership() || !options.Value.PluginsEnabled || !providers.IsAvailable) return null;
         await this.gate.WaitAsync(ct);
         try
@@ -86,6 +89,9 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
 
     public async Task RefreshAsync(CancellationToken ct)
     {
+        using var lease = await engine.EnterAsync("plugins", ct);
+        if (lease is null) return;
+        using var continuation = engine.ContinueLease();
         if (!runtime.EnsureHostOwnership()) return;
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
@@ -253,6 +259,18 @@ public sealed class ChatConnectionSupervisor(IServiceScopeFactory scopes, IChatP
         finally { this.gate.Release(); }
     }
     public void Dispose() => this.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    internal async Task<bool> StopAllAsync(CancellationToken ct)
+    {
+        await this.gate.WaitAsync(ct);
+        try
+        {
+            foreach (var session in this.sessions.Values.ToArray())
+                if (!await this.StopAsync(session)) return false;
+            return this.receivers.Count == 0;
+        }
+        finally { this.gate.Release(); }
+    }
 
     private sealed class ReceptionSink(ChatConnectionSupervisor supervisor, string receptionKey, string providerId, string providerKey) : IChatDurableBatchSink, IChatReceptionDiagnosticSink
     {

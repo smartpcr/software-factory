@@ -50,9 +50,11 @@ public interface IChatTransport
 /// <summary>Outcome of a send/edit. <see cref="MessageId"/> is set when <see cref="Ok"/> is true.</summary>
 public sealed record ChatSendResult(bool Ok, string? MessageId, string? Error)
 {
+    public bool OutcomeUnknown { get; init; }
     public static ChatSendResult Success(string? messageId) => new(true, messageId, null);
 
     public static ChatSendResult Failure(string error) => new(false, null, error);
+    public static ChatSendResult Unknown(string error) => new(false, null, error) { OutcomeUnknown = true };
 }
 
 /// <summary>An inline action button: a label + the opaque callback payload echoed back on tap.</summary>

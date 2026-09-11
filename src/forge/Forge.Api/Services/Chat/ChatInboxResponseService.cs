@@ -13,10 +13,13 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>Replies have independent claims; a failed acknowledgement never redispatches a domain action.</summary>
 public sealed class ChatInboxResponseService(ControlDbContext control, ChatRuntimeState runtime, ChatDbBudget budget,
-    ChatConnectionSupervisor supervisor, TimeProvider clock)
+    ChatConnectionSupervisor supervisor, TimeProvider clock, ChatEngineCoordinator engine)
 {
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
+        using var lease = await engine.EnterAsync("plugins", ct);
+        if (lease is null) return;
+        using var continuation = engine.ContinueLease();
         using var limits = ChatDbBudget.Limit(control);
         if (!runtime.EnsureHostOwnership()) return;
         await runtime.ResponseGate.WaitAsync(ct);

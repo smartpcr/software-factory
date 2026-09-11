@@ -79,15 +79,18 @@ public sealed class ChatRetentionService(ControlDbContext control, IProductDbCon
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
                 DELETE FROM chat_delivery_messages WHERE Id IN (SELECT m.Id FROM chat_delivery_messages m JOIN chat_deliveries d ON d.Id=m.DeliveryId
                   WHERE m.TerminalAt<={ms90} AND m.State NOT IN ('sending','uncertain') AND d.State NOT IN ('sending','uncertain')
+                  AND NOT EXISTS (SELECT 1 FROM chat_migration_items i WHERE i.Kind='notification' AND i.TargetId=d.Id)
                   AND m.EditState NOT IN ('editing','pending') AND NOT EXISTS (SELECT 1 FROM chat_action_tokens t WHERE t.DeliveryMessageId=m.Id) LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
                 DELETE FROM chat_deliveries WHERE Id IN (SELECT d.Id FROM chat_deliveries d WHERE d.TerminalAt<={ms90}
+                  AND NOT EXISTS (SELECT 1 FROM chat_migration_items i WHERE i.Kind='notification' AND i.TargetId=d.Id)
                   AND d.State NOT IN ('sending','uncertain') AND NOT EXISTS (SELECT 1 FROM chat_delivery_messages m WHERE m.DeliveryId=d.Id) LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""
                 DELETE FROM chat_notifications WHERE Id IN (SELECT n.Id FROM chat_notifications n WHERE n.Platform='plugins'
                   AND julianday(n.CreatedAt)<=julianday({day90}) AND n.Status NOT IN ('pending','sent')
+                  AND NOT EXISTS (SELECT 1 FROM chat_migration_items i WHERE i.Kind='notification' AND i.SourceId=n.Id)
                   AND NOT EXISTS (SELECT 1 FROM chat_deliveries d WHERE d.NotificationId=n.Id) LIMIT 100)
                 """, ct);
             count += await control.Database.ExecuteSqlInterpolatedAsync($"""

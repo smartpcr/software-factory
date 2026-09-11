@@ -30,11 +30,12 @@ public sealed record ChatSummaryItem(string SpawnId, string Title, ChatRowSummar
 public sealed class ChatManagementService(ControlDbContext control, IProductDbContextFactory products,
     ForgeCapabilityAuthorizer authorizer, HostIdentityStore identities, ChatConfigurationService configuration,
     IEnumerable<IChatSecretStore> stores, IChatProviderRegistry providers, ChatRuntimeState runtime,
-    IOptions<ChatPluginOptions> options, ChatContentPolicy policy, ChatSecretResolver secrets)
+    IOptions<ChatPluginOptions> options, ChatContentPolicy policy, ChatSecretResolver secrets, ChatMigratedIdentity migrated, ChatEngineCoordinator engine)
 {
     public async Task<ChatManagementView> ReadAsync(ForgeActor? actor, CancellationToken ct)
     {
         await authorizer.RequireAsync(actor, ForgeCapabilities.LinkSelf, new(), ct);
+        await engine.InitializeAsync(ct);
         var host = await authorizer.IsAllowedAsync(actor, ForgeCapabilities.ConnectionManage, new(), ct);
         var readable = await authorizer.ReadableProductIdsAsync(actor, ct);
         var choices = await control.Products.AsNoTracking().Where(p => host || readable.Contains(p.Id))
@@ -42,7 +43,7 @@ public sealed class ChatManagementService(ControlDbContext control, IProductDbCo
         return new(host, await authorizer.IsAllowedAsync(actor, ForgeCapabilities.HostAlertManage, new(), ct),
             options.Value.UnavailableReason ?? (!options.Value.PluginsEnabled ? options.Value.Engine == "legacy" ? "legacy-engine-active" : "host-chat-disabled" : null),
             ChatPluginInteractiveGate.AvailableFor(options.Value), policy.AllowsQuestions(null), choices,
-            identities.ActiveProviderLinks.Where(l => l.UserId == actor!.UserId)
+            identities.ActiveProviderLinks.Concat(await migrated.LinksAsync(ct)).Where(l => l.UserId == actor!.UserId).DistinctBy(l => (l.Provider, l.TenantId, l.ProviderUserId))
                 .Select(l => new ChatSelfLink(l.Provider, l.TenantId, l.ProviderUserId)).ToArray(),
             host ? stores.Select(s => new ChatSecretStoreView(s.Id, s.Status.Available, s.Status.ExternallyManaged)).ToArray() : []);
     }

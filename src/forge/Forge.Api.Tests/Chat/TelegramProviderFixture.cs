@@ -38,7 +38,10 @@ internal sealed class TelegramProviderFixture : HttpMessageHandler, IHttpClientF
     {
         ct.ThrowIfCancellationRequested();
         var segments = request.RequestUri!.AbsolutePath.Split('/'); var bot = segments[1][3..].Split(':')[0]; var method = segments[2];
-        var body = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(ct)); this.Calls.Enqueue((bot, method, body));
+        var body = request.Content is not null ? JsonSerializer.Deserialize<JsonElement>(await request.Content.ReadAsStringAsync(ct))
+            : JsonSerializer.SerializeToElement(request.RequestUri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Select(item => item.Split('=', 2)).ToDictionary(pair => pair[0], pair => pair.Length == 2 ? pair[1] : ""));
+        this.Calls.Enqueue((bot, method, body));
         if (this.Override is not null && await this.Override(bot, method, body, ct) is { } replaced) return replaced;
         return method switch
         {

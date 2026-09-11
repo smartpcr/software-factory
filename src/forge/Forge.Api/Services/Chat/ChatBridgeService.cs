@@ -41,24 +41,29 @@ public sealed class ChatBridgeService : BackgroundService
     private readonly IOptionsMonitor<ChatBridgeOptions> options;
     private readonly IOptionsMonitor<ChatTransportOptions> transportOptions;
     private readonly ILogger<ChatBridgeService> logger;
+    private readonly IChatOperationGate? gate;
+    private readonly SemaphoreSlim outboundGate = new(1, 1);
 
     public ChatBridgeService(
         IServiceScopeFactory scopeFactory,
         IChatTransport transport,
         IOptionsMonitor<ChatBridgeOptions> options,
         IOptionsMonitor<ChatTransportOptions> transportOptions,
-        ILogger<ChatBridgeService> logger)
+        ILogger<ChatBridgeService> logger,
+        IChatOperationGate? gate = null)
     {
         this.scopeFactory = scopeFactory;
         this.transport = transport;
         this.options = options;
         this.transportOptions = transportOptions;
         this.logger = logger;
+        this.gate = gate;
     }
 
     /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (this.gate is not null) await this.gate.InitializeAsync(stoppingToken);
         try
         {
             await Task.Delay(this.options.CurrentValue.OutboundTickInterval, stoppingToken);
@@ -105,6 +110,16 @@ public sealed class ChatBridgeService : BackgroundService
     /// </summary>
     public async Task<OutboundTickResult> RunOutboundOnceAsync(CancellationToken ct)
     {
+        await this.outboundGate.WaitAsync(ct);
+        try { return await this.RunOwnedOutboundOnceAsync(ct); }
+        finally { this.outboundGate.Release(); }
+    }
+
+    private async Task<OutboundTickResult> RunOwnedOutboundOnceAsync(CancellationToken ct)
+    {
+        using var lease = this.gate is null ? null : await this.gate.EnterAsync("legacy", ct);
+        if (this.gate is not null && lease is null) return default;
+        using var continuation = this.gate?.ContinueLease();
         using var scope = this.scopeFactory.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         // Optional — always registered in production; some unit tests build a
@@ -113,12 +128,16 @@ public sealed class ChatBridgeService : BackgroundService
         var opt = this.options.CurrentValue;
         var now = DateTimeOffset.UtcNow;
         var result = default(OutboundTickResult);
+        // This singleton's previous tick has finished. An intent left by another process has an unknown outcome.
+        foreach (var interrupted in await control.ChatNotifications.Where(n => (n.Platform == "telegram" || n.Platform == "") && n.Status == "sending").ToListAsync(ct))
+        { interrupted.Status = "uncertain"; interrupted.LastError = "legacy-send-outcome-unknown"; }
+        if (control.ChangeTracker.HasChanges()) await control.SaveChangesAsync(ct);
 
         // ---- Send pass: pending → sent (or expired / failed) --------------
         // NOTE: order client-side — SQLite can't ORDER BY a DateTimeOffset
         // column (documented Forge SQLite gotcha), so materialize then sort.
         var pending = await control.ChatNotifications
-            .Where(r => r.Status == ChatNotificationStatuses.Pending && r.Platform != ChatTelegramSliceService.Platform && r.Platform != "plugins")
+            .Where(r => r.Status == ChatNotificationStatuses.Pending && (r.Platform == "telegram" || r.Platform == ""))
             .ToListAsync(ct);
         pending = pending.OrderBy(r => r.CreatedAt).ToList();
 
@@ -139,6 +158,9 @@ public sealed class ChatBridgeService : BackgroundService
                     continue;
                 }
 
+                // Record intent before creating a topic or sending. A crash cannot turn an unknown send into a fresh retry at cutover.
+                row.Status = "sending";
+                await control.SaveChangesAsync(ct);
                 var (text, buttons) = ChatMessageRenderer.Render(row);
                 if (!opt.AllowRemoteActions)
                 {
@@ -171,21 +193,34 @@ public sealed class ChatBridgeService : BackgroundService
                     row.LastError = null;
                     result.Sent++;
                 }
+                else if (send.OutcomeUnknown)
+                {
+                    row.Status = "uncertain"; row.LastError = "legacy-send-outcome-unknown"; row.Attempts++;
+                }
                 else
                 {
+                    row.Status = ChatNotificationStatuses.Pending;
                     this.Fail(row, send.Error ?? "send failed", opt, ref result);
                 }
+                await control.SaveChangesAsync(ct);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException)
             {
-                this.Fail(row, ex.Message, opt, ref result);
-                this.logger.LogWarning(ex, "chat send threw for notification {Id}", row.Id);
+                row.Status = "uncertain"; row.LastError = "legacy-send-outcome-unknown";
+                await control.SaveChangesAsync(CancellationToken.None);
+                throw;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                row.Status = "uncertain"; row.LastError = "legacy-send-outcome-unknown"; row.Attempts++;
+                await control.SaveChangesAsync(CancellationToken.None);
+                this.logger.LogWarning("Chat send outcome is unknown for notification {Id}.", row.Id);
             }
         }
 
         // ---- Edit pass: resolving → terminal (exactly one edit) -----------
         var resolving = await control.ChatNotifications
-            .Where(r => r.Status == ChatNotificationStatuses.Resolving && r.Platform != ChatTelegramSliceService.Platform && r.Platform != "plugins")
+            .Where(r => r.Status == ChatNotificationStatuses.Resolving && (r.Platform == "telegram" || r.Platform == ""))
             .ToListAsync(ct);
 
         foreach (var row in resolving)

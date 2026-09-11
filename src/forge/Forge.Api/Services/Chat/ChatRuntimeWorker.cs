@@ -9,10 +9,11 @@ namespace Forge.Api.Services.Chat;
 using Microsoft.Extensions.Options;
 
 public sealed class ChatRuntimeWorker(IServiceScopeFactory scopes, ChatRuntimeState runtime, ChatConnectionSupervisor supervisor,
-    TimeProvider clock, IOptions<ChatPluginOptions> options, ILogger<ChatRuntimeWorker> logger) : BackgroundService
+    TimeProvider clock, IOptions<ChatPluginOptions> options, ILogger<ChatRuntimeWorker> logger, ChatEngineCoordinator engine) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await engine.InitializeAsync(stoppingToken);
         var reconcile = DateTimeOffset.MinValue; var retention = DateTimeOffset.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -27,6 +28,9 @@ public sealed class ChatRuntimeWorker(IServiceScopeFactory scopes, ChatRuntimeSt
                 }
                 if (options.Value.Engine == "plugins" && !options.Value.TelegramSlice.Enabled && runtime.EnsureHostOwnership())
                 {
+                    using var lease = await engine.EnterAsync("plugins", stoppingToken);
+                    if (lease is null) { await Task.Delay(100, stoppingToken); continue; }
+                    using var continuation = engine.ContinueLease();
                     using var scope = scopes.CreateScope(); var services = scope.ServiceProvider;
                     await supervisor.RefreshAsync(stoppingToken);
                     if (now >= reconcile) { await services.GetRequiredService<ChatScopeReconciler>().RunOnceAsync(stoppingToken); reconcile = now.AddMinutes(5); }

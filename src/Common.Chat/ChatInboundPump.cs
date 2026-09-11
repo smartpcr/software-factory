@@ -77,22 +77,26 @@ public sealed class ChatInboundPump : BackgroundService
     private readonly IChatTransport transport;
     private readonly IOptionsMonitor<ChatTransportOptions> options;
     private readonly ILogger<ChatInboundPump> logger;
+    private readonly IChatOperationGate? gate;
 
     public ChatInboundPump(
         IServiceScopeFactory scopeFactory,
         IChatTransport transport,
         IOptionsMonitor<ChatTransportOptions> options,
-        ILogger<ChatInboundPump> logger)
+        ILogger<ChatInboundPump> logger,
+        IChatOperationGate? gate = null)
     {
         this.scopeFactory = scopeFactory;
         this.transport = transport;
         this.options = options;
         this.logger = logger;
+        this.gate = gate;
     }
 
     /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (this.gate is not null) await this.gate.InitializeAsync(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
             var opt = this.options.CurrentValue;
@@ -128,6 +132,9 @@ public sealed class ChatInboundPump : BackgroundService
     /// </summary>
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
+        using var lease = this.gate is null ? null : await this.gate.EnterAsync("legacy", ct);
+        if (this.gate is not null && lease is null) return 0;
+        using var continuation = this.gate?.ContinueLease();
         var offset = await this.LoadCursorAsync(ct);
         var pollOffset = offset == 0 ? 0 : offset + 1;
         var updates = await this.transport.PollUpdatesAsync(pollOffset, ct);

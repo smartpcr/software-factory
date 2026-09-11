@@ -182,7 +182,7 @@ public class ChatHostConfigurationTests : IDisposable
     public async Task Scripts_Parse_And_Launcher_Preserves_Explicit_Chat_Environment()
     {
         await this.RunPowerShellAsync("""
-            foreach ($name in @('forge-chat-settings.ps1', 'setup-telegram-bridge.ps1', 'run-forge-ui.ps1')) {
+            foreach ($name in @('forge-chat-settings.ps1', 'setup-telegram-bridge.ps1', 'migrate-chat-plugin.ps1', 'run-forge-ui.ps1')) {
                 $parseErrors = $null; $tokens = $null
                 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
                     (Join-Path $env:CHAT_FIXTURES $name), [ref]$tokens, [ref]$parseErrors)
@@ -268,6 +268,44 @@ public class ChatHostConfigurationTests : IDisposable
             if (-not ($global:chatFixtureCalls -match 'PUT .*/setup')) { throw 'Parent configuration was not saved' }
             if ($global:chatFixtureCalls -match '/checks') { throw 'Row setup sent an unrequested test' }
             """, Path.Combine(this.folder, "api-setup-must-not-write.json"));
+    }
+
+    [Fact]
+    public async Task Migration_helper_defaults_to_read_only_and_requires_explicit_revisions_for_handoffs()
+    {
+        await this.RunPowerShellAsync("""
+            $global:migrationFixtureCalls = [System.Collections.Generic.List[string]]::new()
+            function Invoke-RestMethod {
+                param($Uri, $Method, $WebSession, $Headers, $MaximumRedirection, $Body, $ContentType)
+                $path = ([uri]$Uri).AbsolutePath
+                if ($MaximumRedirection -ne 0) { throw 'Unexpected redirect policy' }
+                $global:migrationFixtureCalls.Add("$Method $path")
+                if ($path -eq '/api/operator/csrf') { return @{ token = 'fixture-csrf' } }
+                if ($Headers['X-Forge-CSRF'] -ne 'fixture-csrf') { throw 'Missing request protection' }
+                if ($path -notlike '/api/chat/migration/*') { throw 'Unexpected API operation' }
+                if ($Method -eq 'POST') {
+                    $value = $Body | ConvertFrom-Json
+                    if ($value.expectedRevision -ne 7) { throw 'Revision missing' }
+                    if ($path.EndsWith('/cutover') -and ($value.activate.Count -ne 1 -or $value.activate[0].spawnId -ne 'parent')) { throw 'Parent choice missing' }
+                    if ($path.EndsWith('/rollback') -and -not $value.pauseUnsupported) { throw 'Pause choice missing' }
+                }
+                return @{ revision = 7 }
+            }
+            $arguments = @{ WebSession = [Microsoft.PowerShell.Commands.WebRequestSession]::new() }
+            $helper = Join-Path $env:CHAT_FIXTURES 'migrate-chat-plugin.ps1'
+            & $helper @arguments
+            if ($global:migrationFixtureCalls -match '^POST') { throw 'Default preview wrote settings' }
+            $failed = $false
+            try { & $helper @arguments -Action Cutover } catch { $failed = $true }
+            if (-not $failed) { throw 'Missing revision accepted' }
+            & $helper @arguments -Action Import -ExpectedRevision 7 -SourceHash reviewed -BotId 12345
+            & $helper @arguments -Action Cutover -ExpectedRevision 7 -Activate @(@{productId='p';spawnId='parent'})
+            & $helper @arguments -Action RollbackPreview
+            & $helper @arguments -Action Rollback -ExpectedRevision 7 -PauseUnsupported
+            & $helper @arguments -Action RetireCompatibility -ExpectedRevision 7
+            if (@($global:migrationFixtureCalls | Where-Object { $_ -like 'POST /api/chat/migration/*' }).Count -ne 4) { throw 'Unexpected migration operations' }
+            if (Test-Path $env:FORGE_CHAT_SETTINGS_PATH) { throw 'Migration patched local settings' }
+            """, Path.Combine(this.folder, "migration-must-not-write.json"));
     }
 
     private async Task RunPowerShellAsync(string script, string settingsPath)

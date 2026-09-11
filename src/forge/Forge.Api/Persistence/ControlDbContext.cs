@@ -88,6 +88,8 @@ public class ControlDbContext : DbContext
     public DbSet<ChatActionTokenRow> ChatActionTokens => this.Set<ChatActionTokenRow>();
     public DbSet<ChatOperatorLinkRow> ChatOperatorLinks => this.Set<ChatOperatorLinkRow>();
     public DbSet<ChatLinkChallengeRow> ChatLinkChallenges => this.Set<ChatLinkChallengeRow>();
+    public DbSet<ChatMigrationStateRow> ChatMigrationState => this.Set<ChatMigrationStateRow>();
+    public DbSet<ChatMigrationItemRow> ChatMigrationItems => this.Set<ChatMigrationItemRow>();
 
     /// <summary>Phase 95 — chat-bridge operator allow-list (chat account ↔ Forge user).</summary>
     public DbSet<ChatSubscriberRow> ChatSubscribers => this.Set<ChatSubscriberRow>();

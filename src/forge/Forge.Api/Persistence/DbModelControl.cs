@@ -164,5 +164,6 @@ public static class DbModelControl
         mb.Entity<ChatSpawnTopicRow>().ToTable("chat_spawn_topics").HasKey(x => x.SpawnId);
         ChatConfigurationModel.Configure(mb);
         ChatDeliveryModel.Configure(mb);
+        ChatMigrationModel.Configure(mb);
     }
 }

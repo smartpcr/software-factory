@@ -252,16 +252,17 @@ public sealed class TelegramTransport : IChatTransport
                 messageId = TryString(mid);
             }
 
-            return ChatSendResult.Success(messageId);
+            return method == "sendMessage" && string.IsNullOrWhiteSpace(messageId)
+                ? ChatSendResult.Unknown("telegram-send-unconfirmed") : ChatSendResult.Success(messageId);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            this.logger.LogWarning(ex, "Telegram {Method} threw.", method);
-            return ChatSendResult.Failure(ex.Message);
+            this.logger.LogWarning("Telegram {Method} outcome is unknown.", method);
+            return ChatSendResult.Unknown("telegram-operation-outcome-unknown");
         }
     }
 

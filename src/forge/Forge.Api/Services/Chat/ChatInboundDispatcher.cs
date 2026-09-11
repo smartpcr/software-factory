@@ -41,6 +41,7 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
     private readonly HostIdentityStore identities;
     private readonly ForgeActorResolver actors;
     private readonly ForgeCapabilityAuthorizer authorizer;
+    private readonly ChatMigratedIdentity? migrated;
     private readonly ControlDbContext control;
     private readonly IServiceScopeFactory scopeFactory;
     private readonly IChatTransport transport;
@@ -55,11 +56,13 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
         ILogger<ChatInboundDispatcher> logger,
         HostIdentityStore identities,
         ForgeActorResolver actors,
-        ForgeCapabilityAuthorizer authorizer)
+        ForgeCapabilityAuthorizer authorizer,
+        ChatMigratedIdentity? migrated = null)
     {
         this.identities = identities;
         this.actors = actors;
         this.authorizer = authorizer;
+        this.migrated = migrated;
         this.control = control;
         this.scopeFactory = scopeFactory;
         this.transport = transport;
@@ -96,6 +99,7 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
             }
 
             var verified = await this.actors.FromProviderAsync(this.transport.Platform, update.ChatId, update.FromId, ct);
+            if (verified is null && this.migrated is not null) verified = await this.migrated.ResolveLegacyAsync(this.transport.Platform, update.ChatId, update.FromId, ct);
             if (verified is null) return;
             // The old subscriber row is only a preference record; it conveys no authority.
             var subscriber = await this.control.ChatSubscribers.FirstOrDefaultAsync(

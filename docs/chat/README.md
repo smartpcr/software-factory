@@ -12,7 +12,7 @@ child workstreams. Multiple providers and channels may be attached to the same r
 - [Implementation plan](chat-plugin-implementation-plan.md) — sequenced work,
   affected code, migration, and acceptance checks.
 
-**Status (2026-09-10): Stages 0A, 0B, 1, 2, 3, 4 and 5 implemented. Stage 1S and the separate real-provider live gates remain pending; Stage 6 migration/cutover is planned.** The legacy bridge uses
+**Status (2026-09-10): Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. The Stage 1S manual exercise and the separate real-provider live gates remain pending; Stage 6 cutover/rollback is rehearsed in isolated fixtures.** The legacy bridge uses
 explicit host-user configuration and safe defaults. Authenticated operator pairing
 and shared capabilities are implemented. Stage 1 adds provider/plugin contracts,
 the six control-DB configuration tables, scoped configuration APIs, Host alerts
@@ -34,6 +34,10 @@ setup state, revision checks and protection against reused spawn IDs.
   routing, thread replies/choices and the connection UI follow-up completed in Stage 5.
 - [Stage 5 validation](chat-plugin-stage5-validation.md) — all 14 requirements,
   381 backend checks, 197 UI unit tests, eight browser cases and remaining live gates.
+- [Stage 6 validation](chat-plugin-stage6-validation.md) — all 11 migration requirements,
+  22 migration cases, 404 backend checks and the compatibility gap review.
+- [Migration and rollback](chat-plugin-migration.md) — read-only preview, stable import,
+  explicit parent selection, exclusive ownership, latest-cursor rollback and retirement.
 - [Slack setup](slack-setup.md) and [app manifest](slack-app-manifest.yaml).
 
 The active engine still defaults to `legacy`. Stage 1S adapts `TelegramTransport`
@@ -55,7 +59,10 @@ Settings → Integrations → Chat, connection repair and verification, Host ale
 confirmed identity linking and one shared row/detail drawer. Atomic saves queue
 introductions and preserve running work; shared product/spawn summaries avoid
 per-row chat queries. The Telegram helper now calls the same authenticated APIs.
-Legacy import remains Stage 6. New backend code needs an operator-approved host
+Stage 6 adds Phase 106's control journal, stable legacy import, exclusive persisted
+engine ownership and explicit migration/rollback commands. Existing alerts and
+message IDs survive transfer; unsupported routes stay paused with retained history.
+New backend code needs an operator-approved host
 restart; implementation did not restart services or send real provider messages.
 
 **Review status (round 1, 2026-09-09): all 15 comments fixed in documentation.**

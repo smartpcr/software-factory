@@ -35,6 +35,18 @@ public static class ChatPluginEndpoints
         { await service.RevokeAsync(await action.ActorAsync(ct), ct); return Results.NoContent(); }).WithMetadata(self);
         api.MapGet("/chat/management", async (ForgeActionContext action, ChatManagementService service, CancellationToken ct)
             => await service.ReadAsync(await action.ActorAsync(ct), ct)).WithMetadata(self);
+        api.MapGet("/chat/migration/preview", async (ForgeActionContext action, ChatMigrationService service, CancellationToken ct)
+            => await service.PreviewAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
+        api.MapPost("/chat/migration/import", async (ChatMigrationImport request, ForgeActionContext action, ChatMigrationService service, CancellationToken ct)
+            => await service.ImportAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(host);
+        api.MapPost("/chat/migration/cutover", async (ChatMigrationCutover request, ForgeActionContext action, ChatMigrationService service, CancellationToken ct)
+            => await service.CutoverAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(host);
+        api.MapGet("/chat/migration/rollback-preview", async (ForgeActionContext action, ChatMigrationService service, CancellationToken ct)
+            => await service.RollbackPreviewAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
+        api.MapPost("/chat/migration/rollback", async (ChatMigrationRollback request, ForgeActionContext action, ChatMigrationService service, CancellationToken ct)
+            => await service.RollbackAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(host);
+        api.MapPost("/chat/migration/retire-compatibility", async (ChatMigrationRollback request, ForgeActionContext action, ChatMigrationService service, CancellationToken ct)
+            => await service.RetireCompatibilityAsync(await action.ActorAsync(ct), request.ExpectedRevision, ct)).WithMetadata(host);
         api.MapPost("/chat/preview", async (ChatPreviewRequest request, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
             => await service.PreviewAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(self);
         api.MapGet("/chat/connections/{id}/health", async (string id, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
@@ -47,10 +59,11 @@ public static class ChatPluginEndpoints
             => await service.SendAsync(await action.ActorAsync(ct), connectionId, id, request, ct)).WithMetadata(host);
         api.MapGet("/products/{productId}/chat/summaries", async (string productId, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
             => await service.SummariesAsync(await action.ActorAsync(ct), productId, ct)).WithMetadata(self);
-        api.MapGet("/chat/configuration", (IOptions<ChatPluginOptions> options) => new
+        api.MapGet("/chat/configuration", async (IOptions<ChatPluginOptions> options, ChatEngineCoordinator engine, CancellationToken ct) =>
         {
-            options.Value.Enabled, options.Value.Engine, options.Value.HostId, options.Value.UnavailableReason,
-            InteractiveAvailable = ChatPluginInteractiveGate.AvailableFor(options.Value),
+            await engine.InitializeAsync(ct);
+            return new { options.Value.Enabled, options.Value.Engine, options.Value.HostId, options.Value.UnavailableReason,
+                InteractiveAvailable = ChatPluginInteractiveGate.AvailableFor(options.Value) };
         }).WithMetadata(host);
         api.MapPost("/chat/retention/purge-content", async (ForgeActionContext action, ChatRetentionService retention, CancellationToken ct)
             => await retention.PurgeContentAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);

@@ -12,11 +12,14 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>Domain state is authoritative, including web actions whose control-DB checkpoint was missed.</summary>
 public sealed class ChatResultReconciler(ControlDbContext control, IProductDbContextFactory products, ChatScopeResolver resolver,
-    ChatDbBudget budget, TimeProvider clock, ChatRuntimeState runtime)
+    ChatDbBudget budget, TimeProvider clock, ChatRuntimeState runtime, ChatEngineCoordinator engine)
 {
     private static readonly string[] OpenStates = ["pending", "retry", "sending", "sent", "uncertain", "failed"];
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
+        using var lease = await engine.EnterAsync("plugins", ct);
+        if (lease is null) return;
+        using var continuation = engine.ContinueLease();
         using var limits = ChatDbBudget.Limit(control);
         var states = OpenStates.ToList();
         var cursor = runtime.LastReconciledDelivery ?? "";

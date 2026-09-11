@@ -3,6 +3,8 @@
 Stage 5 provides **Settings → Integrations → Chat** and a **Chat** control on every
 Workstreams row, including completed rows. The [validation report](chat-plugin-stage5-validation.md)
 records automated evidence and the remaining live-provider gates.
+Stage 6 adds [legacy migration and rollback](chat-plugin-migration.md); use that
+guide when importing an existing bridge instead of adding a duplicate bot connection.
 
 ## Connections and channels
 
@@ -97,4 +99,9 @@ The default engine remains `legacy`. Plugin runtime activation requires
 host configuration. Engine/environment/ceiling changes take effect after a host
 refresh; saved connection/subscription revisions apply live once this backend is
 loaded. The running host must be restarted only at an operator-approved time.
-Stage 6 will handle importing legacy settings and cutover.
+For an existing bridge, Stage 6 persists the selected engine in the control DB and
+loads it before either engine runs. Explicit cutover/rollback applies live after this
+backend is loaded; the persisted owner takes precedence over the startup engine
+selection. `Enabled=false` still stops both engines. A migration opts in when
+`Enabled` is absent. Use the migration command for rollback, preserving the latest
+cursor and compatible delivery states.

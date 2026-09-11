@@ -124,6 +124,8 @@ public static class DbBoundary
         new DbTableSpec("chat_inbox", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_connection_state", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_receiver_state", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_migration_state", DbKind.Control, PartitionStrategy.Global, null),
+        new DbTableSpec("chat_migration_items", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_action_tokens", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_operator_links", DbKind.Control, PartitionStrategy.Global, null),
         new DbTableSpec("chat_link_challenges", DbKind.Control, PartitionStrategy.Global, null),
