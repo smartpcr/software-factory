@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests.Chat;
 
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -54,7 +55,19 @@ internal sealed class SlackProviderFixture : HttpMessageHandler, IHttpClientFact
         ct.ThrowIfCancellationRequested(); Assert.Equal("https", request.RequestUri!.Scheme); Assert.Equal("slack.com", request.RequestUri.Host);
         Assert.Empty(request.RequestUri.Query); Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
         var workspace = request.Headers.Authorization.Parameter!.Split('-')[1]; var method = request.RequestUri.Segments[^1];
-        var raw = await request.Content!.ReadAsStringAsync(ct); var body = JsonSerializer.Deserialize<JsonElement>(string.IsNullOrEmpty(raw) ? "{}" : raw);
+        var raw = await request.Content!.ReadAsStringAsync(ct);
+        var mediaType = request.Content.Headers.ContentType!.MediaType;
+        if (method is "conversations.info" or "conversations.list" or "apps.connections.open")
+            Assert.Equal("application/x-www-form-urlencoded", mediaType);
+        else Assert.Equal("application/json", mediaType);
+        var body = mediaType == "application/x-www-form-urlencoded"
+            ? JsonSerializer.SerializeToElement(raw.Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Select(field => field.Split('=', 2)).ToDictionary(field => WebUtility.UrlDecode(field[0]), field =>
+                {
+                    var value = WebUtility.UrlDecode(field[1]);
+                    return field[0] switch { "limit" => (object)int.Parse(value, CultureInfo.InvariantCulture), "exclude_archived" => bool.Parse(value), _ => value };
+                }))
+            : JsonSerializer.Deserialize<JsonElement>(string.IsNullOrEmpty(raw) ? "{}" : raw);
         this.Calls.Enqueue((workspace, method, body));
         if (method == "chat.update")
         {
@@ -70,6 +83,7 @@ internal sealed class SlackProviderFixture : HttpMessageHandler, IHttpClientFact
             "conversations.info" => Json(new { ok = true, channel = Channel(body.GetProperty("channel").GetString()!) }),
             "conversations.list" => Json(new { ok = true, channels = new[] { Channel("C1"), Channel("G1", true) }, response_metadata = new { next_cursor = "" } }),
             "chat.postMessage" => Json(new { ok = true, channel = body.GetProperty("channel").GetString(), ts }),
+            "chat.postEphemeral" => Json(new { ok = true, message_ts = ts }),
             "chat.update" => Json(new { ok = true, channel = body.GetProperty("channel").GetString(), ts = body.GetProperty("ts").GetString() }),
             _ => throw new InvalidOperationException("Unexpected Slack method: " + method),
         };
@@ -85,14 +99,14 @@ internal sealed class SlackProviderFixture : HttpMessageHandler, IHttpClientFact
                 authorizations = new[] { new { team_id = workspace, user_id = authorizer ?? "UBOT" + workspace, is_bot = true, is_enterprise_install = false } },
                 @event = new { type = "message", channel, channel_type = channel.StartsWith('G') ? "group" : "channel", user = sender, text, ts = "1700000001.000100", thread_ts = thread, subtype, bot_id = bot, user_team = userTeam } },
         });
-    public static JsonElement Button(string id, string messageId, string key = Key, string workspace = "T1", string sender = "U1", string? thread = "1700000000.000001", string channel = "C1")
+    public static JsonElement Button(string id, string messageId, string key = Key, string workspace = "T1", string sender = "U1", string? thread = "1700000000.000001", string channel = "C1", string actionId = "forge_0")
         => JsonSerializer.SerializeToElement(new
         {
             type = "interactive", envelope_id = id,
             payload = new { type = "block_actions", api_app_id = "A1", team = new { id = workspace }, user = new { id = sender, team_id = workspace },
                 channel = new { id = channel }, container = new { type = "message", channel_id = channel, message_ts = messageId },
                 message = new { ts = messageId, thread_ts = thread, user = "UBOT" + workspace, bot_id = "B" + workspace },
-                actions = new[] { new { type = "button", action_id = "forge_0", value = key } } },
+                actions = new[] { new { type = "button", action_id = actionId, value = key } } },
         });
     internal static async Task UntilAsync(Func<bool> condition)
     {

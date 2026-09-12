@@ -1,13 +1,42 @@
 # Slack setup for the Chat plugin
 
-Stage 4 supports internal Slack workspace installations through Socket Mode.
-Use the [versioned manifest](slack-app-manifest.yaml). Stage 5 provides guided
-connection and repair screens under Settings → Integrations → Chat; follow the
-[current setup guide](chat-plugin-setup.md). The authenticated configuration,
-validation, linking, health and retry APIs below remain available. Live-workspace verification remains
-the separate integration gate in the [implementation plan](chat-plugin-implementation-plan.md).
+Forge supports internal Slack workspace installations through Socket Mode.
+Use **Settings → Chat → Add a connection → Slack**. Existing connections appear
+under **Saved connections**; select one for its channels, or **Repair / edit**.
+Follow the [current setup guide](chat-plugin-setup.md) and the
+[versioned manifest](slack-app-manifest.yaml) for existing apps. The
+[release gate](chat-plugin-release-gate.md) separates implemented behavior,
+deployed evidence and the remaining live-provider exercise.
+
+The connection editor's **Step-by-step Slack setup** walkthrough includes screenshots
+of Basic Information and the highlighted bot-token field. Expand its numbered steps
+for exact field locations; copy or download the manifest directly in that view.
 
 ## Create and install the app
+
+For automatic setup, use [Slack authorization](chat-connection-authorization.md#automatic-app-provisioning).
+On an unregistered host, **Connect with Slack** opens an approval popup. After the
+Slack permission prompt and confirmation code, Forge creates and installs the app,
+configures Socket Mode, and retrieves both credentials. No pre-existing app or HTTPS
+callback is needed for this path. Existing host-owned OAuth apps remain supported.
+The browser popup still requires copying the approval request to a writable Slack
+conversation, accepting its private permission dialog, and returning the challenge
+code. App creation, permissions, installation and token retrieval follow that
+handoff. Assisted desktop setup completed one live installation and saved its
+connection; the entire deployed browser-only approval path is not yet verified.
+The saved channel's form-encoding correction is deployed after the approved
+September 12 restart. Forge's API and actual Settings UI both validate `#all-forge`
+successfully; connection saved/applied revision is 4/4. See
+[actual live results](chat-slack-live-setup.md).
+
+If you do not have a workspace you can manage, select **Create a new Slack
+workspace** in Forge's approval popup. It opens [Slack's signup page](https://slack.com/get-started#/createnew).
+Sign in or verify your email there, name the workspace, and finish Slack setup.
+Return to Forge and select **Workspace ready, continue** for a fresh approval
+request. **Find my workspaces** opens Slack sign-in for an existing workspace.
+Creating a workspace and approving the Forge app are separate steps.
+
+## Existing app: manual setup
 
 1. Create a Slack app from the manifest in the chosen workspace. Record its app ID
    (`A…`) from Basic Information and the workspace ID (`T…`). Obtain administrator
@@ -23,7 +52,8 @@ the separate integration gate in the [implementation plan](chat-plugin-implement
    to the bot and the bot must be a member to appear in the picker.
 
 No public callback URL, direct-message, user-profile, slash-command or auto-join
-permission is needed. Commands are ordinary channel messages beginning with
+permission is needed for this Socket Mode provisioning path. The optional shared
+OAuth installation path separately requires an HTTPS return URL. Commands are ordinary channel messages beginning with
 `!forge`, delivered through message events. This avoids Slack's slash-command
 registration requirement. Organization-wide enterprise installations and Slack
 Connect channels/actions are outside this version.
@@ -32,6 +62,37 @@ Sources: [Socket Mode and app tokens](https://docs.slack.dev/apis/events-api/usi
 [channel discovery](https://docs.slack.dev/reference/methods/conversations.list/),
 [public events](https://docs.slack.dev/reference/events/message.channels/),
 [private events](https://docs.slack.dev/reference/events/message.groups/).
+
+![Slack Basic Information example](../../src/forge/Forge.UI/src/assets/chat-setup/slack-basic-information.png)
+
+![Slack bot-token location; example credential obscured](../../src/forge/Forge.UI/src/assets/chat-setup/slack-bot-token.png)
+
+The same screenshots are available in the editor's expandable walkthrough. They
+are documentation examples, not proof of your installation or current credentials.
+
+## Exact permissions
+
+The checked-in public manifest and automatically generated public manifest use
+the same permissions. Private access adds only the two group scopes and one event.
+
+| Permission or setting | Public channels | Private-channel addition | Purpose |
+|---|---|---|---|
+| Bot `chat:write` | Required | Same | Post and update the bot's messages. |
+| Bot `channels:read` | Required | Same | List and validate public-channel membership. |
+| Bot `channels:history` | Required | Same | Receive public-channel message events. |
+| Bot `groups:read` | Absent | Required | Discover and validate private channels. |
+| Bot `groups:history` | Absent | Required | Receive private-channel message events. |
+| Bot event `message.channels` | Required | Same | Channel replies and `!forge` messages. |
+| Bot event `message.groups` | Absent | Required | Private-channel replies and commands. |
+| App token `connections:write` | Required | Same | Open Socket Mode. This app-token scope is generated separately, not placed in bot OAuth scopes. |
+| Socket Mode / interactivity | Enabled | Same | Receive events and button interactions. |
+| Organization deployment / token rotation | Disabled | Same | Workspace installations with explicitly replaced credentials. |
+
+No `commands`, `users:read`, `im:*`, `mpim:*`, `chat:write.public` or auto-join scope
+is requested. History scopes support message events; Forge does not poll channel
+history. Sources: [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/),
+[`channels:history`](https://docs.slack.dev/reference/scopes/channels.history/),
+[`connections:write`](https://docs.slack.dev/reference/scopes/connections.write/).
 
 ## Configure Forge
 
@@ -86,7 +147,7 @@ affinity.
 | Verify credentials and discover channels | `GET /api/chat/connections/{id}/discovery?cursor=…` validates bot/workspace identity with `auth.test` and verifies the Socket Mode `hello` app ID. Follow every nonempty cursor, including an empty filtered page. |
 | Save destination | `PUT /api/chat/connections/{id}/destinations/{destinationId}` with `expectedRevision`, `externalTenantId`, `channelId`, `displayName`, and `kind` (`public-channel` or `private-channel`). |
 | Validate membership | `POST /api/chat/connections/{id}/destinations/{destinationId}/validate`. Checks current channel access and archive/membership state. No test message is sent. |
-| Enable a parent | `PUT /api/products/{productId}/story-spawns/{spawnId}/plugins/chat`, then its `/subscriptions/{subscriptionId}` endpoint with the destination, `conversationPolicy: "thread"`, current `parentRevision`, and explicit `interactive: true`. |
+| Enable a parent | Use the row's **Save and enable**, or atomic `PUT /api/products/{productId}/story-spawns/{spawnId}/plugins/chat/setup` with the full destination list and `conversationPolicy: "thread"`. See [API examples](chat-plugin-api-examples.md#save-all-parent-destinations-atomically). |
 | Permit question content | Set product content policy and subscription `contentMode` to `redacted`. Metadata mode directs answers to Forge. |
 | Observe health | `GET /api/chat/host/status` includes connection health, receiver diagnostics, delivery failures and reply failures. |
 
@@ -100,7 +161,37 @@ dispatched. This avoids adding the `users:read` scope solely for `bots.info`.
 
 ## Link an operator and answer questions
 
-While signed into Forge as an enrolled operator, request
+In **Your chat identity → Link or re-link my account**, select the Slack connection,
+enter your personal Slack member ID and confirm ownership. Choose a saved channel
+you have joined, then **Link my Slack account**. Forge opens the channel and
+requests a private **Confirm link** message. Select **Confirm link → Link account**
+in Slack; Forge observes the verified callback and closes its confirmation dialog.
+No link command or code is copied in this flow. The first member ID is still
+required; app installation alone does not identify the current Forge browser user.
+
+**Deployment:** this private-button flow was deployed after approval on September
+12 at 09:41 UTC (API PID 43620). The API capability, saved-channel lookup and
+actual Settings form pass live checks. The user's private-message approval still
+needs verification. Settings checks the backend's `slackLinkConfirmationAvailable`
+capability before offering the flow on other hosts.
+See [linking recovery](chat-plugin-troubleshooting.md#configured-connection-shows-needs-linking).
+
+The later member-ID recovery correction reuses the same operator's previous
+input while link-request history is retained, preferring an existing verified
+account. The field stays editable and approval is still required. This additional
+backend change awaits a fresh approved restart; PID 43620 does not yet return
+remembered input.
+
+The request uses [chat.postEphemeral](https://docs.slack.dev/reference/methods/chat.postEphemeral/)
+with the existing `chat:write` bot scope. It requires both your account and the bot
+in the selected channel. Keep Slack active: private delivery is not guaranteed,
+and reloading can remove the message. Use the dialog's direct channel link if a
+popup is blocked, or **Send a new confirmation** if the message is absent/expired.
+Forge retains only the challenge hash and accepts one callback from the expected
+user, workspace and connection revision. It does not publish a channel response.
+
+For existing API clients, the manual command endpoint remains compatible. While
+signed into Forge as an enrolled operator, request
 `POST /api/chat/connections/{id}/link-challenge` with
 `{ "externalTenantId": "T…", "externalUserId": "U…" }`.
 Use your Slack member ID, not the bot ID. Send the returned `channelCommand`
@@ -132,6 +223,34 @@ operation. Normal reception uses events, with no `conversations.history` or
 `conversations.replies` polling.
 [Thread posting and accessibility](https://docs.slack.dev/reference/methods/chat.postMessage/),
 [message updates](https://docs.slack.dev/reference/methods/chat.update/).
+
+## Rotate credentials
+
+1. Identify every Forge connection sharing the app ID. Disable those connections
+   and save before replacing the shared app token; rotating one workspace bot token
+   only requires disabling that workspace connection. Agents continue working.
+2. Obtain a new installed bot token for the same workspace, or generate a new
+   app-level token with `connections:write` in the app's Basic Information. The
+   shipped manifest leaves Slack automatic token rotation disabled; Forge does
+   not implement expiring bot-token refresh. Do not turn that setting on as a
+   substitute for this procedure.
+3. In **Repair / edit**, replace **Bot token** or **App token** and save. Each
+   protected credential write returns a new reference and connection revision.
+   For a shared app token, copy that returned reference to all of the app's disabled
+   connections using the advanced reference field or the configuration API; each
+   connection must point to the same replacement. Never overwrite a shared blob.
+4. Enable the affected connections. Check health/applied revisions and validate
+   the existing destinations. Perform an explicit send/reply check on an approved
+   test channel. Revoke the superseded credential after the replacement works,
+   unless an incident requires immediate revocation.
+5. Retry known failed deliveries explicitly. Preserve uncertain-send records and
+   message timestamps; rotation does not justify replaying the history.
+
+Protected-store changes apply live. An externally managed environment reference
+requires the new process environment and an operator-approved restart. The
+[credential API example](chat-plugin-api-examples.md#replace-a-credential) describes
+revision handling. Shared-app rotation and receiver recovery have fixture coverage;
+the real-provider rotation exercise remains a release gate.
 
 ## Diagnose and repair
 
@@ -166,3 +285,7 @@ the handshake again, with bounded exponential backoff and cancellation. A failed
 inbox commit is not acknowledged. Domain dispatch runs after durable acceptance.
 [Rate limits](https://docs.slack.dev/apis/web-api/rate-limits/),
 [interaction acknowledgement](https://docs.slack.dev/interactivity/handling-user-interaction/).
+
+For approval-window recovery, identity confusion and host diagnostics, see
+[chat troubleshooting](chat-plugin-troubleshooting.md). For explicit transport checks,
+content previews and parent history, see [API examples](chat-plugin-api-examples.md).

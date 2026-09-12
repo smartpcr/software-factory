@@ -9,12 +9,14 @@ namespace Forge.Api.Services.Chat;
 using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 /// <summary>Connection-scoped challenges and durable link history reuse the Stage 0B enrollment/link authority.</summary>
-public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore identities, ForgeActorResolver actors,
-    ForgeCapabilityAuthorizer authorizer, ChatRuntimeState runtime, TimeProvider clock, ChatConnectionSupervisor supervisor, ChatMigratedIdentity migrated)
+public sealed partial class ChatLinkService(ControlDbContext control, HostIdentityStore identities, ForgeActorResolver actors,
+    ForgeCapabilityAuthorizer authorizer, ChatRuntimeState runtime, TimeProvider clock, ChatConnectionSupervisor supervisor, ChatMigratedIdentity migrated,
+    IOptions<ChatPluginOptions> options)
 {
-    public async Task<object> BeginAsync(ForgeActor? actor, string connectionId, string tenantId, string senderId, CancellationToken ct)
+    public async Task<ChatIdentityChallenge> BeginAsync(ForgeActor? actor, string connectionId, string tenantId, string senderId, CancellationToken ct)
     {
         await authorizer.RequireAsync(actor, ForgeCapabilities.LinkSelf, new(), ct);
         var connection = await control.ChatConnections.AsNoTracking().SingleOrDefaultAsync(c => c.Id == connectionId && c.Enabled && c.DeletedAt == null, ct)
@@ -30,8 +32,7 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
         await control.SaveChangesAsync(ct);
         var session = connection.ProviderId == "telegram" ? await supervisor.GetAsync(connection, ct) : null;
         var deepLink = session?.Provider is Common.Chat.Telegram.TelegramSession telegram ? $"https://t.me/{telegram.BotUsername}?start={token}" : null;
-        return new { Token = token, ExpiresInSeconds = 120, DeepLink = deepLink,
-            ChannelCommand = connection.ProviderId == "slack" ? "!forge link " + token : null };
+        return new(token, 120, deepLink, connection.ProviderId == "slack" ? "!forge link " + token : null);
     }
 
     public Task<ForgeActor?> RedeemAsync(string token, string connectionId, string tenantId, string senderId, CancellationToken ct)
@@ -93,9 +94,9 @@ public sealed class ChatLinkService(ControlDbContext control, HostIdentityStore 
         await authorizer.RequireAsync(actor, ForgeCapabilities.LinkSelf, new(), ct);
         identities.RevokeLinks(actor!.UserId);
         foreach (var row in await control.ChatOperatorLinks.Where(l => l.UserId == actor.UserId && l.RevokedAt == null).ToListAsync(ct)) row.RevokedAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
-        foreach (var row in await control.ChatLinkChallenges.Where(c => c.UserId == actor.UserId && c.State == "pending").ToListAsync(ct)) row.State = "revoked";
+        foreach (var row in await control.ChatLinkChallenges.Where(c => c.UserId == actor.UserId && (c.State == "pending" || c.State == "cancelled")).ToListAsync(ct)) row.State = "revoked";
         await control.SaveChangesAsync(ct);
     }
 }
 
-public sealed record ChatConnectionLinkRequest(string ExternalTenantId, string ExternalUserId);
+public sealed record ChatConnectionLinkRequest(string ExternalTenantId, string ExternalUserId);public sealed record ChatIdentityChallenge(string Token, int ExpiresInSeconds, string? DeepLink, string? ChannelCommand);

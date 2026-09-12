@@ -1,5 +1,7 @@
 import { OperatorSessionSettings } from '@/auth/OperatorGate';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import '../styles/settings.css';
 import { ChatIntegrations } from '../swarm/plugins/ChatIntegrations';
 import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
 import { useCurrentUserStore } from '@/state/useCurrentUserStore';
@@ -336,7 +338,33 @@ const PROVIDERS: ProviderEntry[] = [
   { kind: 'github', label: 'GitHub',       description: 'Issues + pull requests + Actions', authSupported: true },
 ];
 
+const SETTINGS_TABS = [{ id: 'chat', label: 'Chat' }, { id: 'repositories', label: 'Repository providers' }, { id: 'general', label: 'General' }] as const;
+
+function SettingsSection({ id, title, description, children, initiallyOpen = false }: {
+  id: string; title: string; description: string; children: ReactNode; initiallyOpen?: boolean;
+}) {
+  return <details className="settings-section" id={id} open={initiallyOpen}>
+    <summary id={`${id}-heading`}>
+      <svg className="settings-section-chevron" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
+      <h2>{title}<span className="settings-section-description">{description}</span></h2>
+    </summary>
+    <div className="settings-section-content" role="region" aria-labelledby={`${id}-heading`}>{children}</div>
+  </details>;
+}
+
 export function SettingsView() {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = SETTINGS_TABS.find(tab => tab.id === searchParams.get('tab'))?.id ?? 'chat';
+  const scrollArea = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { scrollArea.current?.scrollTo(0, 0); }, [activeTab]);
+  function selectTab(tab: string) {
+    setSearchParams(params => { params.set('tab', tab); return params; }, { replace: true });
+  }
+  function closeSettings() {
+    if (window.history.state?.idx > 0) navigate(-1);
+    else navigate('/workstreams', { replace: true });
+  }
   const [byKind, setByKind] = useState<Record<string, ProviderHealth>>({});
   const [authByKind, setAuthByKind] = useState<Record<string, AuthStatus>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -470,109 +498,116 @@ export function SettingsView() {
   }
 
   return (
-    <section className="view active" id="view-settings">
-      <OperatorSessionSettings />
-      <ChatIntegrations />
-      <div className="page-head">
-        <div className="page-head-left">
-          <div className="page-eyebrow">
-            <span><span className="num">05</span>&nbsp;Settings</span>
-            <span className="sep">/</span>
-            <span>providers</span>
-          </div>
-          <h1 className="page-title">
-            <span className="mark" />
-            Providers &amp; sync
-          </h1>
+    <section className="view active settings-view" id="view-settings" aria-labelledby="settings-title">
+      <header className="settings-page-header">
+        <div className="settings-heading-row">
+          <div><div className="page-eyebrow">WORKSPACE / PREFERENCES</div><h1 className="page-title" id="settings-title">Settings</h1></div>
+          <button type="button" className="btn btn-secondary settings-close" aria-label="Close settings" onClick={closeSettings}>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>Close
+          </button>
         </div>
-      </div>
+        <div className="settings-tabs" role="tablist" aria-label="Settings categories">
+          {SETTINGS_TABS.map((tab, index) => <button key={tab.id} id={`settings-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id}
+            aria-controls={`settings-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectTab(tab.id)}
+            onKeyDown={event => {
+              const next = event.key === 'ArrowRight' ? (index + 1) % SETTINGS_TABS.length : event.key === 'ArrowLeft' ? (index + SETTINGS_TABS.length - 1) % SETTINGS_TABS.length
+                : event.key === 'Home' ? 0 : event.key === 'End' ? SETTINGS_TABS.length - 1 : null;
+              if (next === null) return;
+              event.preventDefault(); selectTab(SETTINGS_TABS[next].id);
+              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
+            }}>{tab.label}</button>)}
+        </div>
+      </header>
+      <div ref={scrollArea} className="settings-scroll" role="region" aria-label="Settings sections" tabIndex={0}>
+        <div role="tabpanel" id="settings-panel-chat" aria-labelledby="settings-tab-chat" hidden={activeTab !== 'chat'}>
+          <SettingsSection id="settings-chat" title="Chat integrations" description="Connections, account linking and host alerts." initiallyOpen>
+            <ChatIntegrations />
+          </SettingsSection>
+        </div>
+        <div role="tabpanel" id="settings-panel-repositories" aria-labelledby="settings-tab-repositories" hidden={activeTab !== 'repositories'}>
+          <SettingsSection id="settings-providers" title="Providers & sync" description="Connect source control and choose synchronization defaults." initiallyOpen>
+            {Object.values(byKind).every((h) => !h?.ok) && Object.keys(byKind).length > 0 && (
+              <div
+                style={{
+                  margin: '0 24px 14px',
+                  padding: 12,
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--warning-bg)',
+                  color: 'var(--warning)',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                }}
+              >
+                No provider is connected yet. Set the configuration keys below in user-secrets
+                (dev) or environment variables (prod), then click <strong>Test connection</strong>.
+                Until a provider is configured the board, PR view and timeline run on cached / sample data.
+              </div>
+            )}
 
-      {Object.values(byKind).every((h) => !h?.ok) && Object.keys(byKind).length > 0 && (
-        <div
-          style={{
-            margin: '0 24px 14px',
-            padding: 12,
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--warning-bg)',
-            color: 'var(--warning)',
-            fontSize: 12,
-            lineHeight: 1.5,
-          }}
-        >
-          No provider is connected yet. Set the configuration keys below in user-secrets
-          (dev) or environment variables (prod), then click <strong>Test connection</strong>.
-          Until a provider is configured the board, PR view and timeline run on cached / sample data.
-        </div>
-      )}
+            {loadError && (
+              <div
+                style={{
+                  margin: '0 24px 14px',
+                  padding: 10,
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--danger-bg)',
+                  color: 'var(--danger)',
+                  fontSize: 11.5,
+                }}
+              >
+                {loadError}
+              </div>
+            )}
 
-      {loadError && (
-        <div
-          style={{
-            margin: '0 24px 14px',
-            padding: 10,
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--danger-bg)',
-            color: 'var(--danger)',
-            fontSize: 11.5,
-          }}
-        >
-          {loadError}
-        </div>
-      )}
+            {syncMsg && (
+              <div
+                style={{
+                  margin: '0 24px 14px',
+                  padding: 10,
+                  borderRadius: 'var(--radius-sm)',
+                  background: syncMsg.startsWith('Sync failed') ? 'var(--danger-bg)' : 'var(--success-bg, var(--bg-surface-2))',
+                  color: syncMsg.startsWith('Sync failed') ? 'var(--danger)' : 'var(--text-primary)',
+                  fontSize: 11.5,
+                }}
+              >
+                {syncMsg}
+              </div>
+            )}
 
-      {syncMsg && (
-        <div
-          style={{
-            margin: '0 24px 14px',
-            padding: 10,
-            borderRadius: 'var(--radius-sm)',
-            background: syncMsg.startsWith('Sync failed') ? 'var(--danger-bg)' : 'var(--success-bg, var(--bg-surface-2))',
-            color: syncMsg.startsWith('Sync failed') ? 'var(--danger)' : 'var(--text-primary)',
-            fontSize: 11.5,
-          }}
-        >
-          {syncMsg}
+            <div className="workstream-grid">
+              {PROVIDERS.map((p) => (
+                <ProviderRow
+                  key={p.kind}
+                  kind={p.kind}
+                  label={p.label}
+                  description={p.description}
+                  authSupported={p.authSupported}
+                  health={byKind[p.kind]}
+                  auth={authByKind[p.kind]}
+                  settings={settings}
+                  onSaveDefaults={saveDefaults}
+                  busy={!!busy[p.kind]}
+                  syncing={!!syncing[p.kind]}
+                  signingIn={!!signingIn[p.kind]}
+                  onTest={() => void test(p.kind)}
+                  onSync={() => void sync(p.kind)}
+                  onSignIn={() => void signIn(p.kind)}
+                  onSignOut={() => void signOut(p.kind)}
+                />
+              ))}
+            </div>
+          </SettingsSection>
         </div>
-      )}
-
-      <div
-        className="workstream-grid-wrap"
-        style={{ paddingTop: 0 }}
-      >
-        <div className="workstream-grid">
-          {PROVIDERS.map((p) => (
-            <ProviderRow
-              key={p.kind}
-              kind={p.kind}
-              label={p.label}
-              description={p.description}
-              authSupported={p.authSupported}
-              health={byKind[p.kind]}
-              auth={authByKind[p.kind]}
-              settings={settings}
-              onSaveDefaults={saveDefaults}
-              busy={!!busy[p.kind]}
-              syncing={!!syncing[p.kind]}
-              signingIn={!!signingIn[p.kind]}
-              onTest={() => void test(p.kind)}
-              onSync={() => void sync(p.kind)}
-              onSignIn={() => void signIn(p.kind)}
-              onSignOut={() => void signOut(p.kind)}
-            />
-          ))}
-        </div>
-
-        {/* Section divider — keeps Maintenance visually distinct from
-            providers without nesting a second `.workstream-grid-wrap`,
-            which would create a competing scroll container. */}
-        <div className="settings-section-head">
-          <span className="num">06</span>&nbsp;Maintenance
-          <span className="sep">/</span>
-          <span>database</span>
-        </div>
-        <div className="workstream-grid">
-          <MaintenancePanel />
-          <DbSplitPanel />
+        <div role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general" hidden={activeTab !== 'general'}>
+          <SettingsSection id="settings-session" title="Browser session" description="Manage this browser’s pairing with your Forge operator.">
+            <OperatorSessionSettings />
+          </SettingsSection>
+          <SettingsSection id="settings-maintenance" title="Maintenance" description="Database storage, transcript retention and database separation.">
+            <div className="workstream-grid">
+              <MaintenancePanel />
+              <DbSplitPanel />
+            </div>
+          </SettingsSection>
         </div>
       </div>
     </section>

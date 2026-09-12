@@ -66,7 +66,61 @@ the caller's console).
 | Change sign-in / identity / roles | **Identity & auth** |
 | Change Chat plugin configuration, provider contracts or Host alerts | **Chat configuration update** below; `docs/chat/README.md` |
 
-### Chat configuration update (2026-09-10)
+### Chat release gate update (2026-09-12)
+
+[Section 5 release evidence](chat/chat-plugin-release-gate.md) supersedes the older
+chat status snapshots below. The shared conformance audit is complete: 37 common
+cases cover FakeAlpha/FakeBeta and real Telegram/Slack adapters with fake peers.
+Pre-cancelled Telegram operations and Slack local retirement now stop before side
+effects. The selected backend regression passes 486 tests with one explicit live
+skip; UI build, 197 unit tests and 33 isolated browser cases pass.
+Current operator docs include [Telegram](chat/telegram-setup.md),
+[Slack](chat/slack-setup.md), [troubleshooting](chat/chat-plugin-troubleshooting.md)
+and [API examples](chat/chat-plugin-api-examples.md); [chat README](chat/README.md)
+separates capabilities, deployed evidence and historical plans.
+
+Five of seven section 5 gates are closed. Actual UI setup on both providers and
+the dedicated cross-provider delivery/reply/action/rotation exercise remain open.
+Existing operational destinations have not been designated disposable tests.
+The Slack form-encoding change and new cancellation guards were deployed after
+explicit approval at 08:55 UTC: API PID 54028 → 39092; UI PID 72132 retained.
+Direct/proxied `/api/health` and actual Settings channel validation pass.
+Slack `#all-forge` is ready with connection saved/applied revision 4/4; the single
+Slack receiver and both Telegram receivers are receiving. Desktop/narrow UI
+checks pass and the host-alert draft cancels without changing saved routes.
+No personal Slack link or host-alert subscription is saved yet. Unrouted 38 is
+retained history (23 ownership-unverified, 13 unresolved-scope, two filtered),
+including resolved/expired records; a new route does not replay it. The real
+provider gate also needs two Slack workspaces sharing one receiver, explicit test
+content permissions and disposable credentials. No full-release claim is made.
+
+### Chat configuration history (2026-09-10 through 2026-09-12)
+
+**Later September 12 identity follow-up:** `ChatLinkService.Slack` and
+`SlackConnectionSession.RequestIdentityLinkAsync` request a private
+`chat.postEphemeral` account confirmation. `SlackSocketReceiver` maps its button
+to the existing hashed, sender/workspace/operator/revision-bound link redemption.
+`ChatSlackIdentityConfirmation` opens the channel, explains the native approval,
+retries missing/expired messages and detects completion automatically. The manual
+command API remains compatible; the first member ID still needs user input.
+Backend regression: 498 passed, one live skip; UI build, 197 unit tests and 37
+isolated browser checks pass. After fresh approval, the 09:41 UTC restart deployed
+this source in API PID 43620 (replacing 39092), with UI PID 72132 retained. Health,
+capability/channel lookup, anonymous rejection and actual desktop/narrow Settings
+checks pass. All three provider receivers are receiving. The personal Slack account
+remains unlinked; the read-only check did not request a private message. A management
+capability prevents updated UIs from invoking unavailable endpoints on older hosts. See the
+[follow-up evidence](chat/chat-plugin-release-gate.md#slack-identity-confirmation-follow-up-2026-09-12).
+
+The next member-ID recovery correction adds management `recentLinkTargets` from
+the current operator's retained pending/cancelled requests for enabled, accessible
+Slack connections and matching workspaces. Settings prefers a verified link,
+otherwise restores the latest unambiguous input without checking ownership or
+granting authority. Revoke clears pending/cancelled targets. This correction is
+not deployed in PID 43620 and requires fresh restart approval. See the
+[recovery checklist](chat/chat-plugin-release-gate.md#slack-member-id-recovery-2026-09-12).
+Regression: 508 backend passes (one live skip), 197 UI unit tests, 39 isolated
+browser checks and the UI build pass; evidence is in `.tmp-build/chat-identity-autofill/`.
 
 The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 0B validation](chat/chat-plugin-stage0b-validation.md) and
@@ -142,11 +196,138 @@ Section 4 validation subsequently deployed Stage 6 from `498ff3b8`, found an emp
 legacy product ID that broke migration preview, and deployed a tested repair after
 separate restart approval. Preview now reports unscoped topics for repair without
 creating parent authority. The current run has 408 passing backend tests, 197 UI
-unit tests, 12 browser cases, and actual Workstreams drawer checks. Connection and
-channel setup now scroll into view and receive focus; save/cancel restores the
-route button and draft. Both providers were checked at desktop/narrow sizes.
+unit tests, 16 browser cases, and actual Workstreams drawer checks. Chat is the last
+row action and matches Pause/Delete sizing. Connection/channel setup has a labeled
+Close button, visible scrollbar, fixed footer actions and collapsible sections;
+save/cancel restores the route button and draft. The shared connection editor includes
+Slack screenshots, a manifest download and illustrated Telegram instructions. Both
+providers were checked at desktop/narrow sizes and the guide in Chat settings.
+The full Settings page now separates Chat, Repository providers and General tabs,
+keeps Close/tabs fixed above one scrollbar, and preserves drafts across tab changes.
+Browser session and Maintenance collapse under General; bottom content remains
+reachable at desktop/narrow sizes. The selected tab persists in the URL.
+The September 11 authorization follow-up adds native Slack OAuth and Telegram
+managed-bot consent to new connections, automatic credential/identity retrieval,
+verified review and product-grant save. The manual editor remains an advanced option.
+426 backend tests, 197 UI tests and 20 browser cases pass. The backend was deployed
+after separate approval on September 11 (API PID 28340); direct/proxied health,
+authorization access checks and both live Settings screens pass. Both providers
+initially reported missing registration; current activation status follows below.
+See [connection authorization](chat/chat-connection-authorization.md).
+The subsequent first-manager follow-up replaces the unregistered Telegram dead end
+with an in-app BotFather link and one token field. Forge validates manager capability,
+delivery/webhook conflicts, persists to a stable DPAPI slot with no config edit, and
+continues to native consent. Protected registration applies immediately and survives
+fresh runtime state. Initial registration uses the owner's BotFather interface;
+managed-bot approval links require this manager to exist first. The new endpoint
+was deployed after approval on September 11; API PID 28340 → 70188, UI PID 72132
+unchanged. Initial deployment checks reported `canConfigure: true` and the
+actionable setup form without configuration changes. At 21:25 UTC, targeted
+Desktop automation enabled the user's dedicated manager and saved its token
+through the protected endpoint. Live readiness now reports `available: true`;
+Settings skips the first-manager form and enables Connect. No restart was needed.
+The user subsequently completed real Telegram consent/save with all five selected
+product grants. After the user's explicit chat approval, live import/cutover switched
+ownership to `plugins` at revision 2 (22:06 UTC) without restarting API PID 70188.
+The import preserves all 40 notification statuses and Host alerts; only the verified
+local parent is enabled with a noninteractive metadata subscription. Unverified
+legacy scopes stay disabled. Telegram Desktop then completed personal identity
+proof on the new bot at 22:10 UTC; live API and Settings confirm the link. The new
+receiver is ready and management is interactive. There are now two enabled Telegram
+connections including the imported legacy bot. New-bot destination selection,
+live Slack provisioning/consent, provider channel validation and legacy repair remain open.
+Details are in [the activation review](chat/chat-plugin-activation-review.md).
+Live evidence: `.tmp-build/chat-manager/chat-activation-result.json`,
+`.tmp-build/chat-manager/telegram-identity-linked.json` and
+`.tmp-build/chat-manager/telegram-manager-live-verified.json`. Regression evidence: 442 broader backend checks
+(one live skip), then 35 final
+authorization checks including 17 setup cases; build, 197 UI tests and 22 browser
+cases pass. See `.tmp-build/chat-manager/` for TRX and isolated UI screenshots.
+The subsequent identity UI fix opens Telegram confirmation directly, keeps a
+fallback link for blocked popups, rejects usernames, uses a read-only installation,
+and refreshes automatically after proof. Verified-ID autofill is unambiguous and
+respects Slack workspace boundaries. First-time ID discovery remains unimplemented.
+UI build and all 27 isolated browser cases pass; live `identity-ui-live.json` confirms
+the updated form and saved link with no chat mutations or page errors. The change
+is live through Vite; neither API PID 70188 nor UI PID 72132 was restarted.
 The [validation matrix execution report](chat/chat-plugin-validation-matrix.md)
 tracks all 28 scenarios and the remaining shared-conformance/live-provider gates.
+The latest Slack follow-up implements automatic app provisioning on an unregistered
+host: an in-app modal guides Slack developer approval, then Forge creates the app,
+sets permissions/Socket Mode, retrieves both tokens and saves them encrypted after
+review. It follows Slack CLI v4.7's official protocol, with request-local tooling
+credentials and no HTTPS callback requirement; existing shared OAuth apps retain
+their path. Backend regression: 457 passed, one live skip, including 14 new setup
+cases; all 30 browser cases pass. Evidence is under `.tmp-build/slack-connect/`.
+The user explicitly approved deployment; at September 12, 04:02 UTC (September 11
+local), API PID 70188 was replaced by 21464 and UI PID 72132 remained. Health/access
+checks pass and Connect is enabled; Telegram connections and personal identity
+survived. Live ticket creation failed because the implementation omitted Slack CLI
+identification from User-Agent. A direct request with the header succeeds. The
+header/error-mapping correction passes all 50 focused authorization cases,
+including 15 Slack setup cases (`slack-protocol-fix.trx`). After the user's second
+explicit restart approval, API PID 21464 was replaced by 54028 (September 12,
+05:29 UTC), with UI PID 72132 unchanged. Real Slack ticket creation returns 200
+and the in-app modal passes live desktop/narrow checks, including scrolling,
+close/reopen and cancellation. Saved Telegram connections and identity are intact;
+there are no page/API errors, and the temporary verification session is logged out.
+The user's workspace consent/save remains open. Evidence:
+`.tmp-build/slack-connect/{deploy-after,deployed-smoke}.json` and
+`deployed-slack-approval{,-narrow}.png`. Earlier failure evidence is retained in
+`{deploy-first-after,deployed-smoke-first,protocol-probe}.json` in the same directory.
+The subsequent blank external-window report was reproduced with stalled clipboard
+permission. `ChatSlackApproval` now starts copying before opening Slack's actual
+URL, never awaits copying before navigation, and shows a manual-copy fallback
+after two seconds without confirmation. All 31 browser cases and UI build pass.
+Live HMR verification uses a real ticket and an intercepted external Slack page;
+navigation works while copying is unresolved, the temporary flow is cancelled and
+saved connections remain unchanged. API PID 54028 and UI PID 72132 are retained.
+Evidence: `.tmp-build/slack-connect/{clipboard-before,browser-clipboard-full,ui-build-clipboard}.log`
+and `deployed-clipboard.json`. This does not complete Slack workspace consent.
+The workspace follow-up adds **Create a new Slack workspace** and **Find my
+workspaces** to the approval modal. Signup opens Slack directly; an interactive
+return prompt requests fresh approval, clears the old code and preserves connection
+choices. Renewal errors stay visible inside the prompt and support retry. Account
+verification and workspace creation happen in Slack. All 33 browser cases and UI
+build pass, including long signup and popup/retry/draft handling. Live UI checks
+(September 12, 06:36 UTC) intercept only the external signup page; real ticket
+creation/renewal both return 200. Test flows are cancelled and the test session
+logged out; no connection changes or restarts occur. Evidence:
+`.tmp-build/slack-connect/{browser-workspace-full,ui-build-workspace}.log`,
+`deployed-workspace.json` and `deployed-workspace-{choice,signup-narrow}.png`.
+Earlier agent-launched Slack sign-in was rejected by automatic approval review
+with only "blocked by policy". The user opens the in-app link. No Slack app or
+connection was created. An accepted user-input tool request is not proof that its
+popup is visible; the user did not see it and approved restart directly in chat.
+On September 12 at 07:18 UTC, the user's existing Slack window was verified at
+workspace `T0C1ATNTPNJ` (`forge`), channel `C0C187JN3T7` (`#all-forge`). Targeted
+desktop controls submitted a fresh request automatically and opened Slack's real
+**Slack CLI Authentication** permission dialog. The earlier Slackbot rejection
+does not recur; its original cause remains unproven. User acceptance of Slack's
+developer terms/permissions was subsequently approved; the live result is below.
+This is an agent-assisted handoff; the browser-only screen still uses copying.
+Evidence: `.tmp-build/slack-connect/slack-real-permission-dialog.png` and
+`live-handoff.json`. Existing API/UI processes remain running.
+
+On September 12 at 07:42–07:53 UTC, the approved desktop flow captured and exchanged
+Slack's challenge, created/installed app `A0C16PQFQD9`, and saved enabled connection
+`slack-t0c1atntpnj` (revision 4, DPAPI credentials, `code-intelligence` grant).
+The app was added to `#all-forge` and discovery verified membership. The saved
+destination's validation exposed a real Slack transport problem: JSON POST omitted
+the channel from Slack's parsed arguments, while form POST and query GET succeeded.
+Conversation info/list now use form encoding; 69 Slack tests pass in isolated
+artifacts. API PID 54028 still needs fresh restart approval before live revalidation.
+The assisted installation used the CLI protocol and protected configuration APIs;
+the earlier approval-endpoint failure's cause is unproven. Browser-only setup still
+uses manual handoff. See [live Slack setup evidence](chat/chat-slack-live-setup.md).
+
+The user's frontend-design follow-up is live through Vite PID 72132: saved connections
+sit beside setup/selected channels, and compact account-linking/host-alert panels
+sit below. Detailed records and alert configuration collapse. Long names, selected
+providers, inline repair actions, errors during refresh, Close, scrolling and draft
+preservation are verified. UI build and 33 browser cases pass; live 1440px/390px
+checks report no horizontal overflow or connection mutations. Evidence:
+`.tmp-build/slack-connect/deployed-layout.json` and the adjacent layout screenshots.
 
 ## Foundational decisions (apply everywhere)
 

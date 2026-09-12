@@ -189,7 +189,8 @@ public sealed partial class ChatInboxService
     private async Task QueueResponseAsync(ChatInboxRow row, CancellationToken ct)
     {
         var envelope = JsonSerializer.Deserialize<ChatInboundEnvelope>(row.EnvelopeJson ?? "null");
-        if (envelope is null || envelope.Kind == "ignored" || row.Result is "ignored" or "answer-prompt-queued" || row.ResponseState != "none") return;
+        // Identity approval is private. Settings observes the verified link; never publish a channel reply.
+        if (envelope is null || envelope.Kind is "ignored" or "identity-link" || row.Result is "ignored" or "answer-prompt-queued" || row.ResponseState != "none") return;
         if (envelope.Command is not ("start" or "link" or "unlink") && (await this.BindingsAsync(envelope.Address, ct)).Count == 0) return;
         row.ResponseText ??= row.Result switch
         {

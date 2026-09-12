@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="220" viewBox="0 0 720 220" role="img" aria-labelledby="title description">
+  <title id="title">Telegram token to Forge fields</title>
+  <desc id="description">The numeric prefix of a BotFather token goes in Bot ID. The complete token goes in Bot token. All values are examples.</desc>
+  <rect width="720" height="220" rx="8" fill="#0d141c"/>
+  <g font-family="Consolas, monospace">
+    <text x="30" y="32" fill="#94a3b8" font-size="13">BOTFATHER TOKEN · EXAMPLE</text>
+    <rect x="30" y="48" width="660" height="44" rx="4" fill="#172431" stroke="#334155"/>
+    <text x="48" y="76" fill="#5eead4" font-size="19">123456789<tspan fill="#cbd5e1">:••••••••••••••••••••</tspan></text>
+    <path d="M116 94v18H48v15M425 94v18h-47v15" fill="none" stroke="#5eead4" stroke-width="2"/>
+    <path d="m43 122 5 5 5-5m320 0 5 5 5-5" fill="none" stroke="#5eead4" stroke-width="2"/>
+    <text x="30" y="147" fill="#94a3b8" font-size="13">BOT ID</text>
+    <text x="360" y="147" fill="#94a3b8" font-size="13">BOT TOKEN</text>
+    <rect x="30" y="158" width="280" height="40" rx="4" fill="#172431" stroke="#334155"/>
+    <rect x="360" y="158" width="330" height="40" rx="4" fill="#172431" stroke="#334155"/>
+    <text x="46" y="184" fill="#5eead4" font-size="18">123456789</text>
+    <text x="376" y="184" fill="#cbd5e1" font-size="16">123456789:••••••••••••</text>
+  </g>
+</svg>

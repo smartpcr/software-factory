@@ -18,9 +18,14 @@ public sealed record ChatPreviewRequest(string ContentMode, string? ProductId, s
 public sealed record ChatPreviewView(string ContentMode, bool RedactedContentAllowed, string Text);
 public sealed record ChatProductChoice(string Id, string Name);
 public sealed record ChatSelfLink(string ProviderId, string ExternalTenantId, string ExternalUserId);
+public sealed record ChatRecentLinkTarget(string ConnectionId, string ExternalTenantId, string ExternalUserId);
 public sealed record ChatManagementView(bool CanManageConnections, bool CanManageHostAlerts, string? HostReason,
     bool InteractiveAvailable, bool HostRedactedContentAllowed, IReadOnlyList<ChatProductChoice> Products,
-    IReadOnlyList<ChatSelfLink> Links, IReadOnlyList<ChatSecretStoreView> SecretStores);
+    IReadOnlyList<ChatSelfLink> Links, IReadOnlyList<ChatSecretStoreView> SecretStores)
+{
+    public bool SlackLinkConfirmationAvailable => this.InteractiveAvailable;
+    public IReadOnlyList<ChatRecentLinkTarget> RecentLinkTargets { get; init; } = [];
+}
 public sealed record ChatSecretStoreView(string Id, bool Available, bool ExternallyManaged);
 public sealed record ChatCredentialState(string Id, bool Configured, string? Store, bool ExternallyManaged, bool Available);
 public sealed record ChatConnectionHealthView(string ConnectionId, long Revision, long AppliedRevision, string State, string? Reason,
@@ -40,12 +45,28 @@ public sealed class ChatManagementService(ControlDbContext control, IProductDbCo
         var readable = await authorizer.ReadableProductIdsAsync(actor, ct);
         var choices = await control.Products.AsNoTracking().Where(p => host || readable.Contains(p.Id))
             .Select(p => new ChatProductChoice(p.Id, p.Name)).ToListAsync(ct);
+        // Recover this operator's previous input, never an identity proof or another operator's target.
+        var recentTargets = await (from challenge in control.ChatLinkChallenges.AsNoTracking()
+            join connection in control.ChatConnections.AsNoTracking() on challenge.ConnectionId equals connection.Id
+            where challenge.UserId == actor!.UserId && (challenge.State == "pending" || challenge.State == "cancelled")
+                && connection.ProviderId == "slack" && connection.Enabled && connection.DeletedAt == null
+                && challenge.ExternalTenantId == connection.InstallationId
+                && (host || control.ChatConnectionProducts.Any(g => g.ConnectionId == connection.Id && readable.Contains(g.ProductId)))
+            orderby challenge.ExpiresAt descending
+            select new { challenge.ConnectionId, challenge.ExternalTenantId, challenge.ExternalUserId, challenge.ExpiresAt }).ToListAsync(ct);
+        var suggestions = recentTargets.GroupBy(t => (t.ConnectionId, t.ExternalTenantId)).Select(g =>
+            g.Where(t => t.ExpiresAt == g.First().ExpiresAt).Select(t => t.ExternalUserId).Distinct().Take(2).ToArray() is [var sender]
+                && sender.Length is > 1 and <= 128 && sender[0] is 'U' or 'W'
+                && sender.All(c => char.IsAsciiLetterUpper(c) || char.IsAsciiDigit(c))
+                ? new ChatRecentLinkTarget(g.Key.ConnectionId, g.Key.ExternalTenantId, sender) : null)
+            .OfType<ChatRecentLinkTarget>().ToArray();
         return new(host, await authorizer.IsAllowedAsync(actor, ForgeCapabilities.HostAlertManage, new(), ct),
             options.Value.UnavailableReason ?? (!options.Value.PluginsEnabled ? options.Value.Engine == "legacy" ? "legacy-engine-active" : "host-chat-disabled" : null),
             ChatPluginInteractiveGate.AvailableFor(options.Value), policy.AllowsQuestions(null), choices,
             identities.ActiveProviderLinks.Concat(await migrated.LinksAsync(ct)).Where(l => l.UserId == actor!.UserId).DistinctBy(l => (l.Provider, l.TenantId, l.ProviderUserId))
                 .Select(l => new ChatSelfLink(l.Provider, l.TenantId, l.ProviderUserId)).ToArray(),
-            host ? stores.Select(s => new ChatSecretStoreView(s.Id, s.Status.Available, s.Status.ExternallyManaged)).ToArray() : []);
+            host ? stores.Select(s => new ChatSecretStoreView(s.Id, s.Status.Available, s.Status.ExternallyManaged)).ToArray() : [])
+        { RecentLinkTargets = suggestions };
     }
 
     public async Task<ChatConnectionHealthView> HealthAsync(ForgeActor? actor, string id, CancellationToken ct)

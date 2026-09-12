@@ -26,6 +26,11 @@ export default defineConfig({
         strictPort: true,
         allowedHosts: __spreadArray(['localhost', '127.0.0.1', '[::1]', hostname().toLowerCase()], ((_b = (_a = process.env.FORGE_UI_HOSTS) === null || _a === void 0 ? void 0 : _a.split(',').filter(Boolean)) !== null && _b !== void 0 ? _b : []), true),
         proxy: {
+            '/chat/authorize': {
+                target: 'http://localhost:5180',
+                changeOrigin: true,
+                headers: { 'X-Forge-Proxy': 'vite' },
+            },
             '/api': {
                 target: 'http://localhost:5180',
                 changeOrigin: true,

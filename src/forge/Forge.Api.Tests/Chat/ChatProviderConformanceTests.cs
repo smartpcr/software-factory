@@ -14,8 +14,8 @@ using Forge.Api.Plugins;
 using Forge.Api.Services.Chat;
 using Xunit;
 
-/// <summary>Stage 1 shared harness. Real protocol fixtures join this suite in Stages 3/4.</summary>
-public sealed class ChatProviderConformanceTests
+/// <summary>Shared release contract for fake providers and the real Telegram/Slack adapters.</summary>
+public sealed partial class ChatProviderConformanceTests
 {
     [Theory]
     [InlineData("FakeAlpha")]
@@ -168,11 +168,16 @@ internal sealed class FakeChatSession(ChatConnectionConfiguration config, ChatPr
     public string ReceptionKey => descriptor.Id + ":" + config.InstallationId;
     public bool RemotelyClosed { get; private set; }
     public int Acknowledged { get; private set; }
+    public int SendAttempts { get; private set; }
     public ChatProviderFailure? NextFailure { get; set; }
     public List<string> Rendered { get; } = [];
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     public ValueTask<ChatProviderResult<ChatDestination>> ValidateDestinationAsync(ChatAddress address, CancellationToken ct = default)
-        => Result(address.ConnectionId == this.ConnectionId ? new ChatDestination(address, "destination", "group") : null, ct);
+    {
+        ct.ThrowIfCancellationRequested();
+        if (this.NextFailure is { } failure) { this.NextFailure = null; return ValueTask.FromResult(new ChatProviderResult<ChatDestination>(null, failure)); }
+        return Result(address.ConnectionId == this.ConnectionId ? new ChatDestination(address, "destination", "group") : null, ct);
+    }
     public ValueTask<ChatProviderResult<ChatDestinationPage>> DiscoverAsync(string? cursor, CancellationToken ct = default)
         => descriptor.Capabilities.DestinationDiscovery ? Result(new ChatDestinationPage([new(new(this.ConnectionId, "tenant", cursor ?? "channel"), "destination", "group")], cursor is null ? "page-2" : null), ct)
             : Unsupported<ChatDestinationPage>(ct);
@@ -194,12 +199,13 @@ internal sealed class FakeChatSession(ChatConnectionConfiguration config, ChatPr
     public ValueTask<ChatProviderResult<ChatSendReceipt>> SendAsync(ChatAddress address, ChatSemanticNotification notification, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        if (this.NextFailure is { } failure) { this.NextFailure = null; return ValueTask.FromResult(new ChatProviderResult<ChatSendReceipt>(null, failure)); }
+        if (this.NextFailure is { } failure) { this.SendAttempts++; this.NextFailure = null; return ValueTask.FromResult(new ChatProviderResult<ChatSendReceipt>(null, failure)); }
         if (address.ConnectionId != this.ConnectionId || this.retired.Contains(address)) return Result<ChatSendReceipt>(null, ct);
         if (notification.Body.Length > descriptor.Capabilities.MaxTextCharacters || Encoding.UTF8.GetByteCount(notification.Body) > descriptor.Capabilities.MaxPayloadBytes
             || notification.Actions.Any(a => Encoding.UTF8.GetByteCount(a.Token) > descriptor.Capabilities.MaxActionBytes))
             return ValueTask.FromResult(ChatProviderResult<ChatSendReceipt>.Fail(ChatFailureKind.InvalidPayload, "payload-limit"));
         var reference = new ChatMessageReference(address, "1700000000." + this.messages.Count.ToString("D6"));
+        this.SendAttempts++;
         this.messages.Add(reference); this.Rendered.Add(WebUtility.HtmlEncode(notification.Body));
         return Result(new ChatSendReceipt([reference]), ct);
     }

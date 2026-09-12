@@ -8,6 +8,7 @@ namespace Forge.Api.Endpoints;
 
 using Common.Chat;
 using Forge.Api.Auth;
+using Forge.Api.Hosting;
 using Forge.Api.Plugins;
 using Forge.Api.Services.Chat;
 using Microsoft.Extensions.Options;
@@ -27,10 +28,59 @@ public static class ChatPluginEndpoints
         var read = new ForgeEndpointCapability(ForgeCapabilities.SpawnRead, "chat-spawn");
         var write = new ForgeEndpointCapability(ForgeCapabilities.SubscriptionManage, "chat-spawn");
 
+        api.MapGet("/chat/authorization", async (ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct)
+            => await service.AvailabilityAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
+        api.MapPost("/chat/authorization", async (ChatAuthorizationStart request, ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct)
+            => await service.BeginAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(host);
+        api.MapPost("/chat/authorization/telegram/manager", async (ChatTelegramManagerSetup request, HttpContext context,
+            ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return await service.ConfigureTelegramAsync(await action.ActorAsync(ct), request, ct);
+        }).WithMetadata(host, new SensitiveRequestBody());
+        api.MapPost("/chat/authorization/slack/setup", async (ChatAuthorizationStart request, HttpContext context,
+            ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return await service.BeginSlackSetupAsync(await action.ActorAsync(ct), request, ct);
+        }).WithMetadata(host);
+        api.MapPost("/chat/authorization/{id}/slack/approve", async (string id, ChatSlackSetupApproval request, HttpContext context,
+            ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return await service.ApproveSlackSetupAsync(await action.ActorAsync(ct), id, request, ct);
+        }).WithMetadata(host, new SensitiveRequestBody());
+        // Polling exchanges a one-time provider code, so it uses POST and the standard CSRF checks.
+        api.MapPost("/chat/authorization/{id}/poll", async (string id, ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct)
+            => await service.PollAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(host);
+        api.MapPost("/chat/authorization/{id}/save", async (string id, ChatAuthorizationSave request, ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct)
+            => await service.SaveAsync(await action.ActorAsync(ct), id, request, ct)).WithMetadata(host);
+        api.MapDelete("/chat/authorization/{id}", async (string id, ForgeActionContext action, ChatAuthorizationService service, CancellationToken ct)
+            => await service.CancelAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(host);
+        app.MapGet("/chat/authorize/slack", async (HttpContext context, ChatAuthorizationService service, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+            var query = context.Request.Query;
+            var accepted = query["state"].Count == 1 && query["code"].Count <= 1 && query["error"].Count <= 1
+                && await service.CallbackAsync(query["state"].ToString(), query["code"].Count == 0 ? null : query["code"].ToString(),
+                    query["error"].Count == 0 ? null : query["error"].ToString(), ct);
+            return Results.Content("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Forge · Slack authorization</title>"
+                + (accepted ? "<h1>Return to Forge</h1><p>You can close this window. Forge will show the result of your Slack authorization.</p>"
+                    : "<h1>Authorization link expired</h1><p>Close this window and start again from Forge Settings.</p>"), "text/html", statusCode: accepted ? 200 : 400);
+        }).AllowAnonymous();
+
         api.MapGet("/plugins", (WorkstreamPluginRegistry registry) => new { registry.IsAvailable, registry.Errors, Plugins = registry.Descriptors }).WithMetadata(self);
         api.MapGet("/chat/providers", (IChatProviderRegistry registry) => new { registry.IsAvailable, registry.Errors, registry.Providers }).WithMetadata(self);
         api.MapPost("/chat/connections/{id}/link-challenge", async (string id, ChatConnectionLinkRequest request, ForgeActionContext action, ChatLinkService service, CancellationToken ct)
             => await service.BeginAsync(await action.ActorAsync(ct), id, request.ExternalTenantId, request.ExternalUserId, ct)).WithMetadata(self);
+        api.MapGet("/chat/connections/{id}/link-destinations", async (string id, ForgeActionContext action, ChatLinkService service, CancellationToken ct)
+            => await service.SlackDestinationsAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(self);
+        api.MapPost("/chat/connections/{id}/link-confirmation", async (string id, ChatSlackLinkRequest request, ForgeActionContext action, ChatLinkService service, CancellationToken ct)
+            => await service.BeginSlackConfirmationAsync(await action.ActorAsync(ct), id, request, ct)).WithMetadata(self);
+        api.MapDelete("/chat/connections/{id}/link-confirmation", async (string id, ForgeActionContext action, ChatLinkService service, CancellationToken ct) =>
+        { await service.CancelSlackConfirmationAsync(await action.ActorAsync(ct), id, ct); return Results.NoContent(); }).WithMetadata(self);
         api.MapDelete("/chat/operator-links/self", async (ForgeActionContext action, ChatLinkService service, CancellationToken ct) =>
         { await service.RevokeAsync(await action.ActorAsync(ct), ct); return Results.NoContent(); }).WithMetadata(self);
         api.MapGet("/chat/management", async (ForgeActionContext action, ChatManagementService service, CancellationToken ct)
@@ -52,7 +102,7 @@ public static class ChatPluginEndpoints
         api.MapGet("/chat/connections/{id}/health", async (string id, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
             => await service.HealthAsync(await action.ActorAsync(ct), id, ct)).WithMetadata(host);
         api.MapPut("/chat/connections/{id}/credentials/{name}", async (string id, string name, ChatCredentialWrite request, ForgeActionContext action, ChatManagementService service, CancellationToken ct)
-            => await service.CredentialAsync(await action.ActorAsync(ct), id, name, request, ct)).WithMetadata(host);
+            => await service.CredentialAsync(await action.ActorAsync(ct), id, name, request, ct)).WithMetadata(host, new SensitiveRequestBody());
         api.MapGet("/chat/connections/{connectionId}/destinations/{id}/checks", async (string connectionId, string id, ForgeActionContext action, ChatConnectionCheckService service, CancellationToken ct)
             => await service.ReadAsync(await action.ActorAsync(ct), connectionId, id, ct)).WithMetadata(host);
         api.MapPost("/chat/connections/{connectionId}/destinations/{id}/checks", async (string connectionId, string id, ChatCheckRequest request, ForgeActionContext action, ChatConnectionCheckService service, CancellationToken ct)

@@ -69,6 +69,7 @@ public sealed class SlackConnectionSession : IChatConnectionSession, IChatShared
     }
     public async ValueTask<ChatProviderResult<ChatConversation>> EnsureConversationAsync(ChatDestination destination, ChatConversationPolicy policy, string operationKey, string title, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (policy is not (ChatConversationPolicy.Flat or ChatConversationPolicy.Thread)) return ChatProviderResult<ChatConversation>.Fail(ChatFailureKind.NotSupported, "slack-policy-unsupported");
         var validated = await this.ValidateDestinationAsync(destination.Address, ct);
         if (!validated.Succeeded) return new(null, validated.Failure);
@@ -86,6 +87,7 @@ public sealed class SlackConnectionSession : IChatConnectionSession, IChatShared
     }
     public async ValueTask<ChatProviderResult<bool>> RetireConversationAsync(ChatConversation conversation, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!this.Owns(conversation.Address)) return Fail<bool>("slack-address-mismatch");
         if (conversation.RootMessageId is { } root)
         {
@@ -126,6 +128,35 @@ public sealed class SlackConnectionSession : IChatConnectionSession, IChatShared
             ? ChatProviderResult<bool>.Success(true) : Fail<bool>("slack-message-unavailable");
     }
     public Task ReceiveAsync(IChatInboundSink sink, CancellationToken ct) => this.receiver.ReceiveAsync(sink, ct);
+
+    /// <summary>Request proof from one Slack user without posting the challenge to the channel.</summary>
+    public async Task<ChatProviderResult<bool>> RequestIdentityLinkAsync(ChatAddress address, string senderId, string challenge, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!this.Owns(address) || address.ConversationId is not null || !SlackApiClient.Id(senderId)
+            || senderId[0] is not ('U' or 'W') || senderId == this.BotUserId
+            || challenge.Length != 64 || !challenge.All(char.IsAsciiHexDigit)) return Fail<bool>("invalid-link-target");
+        var destination = await this.ValidateDestinationAsync(address, ct);
+        if (!destination.Succeeded) return new(false, destination.Failure);
+        const string text = "Confirm the account link you just requested in Forge. This connects your Slack account to the signed-in Forge operator. Expires in two minutes.";
+        var result = await this.api.CallAsync("chat.postEphemeral", new
+        {
+            channel = address.ChannelId, user = senderId, text, parse = "none", link_names = false,
+            blocks = new object[]
+            {
+                new { type = "section", text = new { type = "plain_text", text } },
+                new { type = "actions", elements = new[] { new { type = "button", action_id = "forge_identity_link",
+                    text = new { type = "plain_text", text = "Confirm link" }, style = "primary", value = challenge,
+                    confirm = new { title = new { type = "plain_text", text = "Link your Slack account?" },
+                        text = new { type = "plain_text", text = "Continue only if you just requested this link in your signed-in Forge browser." },
+                        confirm = new { type = "plain_text", text = "Link account" }, deny = new { type = "plain_text", text = "Cancel" } } } } },
+            },
+        }, ct, address.ChannelId);
+        if (!result.Succeeded) return new(false, result.Failure);
+        return SlackApiClient.Timestamp(SlackApiClient.String(result.Value, "message_ts"))
+            ? ChatProviderResult<bool>.Success(true)
+            : ChatProviderResult<bool>.Fail(ChatFailureKind.UnknownOutcome, "slack-send-outcome-unknown");
+    }
     public async ValueTask DisposeAsync() { if (Interlocked.Exchange(ref this.disposed, 1) == 0) await this.detach(); }
     private static ChatProviderResult<T> Fail<T>(string code) => ChatProviderResult<T>.Fail(ChatFailureKind.InvalidConfiguration, code);
     private static ChatProviderResult<ChatSendReceipt> Partial(List<ChatMessageReference> receipts, ChatProviderFailure failure)

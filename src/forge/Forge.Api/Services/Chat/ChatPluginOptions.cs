@@ -21,6 +21,7 @@ public sealed class ChatPluginOptions
     /// <summary>Stable identity in host configuration, independent of product/connection selection.</summary>
     public string HostId { get; set; } = "local";
     public TelegramSliceOptions TelegramSlice { get; set; } = new();
+    public ChatAuthorizationOptions Authorization { get; set; } = new();
     public Dictionary<string, string> ProductContentModes { get; set; } = new(StringComparer.Ordinal);
     public string HostContentMode { get; set; } = "metadata";
     public bool LegacyEnabled(bool legacyOptIn) => this.Engine == "legacy" && this.Enabled != false && legacyOptIn;
@@ -34,12 +35,19 @@ public static class ChatPluginRegistration
     public static IServiceCollection AddChatPlugins(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<ChatPluginOptions>(configuration.GetSection(ChatPluginOptions.SectionName));
+        // Hosting request-start/finish diagnostics include OAuth callback query strings.
+        services.AddLogging(logging => logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning));
         services.AddSingleton<IChatProviderRegistry, ChatProviderRegistry>();
         services.AddSingleton<IWorkstreamPlugin, ChatWorkstreamPlugin>();
         services.AddSingleton<WorkstreamPluginRegistry>();
         services.AddScoped<ChatConfigurationService>();
         services.AddScoped<ChatProviderSetupService>();
         services.AddScoped<ChatManagementService>();
+        services.AddSingleton<ChatAuthorizationState>();
+        services.AddScoped<ChatAuthorizationService>();
+        services.AddSingleton<ChatAuthorizationProvider>();
+        services.AddHttpClient(ChatAuthorizationProvider.ClientName, client => client.Timeout = TimeSpan.FromSeconds(15))
+            .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddScoped<ChatConnectionCheckService>();
         services.AddHttpClient(TelegramNotificationProvider.ClientName, client => client.Timeout = TimeSpan.FromSeconds(15))
             .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });

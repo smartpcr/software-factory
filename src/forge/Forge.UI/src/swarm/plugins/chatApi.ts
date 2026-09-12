@@ -17,6 +17,8 @@ export interface ChatSetup { plugin: ChatPlugin; canManage: boolean; canManageCo
 export interface ChatRoute { destinationId: string; conversationPolicy: string; interactive: boolean; contentMode: string; eventKinds?: string[]; paused?: boolean }
 export interface ChatDraft { expectedRevision: number; enabled: boolean; destinations: ChatRoute[]; activateNewRun: boolean }
 export interface ChatManagement {
+  slackLinkConfirmationAvailable?: boolean;
+  recentLinkTargets?: { connectionId: string; externalTenantId: string; externalUserId: string }[];
   canManageConnections: boolean; canManageHostAlerts: boolean; hostReason: string | null; interactiveAvailable: boolean; hostRedactedContentAllowed: boolean;
   products: { id: string; name: string }[]; links: { providerId: string; externalTenantId: string; externalUserId: string }[];
   secretStores: { id: string; available: boolean; externallyManaged: boolean }[];
@@ -30,7 +32,7 @@ export interface ChatHistory { unrouted: Record<string, number>; deliveries: { i
 export interface ChatHostStatus { chat: ChatHistory; orphaned: number; degraded: number }
 export interface ChatProvider { id: string; displayName: string; capabilities: { topics: boolean; threads: boolean; destinationDiscovery: boolean } }
 export interface ChatDiscovery { items: { address: { externalTenantId: string; channelId: string }; displayName: string; kind: string }[]; nextCursor: string | null }
-export interface ChatLinkChallenge { token: string; expiresInSeconds: number; deepLink: string | null; channelCommand: string | null }
+export interface ChatLinkChallenge { token?: string; expiresInSeconds: number; deepLink: string | null; channelCommand?: string | null; channelName?: string }
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
 const enc = encodeURIComponent;
@@ -71,8 +73,31 @@ export const chatApi = {
 
 export function chatReason(code: string | null): string {
   const reasons: Record<string, string> = {
+    'authorization-registration-required': 'Provider authorization has not been configured on this Forge host.',
+    'authorization-https-required': 'Slack needs a registered HTTPS return address ending in /chat/authorize/slack.',
+    'authorization-expired': 'This authorization request expired or belongs to another session. Start authorization again.',
+    'authorization-denied': 'Authorization was declined or cancelled. You can try again when ready.',
+    'authorization-manager-token-invalid': 'Paste the full API token from BotFather, including the number, colon and secret.',
+    'authorization-slack-code-required': 'Paste the confirmation code from Slack’s permission dialog.',
+    'authorization-slack-externally-configured': 'This host uses an existing Slack app registration. Use its Connect with Slack flow.',
+    'authorization-slack-admin-approval-required': 'Your Slack workspace requires an administrator to approve the new app. Open the app in Slack to review its approval status. Forge has not sent an approval request or saved this connection.',
+    'authorization-telegram-token-rejected': 'Telegram rejected this bot token. Copy its current API token from BotFather and try again.',
+    'authorization-manager-externally-configured': 'This host already uses an externally configured Telegram manager. Reload Settings to use it.',
+    'authorization-manager-already-configured': 'Another Telegram manager is already registered on this host. Close and reopen this setup to use it.',
+    'authorization-manager-save-failed': 'Forge could not save the manager credential. Check that protected storage on this host is writable, then paste the token and retry.',
+    'authorization-limit': 'Too many authorization windows are open. Close an unfinished setup or wait ten minutes, then try again.',
+    'authorization-not-approved': 'Approve the connection in the provider window before saving.',
+    'authorization-provider-unavailable': 'The provider could not complete authorization. Check your connection and start again.',
+    'authorization-provider-rejected': 'The provider rejected authorization. Check the host app registration and start again.',
+    'authorization-installation-unsupported': 'Slack returned an unsupported installation. Use the registered app with the requested bot scopes, a single workspace, and token rotation disabled.',
+    'authorization-manager-required': 'The dedicated Telegram manager needs Bot Management Mode enabled in BotFather.',
+    'authorization-manager-dedicated': 'The Telegram manager is already used for chat delivery. Register a separate manager bot.',
+    'authorization-manager-webhook': 'The Telegram manager has a webhook. Use a dedicated manager without a webhook for Forge authorization.',
     'credentials-required': 'This saved connection needs credentials. Use Repair / edit to finish setup.',
     'slack-membership-required': 'Invite the Slack app to this channel, then validate again.',
+    'slack-link-user-not-in-channel': 'Join the selected Slack channel with your account, then send the confirmation again.',
+    'invalid-link-target': 'Enter your personal Slack member ID (starting with U or W), not a name or bot ID.',
+    'slack-send-outcome-unknown': 'Slack did not confirm the request. Keep Slack open, then request a fresh confirmation.',
     'slack-channel-archived': 'This Slack channel is archived. Unarchive it or choose another channel.',
     'slack-bot-token-revoked': 'Replace the revoked Slack credential, save the connection, then validate again.',
     'slack-app-token-conflict': 'Connections for one Slack app must share the same app credential. Disable the affected connections, update their references together, then enable them.',

@@ -189,10 +189,7 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
       <div className="sr-num">{String(index + 1).padStart(2, '0')}</div>
       <div className="sr-meta">
         <div className="sr-id">{spawn.storyId}</div>
-        <div className="chat-story-heading">
-          <div className="sr-title">{spawn.storyTitle}</div>
-          {spawn.productId && <ChatRowControl key={`${spawn.productId}:${spawn.id}`} productId={spawn.productId} spawnId={spawn.id} title={spawn.storyTitle} summary={spawn.chatSummary} />}
-        </div>
+        <div className="sr-title">{spawn.storyTitle}</div>
         <div className="sr-sub">
           <span className="seg"><b>{wsCount}</b> workstreams</span>
           {mergingCount > 0 && <span className="seg" style={{ color: 'var(--sc-cyan)' }}><b>{mergingCount}</b> merging</span>}
@@ -301,6 +298,7 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
           </svg>
         )}
       </button>
+      {spawn.productId && <ChatRowControl key={`${spawn.productId}:${spawn.id}`} productId={spawn.productId} spawnId={spawn.id} title={spawn.storyTitle} summary={spawn.chatSummary} compact />}
     </div>
   );
 }

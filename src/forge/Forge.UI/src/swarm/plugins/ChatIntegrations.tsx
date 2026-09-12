@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { chatApi, chatReason, chatRequest, type ChatConnection, type ChatDestination, type ChatHostStatus, type ChatManagement, type ChatSubscription } from './chatApi';
 import { ChatConnectionEditor } from './ChatConnectionEditor';
 import { ChatDestinationSetup } from './ChatDestinationSetup';
@@ -13,6 +13,10 @@ export function ChatIntegrations() {
   const [channels, setChannels] = useState<ChatDestination[]>([]);
   const [editor, setEditor] = useState<{ id?: string; providerId: string } | null>(null);
   const [addingChannel, setAddingChannel] = useState(false);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [channelVersion, setChannelVersion] = useState(0);
+  const [loadingChannels, setLoadingChannels] = useState(false);
+  const channelOwner = useRef('');
   const [error, setError] = useState('');
   const refresh = useCallback(() => {
     void chatApi.management().then(async value => {
@@ -26,11 +30,19 @@ export function ChatIntegrations() {
     }).catch(e => setError(e.message));
   }, []);
   useEffect(refresh, [refresh]);
-  const loadChannels = useCallback(() => {
-    if (selected && management?.canManageConnections) void chatApi.destinations(undefined, selected).then(setChannels).catch(e => setError(e.message));
-    else setChannels([]);
-  }, [selected, management?.canManageConnections]);
-  useEffect(loadChannels, [loadChannels]);
+  useEffect(() => { window.addEventListener('focus', refresh); return () => window.removeEventListener('focus', refresh); }, [refresh]);
+  const loadChannels = useCallback(() => setChannelVersion(value => value + 1), []);
+  useEffect(() => {
+    let active = true;
+    if (channelOwner.current !== selected) { setChannels([]); channelOwner.current = selected; }
+    setLoadingChannels(false);
+    if (selected && management?.canManageConnections) {
+      setLoadingChannels(true);
+      void chatApi.destinations(undefined, selected).then(value => { if (active) setChannels(value); })
+        .catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoadingChannels(false); });
+    }
+    return () => { active = false; };
+  }, [selected, management?.canManageConnections, channelVersion]);
   const connection = connections.find(c => c.id === selected);
   return <section className="chat-integrations swarm-ctrl" id="integrations-chat" aria-label="Chat integrations">
     <header className="chat-settings-header"><span className="chat-eyebrow">SETTINGS / INTEGRATIONS</span><h2>Chat</h2>
@@ -38,30 +50,70 @@ export function ChatIntegrations() {
     {error && <p className="chat-error" role="alert">{error}</p>}
     {management && <>
       {management.hostReason && <p className="chat-notice">{chatReason(management.hostReason)}</p>}
-      <p className="chat-help">Saved connection and subscription revisions apply live within the runtime refresh interval. Engine selection, process environment, and host content limits require a host refresh.</p>
-      <div className="chat-settings-grid"><section><h3>Connections</h3>
-        {!management.canManageConnections && <p className="chat-notice">A host administrator manages credentials and channels. Product owners manage destinations on each story.</p>}
-        {management.canManageConnections && <>
-          <div className="chat-actions"><button type="button" onClick={() => setEditor({ providerId: 'telegram' })}>Add Telegram connection</button>
-            <button type="button" onClick={() => setEditor({ providerId: 'slack' })}>Add Slack connection</button></div>
-          <ul className="chat-connections">{connections.map(c => <li key={c.id}><button type="button" aria-pressed={selected === c.id} onClick={() => { setSelected(c.id); setAddingChannel(false); }}>
-            <strong>{c.displayName}</strong><span>{c.providerId} · {c.state}</span></button><button type="button" onClick={() => setEditor({ id: c.id, providerId: c.providerId })}>Repair / edit</button>
-            {c.reason && <p className="chat-notice">{chatReason(c.reason)}</p>}</li>)}</ul>
-          {!connections.length && <p className="chat-help">No connections saved yet.</p>}
-          {editor && <ChatConnectionEditor key={editor.id ?? editor.providerId} {...editor} management={management} onCancel={() => setEditor(null)}
-            onSaved={id => { setEditor(null); refresh(); setSelected(id); loadChannels(); }} />}
-          {connection && <><h3>Channels · {connection.displayName}</h3><button type="button" onClick={() => setAddingChannel(true)}>Discover or add channel</button>
-            {addingChannel && <ChatDestinationSetup key={connection.id} connection={connection} onCancel={() => setAddingChannel(false)} onSaved={() => { setAddingChannel(false); loadChannels(); }} />}
-            {channels.map(d => <ChatConnectionVerification key={`${connection.id}:${d.id}`} connectionId={connection.id} destination={d} onChanged={loadChannels} />)}
-          </>}
-        </>}
-        <ChatIdentityLink connections={connections} management={management} onRefresh={refresh} />
-      </section><HostAlerts connections={connections} management={management} /></div>
+      <div className="chat-connection-workspace">
+        <section className="chat-connection-library" aria-label="Saved connections">
+          <header className="chat-section-heading"><div><span className="chat-eyebrow">YOUR CONNECTIONS</span><h3>Saved connections</h3></div>
+            <span className="chat-count" aria-label={`${connections.length} saved connections`}>{connections.length.toString().padStart(2, '0')}</span></header>
+          <p className="chat-help">Select a connection to manage its channels.</p>
+          {!management.canManageConnections && <p className="chat-notice">A host administrator manages credentials and channels. Product owners manage destinations on each story.</p>}
+          <ul className="chat-connections">{connections.map(c => <li key={c.id} data-selected={editor?.id === c.id || !editor && selected === c.id}>
+            <button type="button" className="chat-connection-select" aria-label={`${c.displayName} ${c.providerId} · ${c.state}`}
+              aria-pressed={editor?.id === c.id || !editor && selected === c.id} disabled={editorBusy || !management.canManageConnections}
+              onClick={() => { setSelected(c.id); setEditor(null); setAddingChannel(false); }}>
+              <ProviderIcon providerId={c.providerId} /><span className="chat-connection-copy"><strong title={c.displayName}>{c.displayName}</strong>
+                <span className="chat-connection-meta"><span>{c.providerId === 'slack' ? 'Slack' : c.providerId === 'telegram' ? 'Telegram' : c.providerId}</span>
+                  <span className="chat-connection-status" data-state={c.state}>{c.state}</span></span></span>
+            </button>
+            {management.canManageConnections && <button type="button" className="chat-connection-edit" aria-label="Repair / edit" disabled={editorBusy} title={`Repair or edit ${c.displayName}`}
+              onClick={() => { setSelected(c.id); setAddingChannel(false); setEditor({ id: c.id, providerId: c.providerId }); }}>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true"><path d="m10 3 3 3-7 7-4 1 1-4 7-7ZM9 4l3 3" /></svg><span>Repair / edit</span></button>}
+            {c.reason && <p className="chat-notice">{chatReason(c.reason)}</p>}
+          </li>)}</ul>
+          {!connections.length && <div className="chat-library-empty"><span aria-hidden="true">＋</span><strong>No connections saved yet.</strong>
+            <p>Choose Telegram or Slack to connect your first workspace.</p></div>}
+          <p className="chat-library-footnote">Connections are shared. Each story chooses its own channels.</p>
+        </section>
+        {management.canManageConnections && <section className="chat-setup-area" aria-label="Connection workspace">
+          <div className="chat-add-connection">
+            <header className="chat-section-heading"><div><span className="chat-eyebrow">CONNECT A PROVIDER</span><h3>Add a connection</h3></div></header>
+            <p className="chat-help">Connect your workspace or bot. Forge guides you through authorization.</p>
+            <div className="chat-provider-picker">{['telegram', 'slack'].map(providerId => <button key={providerId} type="button" disabled={editorBusy}
+              aria-label={`Add ${providerId === 'telegram' ? 'Telegram' : 'Slack'} connection`} aria-pressed={editor?.providerId === providerId && !editor.id}
+              onClick={() => { setAddingChannel(false); setEditor({ providerId }); }}>
+              <ProviderIcon providerId={providerId} /><span><strong>{providerId === 'telegram' ? 'Telegram' : 'Slack'}</strong><small>Add connection</small></span>
+              <span className="chat-provider-indicator" aria-hidden="true">{editor?.providerId === providerId && !editor.id ? '✓' : '＋'}</span>
+            </button>)}</div>
+          </div>
+          {editor ? <ChatConnectionEditor key={editor.id ?? editor.providerId} {...editor} management={management} onCancel={() => setEditor(null)} onBusyChange={setEditorBusy}
+            onSaved={id => { setEditor(null); refresh(); setSelected(id); loadChannels(); }} />
+            : connection ? <section className="chat-selected-connection" aria-label={`Channels for ${connection.displayName}`}>
+              <header className="chat-section-heading"><div><span className="chat-eyebrow">CHANNELS & DELIVERY</span><h3>Channels · {connection.displayName}</h3></div></header>
+              <p className="chat-help">Choose where Forge can send notifications and receive replies.</p>
+              <button type="button" className="primary" onClick={() => setAddingChannel(true)}>Discover or add channel</button>
+              {addingChannel && <ChatDestinationSetup key={connection.id} connection={connection} onCancel={() => setAddingChannel(false)} onSaved={() => { setAddingChannel(false); loadChannels(); }} />}
+              {loadingChannels && <p className="chat-help" role="status">Loading channels…</p>}
+              {!loadingChannels && !channels.length && !addingChannel && <p className="chat-help">No channels added to this connection yet.</p>}
+              {channels.map(d => <ChatConnectionVerification key={`${connection.id}:${d.id}`} connectionId={connection.id} destination={d} onChanged={loadChannels} />)}
+            </section> : <div className="chat-selection-hint"><span aria-hidden="true">↖</span><div><strong>Manage an existing connection</strong>
+              <p>Select one from the saved list to view channels and check delivery.</p></div></div>}
+        </section>}
+      </div>
+      <div className="chat-settings-grid"><ChatIdentityLink connections={connections} management={management} onRefresh={refresh} />
+        <HostAlerts connections={connections} management={management} /></div>
     </>}
   </section>;
 }
 
+function ProviderIcon({ providerId }: { providerId: string }) {
+  return <span className={`chat-provider-icon chat-provider-icon-${providerId}`} aria-hidden="true">
+    {providerId === 'telegram' ? <svg viewBox="0 0 24 24" fill="none"><path d="m21 3-4 18-6-5-4 3 1-7L21 3ZM8 12l9-6-6 10" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" /></svg>
+      : providerId === 'slack' ? <svg viewBox="0 0 24 24" fill="none" strokeWidth="3" strokeLinecap="round"><path d="M9 3v7M3 9h7" stroke="#36c5f0" /><path d="M14 3v7M14 9h7" stroke="#2eb67d" /><path d="M3 14h7M9 14v7" stroke="#e01e5a" /><path d="M14 14h7M14 14v7" stroke="#ecb22e" /></svg>
+        : <span>↗</span>}
+  </span>;
+}
+
 function HostAlerts({ connections, management }: { connections: ChatConnection[]; management: ChatManagement }) {
+  const configurationRef = useRef<HTMLDetailsElement>(null);
   const [subscriptions, setSubscriptions] = useState<ChatSubscription[]>([]);
   const [status, setStatus] = useState<ChatHostStatus | null>(null);
   const [provider, setProvider] = useState('');
@@ -97,14 +149,14 @@ function HostAlerts({ connections, management }: { connections: ChatConnection[]
     try { await chatRequest(`/api/chat/host/subscriptions/${encodeURIComponent(sub.id)}?expectedRevision=${sub.revision}`, 'DELETE'); await load(); }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
-  return <section className="chat-host-alerts" aria-label="Host alerts"><span className="chat-eyebrow">PERMANENT HOST SCOPE</span><h3>Host alerts</h3>
+  return <section className="chat-host-alerts" aria-label="Host alerts"><header className="chat-section-heading"><div><span className="chat-eyebrow">HOST NOTIFICATIONS</span><h3>Host alerts</h3></div></header>
     <p className="chat-help">Queue pressure and host requests go here, including while no story is active.</p>
     {!allowed ? <p className="chat-notice">Host alert permission is required. Product ownership does not grant this permission.</p> : <>
-      <p className="chat-stat">Unrouted {Object.values(status?.chat.unrouted ?? {}).reduce((a, b) => a + b, 0)} <span>Orphaned scopes {status?.orphaned ?? 0}</span></p>
+      <p className="chat-stat"><span>Unrouted <strong>{Object.values(status?.chat.unrouted ?? {}).reduce((a, b) => a + b, 0)}</strong></span><span>Orphaned scopes <strong>{status?.orphaned ?? 0}</strong></span></p>
       <ul>{subscriptions.map(s => <li key={s.id}><strong>{s.destinationId}</strong> · {s.contentMode} · {JSON.parse(s.eventKindsJson).join(', ')}
-        <div className="chat-actions"><button type="button" disabled={busy} onClick={() => { setEditing(s); setContentMode(s.contentMode); setEvents(JSON.parse(s.eventKindsJson)); }}>Edit alert filters</button>
+        <div className="chat-actions"><button type="button" disabled={busy} onClick={() => { setEditing(s); setContentMode(s.contentMode); setEvents(JSON.parse(s.eventKindsJson)); if (configurationRef.current) configurationRef.current.open = true; }}>Edit alert filters</button>
           <button type="button" disabled={busy} onClick={() => void retire(s)}>Retire subscription</button></div></li>)}</ul>
-      <fieldset disabled={busy}>
+      <details ref={configurationRef} className="chat-host-configuration"><summary>Configure host alerts</summary><fieldset disabled={busy}>
         {editing ? <p>Editing alert policy for {editing.destinationId}</p> : <>
           <label>Host provider<select value={provider} onChange={e => { setProvider(e.target.value); setConnectionId(connections.find(c => c.providerId === e.target.value)?.id ?? ''); setDestinationId(''); }}>
             <option value="">Choose provider</option><option value="telegram">Telegram</option><option value="slack">Slack</option></select></label>
@@ -119,6 +171,7 @@ function HostAlerts({ connections, management }: { connections: ChatConnection[]
       </fieldset>
       {contentMode === 'redacted' && !management.hostRedactedContentAllowed && <p className="chat-notice">The host currently permits metadata only. A host content-policy change and refresh are required for redacted summaries.</p>}
       <ChatPreview contentMode={contentMode} />
+      </details>
       {status && <ChatDeliveryHistory history={status.chat} canManage />}
       <p className="chat-help">Retiring a subscription leaves existing provider-held messages in place.</p>
     </>}

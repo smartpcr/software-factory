@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Operational Rules
 
+**Use an interactive user-input popup for required human input or approval when available.** Present a concrete request and keep working on independent tasks while awaiting the response. Do not ask again for an action the user has already authorized.
+
+An accepted popup request does not prove the user can see it. Say only that the prompt was requested unless its visibility is verified. If the user cannot find it, ask directly in chat. Distinguish implementation, deployment and verified live behavior; report failures without claiming completion.
+
 **NEVER restart Forge.Api or any other running service without explicit user permission, every time.**
 
 This includes:

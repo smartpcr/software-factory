@@ -12,6 +12,9 @@ using Forge.Api.Persistence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
+/// <summary>Retain the audit action without buffering or persisting a credential-bearing request body.</summary>
+public sealed record SensitiveRequestBody;
+
 /// <summary>
 /// Phase 6.10 — records every write request to the <c>forge_actions</c>
 /// table after the response is produced. Read methods skip; write methods
@@ -39,10 +42,12 @@ public class AuditMiddleware
         }
 
         // Buffer-read the body so we can audit a snippet AND let the endpoint read it.
-        ctx.Request.EnableBuffering();
         string? snippet = null;
-        if (ctx.Request.ContentLength is > 0)
+        if (ctx.GetEndpoint()?.Metadata.GetMetadata<SensitiveRequestBody>() is not null)
+            snippet = "[redacted]";
+        else if (ctx.Request.ContentLength is > 0)
         {
+            ctx.Request.EnableBuffering();
             using var reader = new StreamReader(ctx.Request.Body, Encoding.UTF8, leaveOpen: true);
             var buf = new char[BodySnippetMax];
             var read = await reader.ReadAsync(buf, 0, BodySnippetMax);

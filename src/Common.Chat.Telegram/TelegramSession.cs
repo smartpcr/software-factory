@@ -37,6 +37,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
 
     public async ValueTask<ChatProviderResult<ChatDestination>> ValidateDestinationAsync(ChatAddress address, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!this.Matches(address)) return ChatProviderResult<ChatDestination>.Fail(ChatFailureKind.InvalidConfiguration, "telegram-address-mismatch");
         var result = await this.api.CallAsync("getChat", new { chat_id = address.ChannelId }, ct);
         if (!result.Succeeded) return new(null, result.Failure);
@@ -65,6 +66,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
 
     public ValueTask<ChatProviderResult<ChatDestinationPage>> DiscoverAsync(string? cursor, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (this.disposed != 0) return ValueTask.FromResult(ChatProviderResult<ChatDestinationPage>.Fail(ChatFailureKind.Unavailable, "telegram-session-closed"));
         // Discovery only reads chats observed by this session's one supervised receiver; it never calls getUpdates.
         var page = this.discovered.Values.OrderBy(d => d.Address.ChannelId, StringComparer.Ordinal)
@@ -75,6 +77,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
     public async ValueTask<ChatProviderResult<ChatConversation>> EnsureConversationAsync(ChatDestination destination, ChatConversationPolicy policy,
         string operationKey, string title, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!this.Matches(destination.Address)) return ChatProviderResult<ChatConversation>.Fail(ChatFailureKind.InvalidConfiguration, "telegram-address-mismatch");
         if (policy == ChatConversationPolicy.Flat) return ChatProviderResult<ChatConversation>.Success(new(destination.Address with { ConversationId = null }, null));
         if (policy != ChatConversationPolicy.Topic) return ChatProviderResult<ChatConversation>.Fail(ChatFailureKind.NotSupported, "telegram-thread-unsupported");
@@ -99,6 +102,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
 
     public async ValueTask<ChatProviderResult<bool>> RetireConversationAsync(ChatConversation conversation, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!this.Matches(conversation.Address)) return ChatProviderResult<bool>.Fail(ChatFailureKind.InvalidConfiguration, "telegram-address-mismatch");
         if (conversation.Address.ConversationId is null) return ChatProviderResult<bool>.Success(true);
         var result = await this.api.CallAsync("closeForumTopic", new { chat_id = conversation.Address.ChannelId, message_thread_id = conversation.Address.ConversationId }, ct);
@@ -107,6 +111,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
 
     public async ValueTask<ChatProviderResult<ChatSendReceipt>> SendAsync(ChatAddress address, ChatSemanticNotification notification, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!this.Matches(address)) return ChatProviderResult<ChatSendReceipt>.Fail(ChatFailureKind.InvalidConfiguration, "telegram-address-mismatch");
         var rendered = TelegramRendering.Render(address, notification, this.token);
         if (!rendered.Succeeded) return new(null, rendered.Failure);
@@ -125,6 +130,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
 
     public async ValueTask<ChatProviderResult<bool>> EditAsync(ChatMessageReference message, ChatSemanticNotification notification, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (!this.Matches(message.Address) || !IsId(message.MessageId)) return ChatProviderResult<bool>.Fail(ChatFailureKind.InvalidConfiguration, "telegram-address-mismatch");
         var rendered = TelegramRendering.Render(message.Address, notification, this.token);
         if (!rendered.Succeeded) return new(false, rendered.Failure);
@@ -136,6 +142,7 @@ public sealed partial class TelegramSession : IChatConnectionSession, IChatResum
 
     public ValueTask RestoreCursorAsync(string? value, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (value is not null && (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed == long.MaxValue || value.Length > 19)) throw new InvalidOperationException("telegram-cursor-invalid");
         this.cursor = value is null ? -1 : long.Parse(value, CultureInfo.InvariantCulture); return ValueTask.CompletedTask;
     }

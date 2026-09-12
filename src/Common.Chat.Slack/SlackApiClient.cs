@@ -20,13 +20,21 @@ internal sealed class SlackApiClient(IHttpClientFactory clients, string token, S
         ct.ThrowIfCancellationRequested();
         if (await budget.EnterAsync(method, channel, ct) is { } delay)
             return ChatProviderResult<JsonElement>.Fail(ChatFailureKind.RateLimited, "slack-rate-limited", delay);
-        var creating = method == "chat.postMessage";
+        var creating = method is "chat.postMessage" or "chat.postEphemeral";
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://slack.com/api/" + method);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Content = method == "apps.connections.open" ? new FormUrlEncodedContent([])
-                : new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+            // Slack's conversation reads must receive encoded parameters: the live
+            // endpoint can ignore JSON bodies even while returning HTTP 200.
+            request.Content = method switch
+            {
+                "apps.connections.open" => new FormUrlEncodedContent([]),
+                "conversations.info" or "conversations.list" => new FormUrlEncodedContent(JsonSerializer.SerializeToElement(body)
+                    .EnumerateObject().Select(field => new KeyValuePair<string, string>(field.Name,
+                        field.Value.ValueKind == JsonValueKind.String ? field.Value.GetString()! : field.Value.GetRawText()))),
+                _ => new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json"),
+            };
             using var client = clients.CreateClient(SlackProviderPlugin.ClientName);
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
@@ -68,6 +76,8 @@ internal sealed class SlackApiClient(IHttpClientFactory clients, string token, S
             => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.Unauthorized, app ? "slack-app-token-revoked" : "slack-bot-token-revoked"),
         "missing_scope" or "not_allowed_token_type" => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.InvalidConfiguration, app ? "slack-app-scope-required" : "slack-bot-scope-required"),
         "not_in_channel" or "no_permission" => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.Unauthorized, "slack-membership-required"),
+        "user_not_in_channel" => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.InvalidConfiguration, "slack-link-user-not-in-channel"),
+        "user_not_found" => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.InvalidConfiguration, "invalid-link-target"),
         "is_archived" => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.InvalidConfiguration, "slack-channel-archived"),
         "channel_not_found" => ChatProviderResult<JsonElement>.Fail(ChatFailureKind.InvalidConfiguration, "slack-channel-unavailable"),
         "team_access_not_granted" or "team_not_found" or "org_login_required" or "enterprise_is_restricted"

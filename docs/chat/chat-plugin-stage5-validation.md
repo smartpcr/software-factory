@@ -8,12 +8,22 @@ the earlier Stage 1S live exercise remain pending; fixture results do not close 
 
 ## Requirement mapping
 
+September 11 identity follow-up: Telegram confirmation now opens directly with a
+visible fallback when blocked. The form validates personal numeric IDs, fixes the
+installation to the selected connection, preserves provider/workspace identity
+boundaries and refreshes after proof. All 27 isolated browser cases and the UI build
+pass; live Settings verifies the new form and the linked account without chat
+mutations or a service restart. Evidence: `.tmp-build/chat-manager/identity-browser-final.log`,
+`identity-ui-build.log` and `identity-ui-live.{json,png}`. First-time numeric ID
+discovery remains open in the implementation plan; this account was linked using
+Desktop assistance and genuine provider proof.
+
 | # | Status | Requirement and implementation evidence |
 |---|---|---|
 | 1 | [x] Complete | `ChatPluginEndpoints`, `ChatConfigurationService.Setup`, `ChatManagementService` and `ChatConnectionCheckService` expose explicit management, credential, preview, setup, summary, history and verification operations. Shared capability checks, paired sessions/CSRF, expected revisions and secret references apply. HTTP tests reject readers, other products and stale revisions; credentials never return in DTOs. |
 | 2 | [x] Complete | `SettingsView` mounts `ChatIntegrations`. Connections may be saved disabled with missing credentials and completed later. The verification panel separates credential storage, channel access, outbound checks, inbound replies and applied revisions; identity and host/product permissions are separate. |
 | 3 | [x] Complete | Permanent `HostAlerts` uses the existing host scope and its separate capability. Default filters are queue-strain/human-interaction. It exposes unrouted counts, orphaned scopes, policy selection, redacted previews, history and retirement copy. |
-| 4 | [x] Complete | `SwarmStoryRow` places `ChatRowControl` beside the row title, above the child graph, including done rows. The badge exposes off/needs-setup/ready/degraded and a destination name or count. |
+| 4 | [x] Complete | `SwarmStoryRow` exposes `ChatRowControl` for every row, including done rows. The 2026-09-11 layout refinement places its compact icon after Pause/Delete at the same size and vertical position; its status dot, tooltip and accessible description retain off/needs-setup/ready/degraded and a destination name or count. |
 | 5 | [x] Complete | The shared drawer is used by row and `SwarmStoryView` header controls, including the collapsed header. Native dialog focus containment, explicit close-before-focus-return, click/key propagation boundaries and a scrolling body keep the footer accessible. |
 | 6 | [x] Complete | Enable chat remote control → Provider → Channel → Save and enable is the default interactive flow. Notification-only is explicit. The connection selector appears only for multiple choices. Atomic save queues introductions/conversations without executing a work action. |
 | 7 | [x] Complete | `ChatConnectionEditor` and `ChatDestinationSetup` return to the same row/draft. Discovery is paged and filterable by name; save validates channel access. Changing provider clears incompatible channel state. Cancel does not save the row or provision a conversation. Explicitly saved connection drafts remain available. |

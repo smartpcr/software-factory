@@ -70,7 +70,13 @@ public sealed class ChatSlackProtocolTests
         var page = (await session.DiscoverAsync(null)).Value!;
         Assert.Equal("C1", Assert.Single(page.Items).Address.ChannelId); Assert.Equal("opaque+/==", page.NextCursor);
         Assert.Null((await session.DiscoverAsync(page.NextCursor)).Value!.NextCursor);
-        Assert.All(f.Calls.Where(c => c.Method == "conversations.list"), c => Assert.Equal("public_channel", c.Body.GetProperty("types").GetString()));
+        Assert.All(f.Calls.Where(c => c.Method == "conversations.list"), c =>
+        {
+            Assert.Equal("public_channel", c.Body.GetProperty("types").GetString());
+            Assert.Equal(200, c.Body.GetProperty("limit").GetInt32());
+            Assert.True(c.Body.GetProperty("exclude_archived").GetBoolean());
+        });
+        Assert.Equal("opaque+/==", f.Calls.Last(c => c.Method == "conversations.list").Body.GetProperty("cursor").GetString());
     }
 
     [Theory]

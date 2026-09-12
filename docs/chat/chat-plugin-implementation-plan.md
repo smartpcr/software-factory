@@ -1,6 +1,6 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. All 11 Stage 6 requirements are covered, with 404 passing backend checks and one skipped live-provider test. Stage 5's UI evidence remains 197 unit tests and eight browser cases. The Stage 1S manual exercise and separate real-provider integration gate remain pending; no real host cutover was performed. Updated 2026-09-10. See [Stage 6 validation](chat-plugin-stage6-validation.md) and the [migration guide](chat-plugin-migration.md).
+**Status:** Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. Section 5 closes five of seven release gates with current operator documentation and 37 shared provider contract cases; the deployed confirmation regression passes 498 backend checks, 197 UI tests and 37 browser cases (one live test skipped). Release acceptance remains held for actual provider UI setup and the dedicated delivery/reply/action/rotation exercise. Slack channel transport, provider cancellation fixes and the private identity-confirmation flow are deployed after approval in API PID 43620 (September 12, 09:41 UTC). Direct/proxied health, the confirmation capability/channel lookup and actual Settings checks pass; personal Slack approval remains pending. The plugin cutover, Telegram identity, assisted Slack installation and Settings layout have recorded live evidence. See [release gate](chat-plugin-release-gate.md), [live Slack/layout](chat-slack-live-setup.md) and [host activation](chat-plugin-activation-review.md).
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
@@ -58,8 +58,200 @@ Scope includes parent status/pause/resume, planning/child questions and stalled
 actions, plus a permanent **Host alerts** subscription for crew-wide `queue-strain`
 and account-scoped `human-interaction`. Unresolved/standalone events are visible in
 host attention. Free-form agent chat, a plugin marketplace, additional providers,
-public Slack distribution/OAuth hosting and a generalized global alert center are
-outside scope. The small Host alerts setup panel is included, not deferred.
+public Slack distribution and a generalized global alert center are outside scope.
+The September 11 follow-up below adds host-owned provider authorization. The small
+Host alerts setup panel is included, not deferred.
+
+### Automatic Slack app setup (2026-09-11)
+
+User-requested automation now creates the Slack app and configures Socket Mode
+after developer authorization. Existing shared OAuth registrations keep their path.
+See [automatic provisioning](chat-connection-authorization.md#automatic-app-provisioning).
+
+- [x] Enable Connect on unregistered Slack hosts and show an interactive approval
+      modal with Close, a scrolling body, clipboard/popup fallback and expiry.
+- [x] Exchange the user's confirmation, verify workspace identity, create the
+      manifest/app and install it with public or explicitly selected private scopes.
+      Retrieve both credentials; keep tooling/refresh credentials request-local.
+- [x] Protect setup with current host permissions, CSRF/origin and operator-bound
+      state. Reject duplicate workspaces, expired/replayed approval and mismatched
+      installations; preserve the created-app reference on partial failure. Do not
+      send messages, submit admin approval requests or delete apps automatically.
+- [x] Review product grants and save both credentials encrypted; clean up failed
+      storage writes and preserve existing OAuth/Telegram setup and repair behavior.
+- [x] Backend regression: 457 passed, one live-provider test skipped; this includes
+      49 authorization cases (14 new Slack setup cases). All 30 isolated browser
+      cases and UI build pass. The row drawer retains its draft when Escape closes
+      the nested Slack popup. Evidence: `.tmp-build/slack-connect/slack-regression.trx`,
+      `backend-regression.log`, `browser-full.log`, `ui-build.log` and `slack-approval-narrow.png`.
+- [x] After the user's explicit chat approval, deploy the provisioning endpoints
+      (September 12, 04:02 UTC; September 11 local time). API PID 70188 → 21464;
+      UI PID 72132 retained. Direct/proxied health and access checks pass. Live
+      Settings enables Connect and removes the old host-registration notice.
+      Both Telegram connections and the personal identity survive the restart.
+- [x] Investigate the failed live approval request: the ticket endpoint returns
+      `internal_error` without Slack CLI identification. A direct provider request
+      with `slack-cli/v4.7.0 (os: windows) Forge/1.0` succeeds. Add that header to
+      provisioning calls and classify Slack internal errors as provider unavailable.
+      All 50 focused authorization cases pass after correction (15 Slack setup
+      cases), including required-header assertions and internal-error retry behavior.
+      Evidence: `.tmp-build/slack-connect/slack-protocol-fix.trx`.
+- [x] Deploy the protocol-header correction after the user's second explicit
+      restart approval (September 12, 05:29 UTC): API PID 21464 → 54028, UI PID
+      72132 retained. Real Slack ticket creation returns 200; the modal opens in
+      a live browser check. Desktop/narrow controls, scrolling, close/reopen and
+      cancellation pass. Saved connections are unchanged and the temporary test
+      session is logged out. No Slack app or connection was created.
+      Evidence: `.tmp-build/slack-connect/{deploy-after,deployed-smoke}.json`,
+      `deploy-protocol-fix.log`, `deployed-slack-approval.png` and
+      `deployed-slack-approval-narrow.png`. The earlier failure is retained in
+      `deployed-smoke-first.json`; direct protocol comparison is in `protocol-probe.json`.
+- [x] Fix the user-reported `about:blank` window: start copying before opening
+      Slack's actual URL during the click, without awaiting clipboard permission.
+      After two seconds without confirmation, show the manual-copy fallback;
+      ignore late results after timeout, retry or unmount. The new browser test
+      reproduced the failure before correction; all 31 browser cases and UI build
+      now pass. Live UI verification at September 12, 05:40 UTC confirms navigation
+      with a deliberately stalled clipboard and an intercepted external Slack page.
+      Real ticket creation returns 200; the test flow is cancelled. HMR serves the
+      fix without restarting API PID 54028 or UI PID 72132. Evidence under
+      `.tmp-build/slack-connect/`: `clipboard-before.log`, `browser-clipboard-full.log`,
+      `ui-build-clipboard.log`, `deployed-clipboard.json` and `deployed-clipboard-fallback.png`.
+- [x] Offer **Create a new Slack workspace** and **Find my workspaces** directly
+      in the approval modal. Signup opens Slack's official page with a fallback
+      link and an interactive return prompt. **Workspace ready, continue** cancels
+      the old request and starts a fresh approval while preserving connection
+      choices. Show renewal failures inside the prompt and allow retry; expired
+      approval also has a direct refresh action. Account verification and actual
+      workspace creation take place in Slack, not in Forge's provisioning API.
+- [x] Verify workspace signup/resume: all 33 browser cases and UI build pass,
+      including signup longer than the approval lifetime, blocked popups, renewal
+      failure/retry and row-draft preservation. Live UI verification (September 12,
+      06:36 UTC) confirms direct signup navigation, narrow controls and fresh real
+      ticket creation/renewal (both 200), with the external signup page intercepted.
+      Temporary flows are cancelled, the test session is logged out and connections
+      stay unchanged. HMR serves this frontend update without an API/UI restart.
+      Evidence: `.tmp-build/slack-connect/{browser-workspace-full,ui-build-workspace}.log`,
+      `deployed-workspace.json` and `deployed-workspace-{choice,signup-narrow}.png`.
+- [x] Verify the user's new `forge` workspace and automate the approval-request
+      handoff in its existing Slack window (September 12, 07:18 UTC). Submit a
+      fresh request directly to `#all-forge`; the real **Slack CLI Authentication**
+      permission dialog opens. The earlier Slackbot rejection does not recur with
+      this fresh submission; its original cause is not proven. Evidence:
+      `.tmp-build/slack-connect/slack-real-permission-dialog.png` and
+      `live-handoff.json`. This is an agent-assisted desktop action, not a new
+      browser-only automation feature. Subsequent consent is recorded below.
+- [x] Complete approved Slack consent automatically, create/install the app,
+      verify credentials and save the enabled `forge` connection encrypted. Add
+      the app to `#all-forge` and save its discovered destination. See
+      [live setup evidence](chat-slack-live-setup.md) for the exact assisted path.
+- [x] Diagnose and fix conversation info/list request encoding; 69 Slack tests pass.
+- [ ] Deploy that backend correction after fresh restart approval and validate the
+      saved channel through the running host. The current host still rejects it.
+- [ ] Complete the separate real-provider delivery/reply and identity exercise.
+
+### Settings layout follow-up (2026-09-12)
+
+- [x] Place saved connections beside a dedicated setup/channel area, with consistent
+      rows, provider marks, selected state and aligned edit actions.
+- [x] Move account linking and host alerts into secondary panels; collapse detailed
+      account records and host configuration while preserving their status.
+- [x] Build and pass all 33 chat browser cases, including preserved validation errors,
+      drafts and Close/scroll behavior. Verify the live page at 1440px/390px with
+      no horizontal overflow or saved-configuration changes. HMR serves the update.
+      Evidence: [layout report](chat-slack-live-setup.md#settings-layout).
+
+The protocol follows Slack CLI v4.7's official source; it does not require a host
+HTTPS callback. Browser-only setup still uses a copied approval request and
+confirmation code. The agent-assisted desktop handoff above submits the request
+automatically, applies the user's explicit consent and captures the challenge. Automated
+fixtures are not proof of a completed Slack installation.
+
+### Authorization follow-up (2026-09-11)
+
+User-requested change: connection setup should open the provider's authorization
+prompt and automatically retrieve connection details instead of requiring token/ID
+entry for each connection. See [connection authorization](chat-connection-authorization.md).
+
+- [x] New Slack and Telegram connections default to provider consent; manual entry
+      remains an explicit advanced option and existing connection repair still works.
+- [x] Slack OAuth state/callback/exchange fills in workspace/app identity and stores
+      the returned bot credential with the existing shared Socket Mode reference.
+- [x] Telegram managed-bot confirmation creates a bot, correlates its generated
+      username, retrieves and verifies its token, and avoids polling delivery bots.
+- [x] Host-role/CSRF checks, operator-bound expiry, cancellation/replay protection,
+      bounded requests, safe errors, protected storage and idempotent save.
+- [x] Missing one-time app registration/HTTPS is reported explicitly; no simulated
+      consent success or automatic creation of Forge operator privileges.
+- [x] Keep the selected Add Telegram/Slack button highlighted with a checkmark and
+      accessible pressed state; clear on close/save/provider switch. Show the exact
+      missing-registration reason beside the disabled Connect button (Telegram's
+      first-manager setup below now replaces that dead end). UI build, five
+      relevant browser cases and both deployed provider screens checked (September 11).
+- [x] Review verified account, choose product grants, save, and return to channel
+      selection without modifying work execution or sending messages.
+- [x] Automated validation: 426 backend checks pass (18 new authorization cases),
+      one explicit live test skipped; UI build, 197 unit tests and 20 browser cases pass.
+- [x] Deploy backend after the explicitly approved restart (2026-09-11, API PID
+      28340). Direct/proxied health, authenticated readiness, rejected anonymous and
+      invalid-callback requests, and both live Settings screens are verified.
+- [ ] Complete a real Slack installation through the automatic provisioning flow
+      below. A host HTTPS callback is required only for the optional shared OAuth app.
+- [x] Provision the dedicated Telegram manager on the live host (September 11):
+      enable Bot Management Mode in the user's BotFather Desktop window and save
+      through Forge's protected manager endpoint. Live readiness returns
+      `available: true`; Settings skips first-time setup and enables Connect.
+      Evidence: `.tmp-build/chat-manager/telegram-manager-live-verified.json` and
+      `deployed-telegram-connect-ready.png`. API PID 70188 remains running;
+      at that initial check the engine was `legacy`, with zero plugin connections.
+      Subsequent consent, activation and remaining channel gates are recorded below.
+- [x] Replace the Telegram registration dead end with in-app first-manager setup:
+      open BotFather, accept the initial token once, verify manager capability and
+      exclusive use, persist encrypted, and continue directly to native consent.
+- [x] Verify registration permissions/CSRF, credential redaction, retry/conflict
+      behavior and persistence with isolated backend and Settings/drawer browser checks.
+      Broader regression: 442 passed, one live test skipped. Final authorization
+      checks: 35 passed (17 first-manager cases), including invalid-token feedback.
+      UI build, 197 unit tests and all 22 browser cases pass. Desktop/narrow
+      screenshots and TRX evidence: `.tmp-build/chat-manager/`.
+- [x] Deploy the first-manager setup endpoint after a separately approved restart
+      (September 11, API PID 28340 → 70188; UI PID 72132 retained). Live readiness
+      returns `canConfigure: true`; Settings shows the BotFather link and protected
+      token field instead of the disabled Telegram Connect button. Direct/proxied
+      health and access checks pass; no configuration changed during verification.
+      Evidence: `.tmp-build/chat-manager/deployed-smoke.json` and adjacent deployment
+      logs/screenshots. Telegram requires the
+      initial BotFather creation/management permission and token handoff; this
+      implementation automates verification, protected host configuration and
+      subsequent managed-bot approval, not that initial provider registration.
+- [x] User completed real Telegram consent and saved an enabled connection; live
+      API verification confirms its protected configuration and selected product
+      grants. See the [activation review](chat-plugin-activation-review.md).
+- [x] After the user's explicit chat approval, import and cut over the live host
+      to `plugins` at revision 2 without a service restart (22:06 UTC). Preserve
+      40 legacy notifications and Host alerts; activate only the verified local
+      parent with noninteractive metadata delivery. Unverified legacy scopes stay off.
+- [x] Complete the new Telegram bot's personal identity proof through the user's
+      Telegram Desktop account (22:10 UTC). Both live API and Settings confirm the
+      link; receiver health is ready. Evidence: the [activation review](chat-plugin-activation-review.md).
+- [x] Replace raw Telegram link commands with a confirmation popup and visible
+      fallback link. Validate personal numeric IDs, fill the installation read-only,
+      reuse unambiguous verified identities within provider scope, stop expired
+      polling and refresh the link on return. Inactive receivers cannot start a
+      challenge. UI build and all 27 isolated browser cases pass; live Settings
+      confirms the new form and existing verified link without chat mutations.
+- [ ] Automate first-time personal account ID discovery in the product. The current
+      form still needs a numeric ID when no prior identity is verified; this live
+      account was completed with Desktop assistance and genuine provider proof.
+- [ ] Complete Slack/Telegram channel verification after the transport correction.
+      Slack consent and encrypted save are verified above. New Telegram
+      destinations and unverified legacy repairs remain open; mock provider results
+      and a personal identity link do not close those gates.
+- [x] Clarify Telegram step 2 with the exact Desktop **Open App / Open** entry
+      points and Telegram's official direct Mini App link. Explain the difference
+      from `/setprivacy` and show **Settings → Bot Settings** below the token panel.
+      UI build, three relevant browser cases and live Settings checks pass; the
+      copy/link change is live through Vite without a restart.
 
 ## 2. Code ownership and planned changes
 
@@ -751,7 +943,7 @@ and no sent notification is replayed solely because of cutover or rollback.
 
 ## 4. Validation matrix
 
-**Execution started 2026-09-10:** Stage 6 and its tested legacy-topic repair are deployed. All 28 scenarios have passing automated evidence: 408 backend tests, 197 UI unit tests and 12 browser cases, including the Telegram/Slack setup navigation repair verified on the running UI. The shared conformance audit, real-provider gates and separate background story-detail HTTP 403 finding remain open in the [execution report](chat-plugin-validation-matrix.md).
+**Execution started 2026-09-10:** Stage 6 and its tested legacy-topic repair are deployed. All 28 scenarios have passing automated evidence: 408 backend tests, 197 UI unit tests and 16 browser cases. The running UI also verifies the Telegram/Slack setup navigation, illustrated instructions, collapsible sections, fixed drawer actions and compact Chat button alignment. Full Settings page checks also verify separate Chat/Repository providers tabs, persistent Close and a single scrollbar. Section 5 subsequently closes the shared conformance audit with 37 passing contract cases; real-provider gates and the separate background story-detail HTTP 403 finding remain open in the [execution report](chat-plugin-validation-matrix.md).
 
 | # | Automated | Scenario | Expected evidence |
 |---|---|---|---|
@@ -839,19 +1031,79 @@ credentials. Never reuse a production chat receiver during the suite.
 
 ## 5. Release gate and documentation
 
-- [ ] Both providers complete connection and workstream setup through the UI.
-- [ ] Every top-level Workstreams row exposes remote-control enablement and provider/
-      channel selection; configuration is owned by the parent spawn throughout UI,
-      API, persistence, routing and migration.
-- [ ] Multi-destination delivery, scoped actions and cross-provider resolution pass
-      the validation matrix; no provider can silently acquire another's scope.
-- [ ] Migration and rollback boundaries are tested and explained to operators.
-- [ ] Add current `telegram-setup.md` and `slack-setup.md`, troubleshooting, exact
-      app-manifest scopes, credential rotation instructions and API examples.
-- [ ] Update `docs/chat/README.md` to distinguish shipped capabilities from remaining
-      plans; keep previous phase histories as historical references.
-- [ ] Update this plan with actual completed checkboxes and recorded validation only
-      as implementation lands. No release claim is implied by this planning change.
+**Status (2026-09-12): implementation/documentation complete; release held for
+live-provider acceptance.** Five of seven gates are closed. The
+[release report](chat-plugin-release-gate.md) maps each gate to source and evidence,
+records 486 passing backend checks (37 shared provider contract cases; one live
+skip), and records approved deployment plus remaining real-provider work. Checkbox
+completion below is not a substitute for the unchecked live gates.
+
+- [ ] **RG-01:** Both providers complete connection and workstream setup through
+      the actual UI. Automated setup/save/cancel and deployed Slack channel validation pass; real Telegram channel/row
+      setup and the full browser-only Slack approval/row path remain unverified.
+- [x] **RG-02:** Every top-level Workstreams row exposes remote-control enablement
+      and provider/channel selection; configuration is owned by the parent spawn
+      throughout UI, API, persistence, routing and migration. Five-row browser,
+      atomic parent-save, current/future child and migration tests provide evidence.
+- [ ] **RG-03:** Multi-destination delivery, scoped actions and cross-provider
+      resolution pass the validation matrix; no provider can silently acquire
+      another's scope. All 28 automated mappings and the shared provider contract
+      pass; the dedicated real-provider delivery/reply/action/rotation gate is open.
+- [x] **RG-04:** Migration and rollback boundaries are tested and explained to
+      operators in [the migration guide](chat-plugin-migration.md).
+- [x] **RG-05:** Add current [Telegram](telegram-setup.md) and [Slack](slack-setup.md)
+      setup, [troubleshooting](chat-plugin-troubleshooting.md), exact manifest scopes,
+      credential rotation instructions and [API examples](chat-plugin-api-examples.md).
+- [x] **RG-06:** Update [README](README.md) to distinguish implemented capabilities,
+      observed deployment and remaining gates; retain phase histories as references.
+- [x] **RG-07:** Update this plan with completed checkboxes and recorded validation
+      only as implementation lands. The [release evidence](chat-plugin-release-gate.md)
+      explicitly leaves incomplete live checks open.
+
+Section 5 closes the shared-conformance audit from section 4. It found and fixed
+pre-cancelled Telegram operations and local Slack retirement. Those fixes and the
+previous Slack channel form-encoding change were deployed in API PID 39092 after
+the 08:55 UTC approved restart and retained in the later PID 43620 build. Actual Settings validates Slack `#all-forge`; the connection
+is ready at saved/applied revision 4/4. The selected live exercise still requires
+operator-confirmed destinations, a test parent, explicit redacted-content opt-in,
+and disposable credentials. The broader integration gate also needs two Slack
+workspaces sharing one app receiver while Telegram stays active.
+
+**Slack identity follow-up (2026-09-12):**
+
+- [x] Replace the Settings command-copy step with a private Slack confirmation
+  button, selected-channel popup, automatic status detection and retry/cancel.
+- [x] Preserve sender/workspace/operator/revision-bound, hashed, expiring proof;
+  reject stale or replayed buttons and suppress public approval responses.
+- [x] Pass the updated 498-test backend regression (one live skip), UI build and
+  197 UI unit tests. Update setup, troubleshooting and API documentation.
+- [x] Complete all 37 isolated browser checks and the documentation consistency audit.
+- [x] Deploy the new backend with fresh restart approval: September 12, 09:41 UTC,
+  API PID 39092 → 43620, UI PID 72132 retained. Direct/proxied health and the
+  authenticated capability/channel lookup pass; anonymous requests return 401.
+- [x] Verify the actual Settings form at desktop/narrow widths: saved channel
+  selected automatically, confirmation enabled after ownership/account input,
+  no raw command, Close/scrolling available and no page errors.
+- [ ] Verify actual Slack account approval through the private confirmation button.
+
+The deployed API is PID 43620. The personal Slack account is still unlinked;
+the read-only deployment check did not submit an approval request. See the
+[follow-up evidence](chat-plugin-release-gate.md#slack-identity-confirmation-follow-up-2026-09-12).
+
+**Slack member-ID recovery follow-up (2026-09-12):**
+
+- [x] Restore the current operator's previous Slack member-ID input for the same
+  connection/workspace. Keep proof separate and prefer an existing verified link.
+- [x] Filter inaccessible/disabled connections, invalid/ambiguous targets and
+  other operators; clear pending/cancelled remembered targets when links are revoked.
+- [x] Pass 508 backend checks (one live skip), 197 UI unit tests, the UI build and
+  39 isolated browser checks, including the ten new backend and two browser cases.
+- [x] Complete documentation consistency checks: 12 documents, 174 links and seven
+  JSON examples pass; whitespace and deployment/source distinction are checked.
+- [ ] Deploy member-ID recovery after fresh restart approval and verify actual
+  autofill. API PID 43620 serves the private-confirmation flow but predates recovery.
+
+See [member-ID recovery evidence](chat-plugin-release-gate.md#slack-member-id-recovery-2026-09-12).
 
 
 **LAN connectivity follow-up (2026-09-09):** the UI binds to `0.0.0.0:5181`;

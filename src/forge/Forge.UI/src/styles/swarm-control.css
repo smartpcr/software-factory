@@ -623,7 +623,7 @@
 }
 .swarm-ctrl .story-row {
   display: grid;
-  grid-template-columns: 56px 1fr auto auto auto auto auto;
+  grid-template-columns: 56px minmax(0, 1fr) auto auto auto auto auto auto;
   align-items: stretch;
   gap: 14px;
   padding: 10px 14px;
@@ -785,7 +785,8 @@
  * dim slate at rest, red accent on intent. The button renders an inline
  * SVG trash-can; flex centering keeps the icon visually aligned with the
  * `…` ellipsis used during the delete-in-flight state. */
-.swarm-ctrl .story-row .sr-delete {
+.swarm-ctrl .story-row .sr-delete,
+.swarm-ctrl .story-row .chat-action-button {
   align-self: start;
   display: inline-flex;
   align-items: center;
@@ -1791,10 +1792,21 @@
   .swarm-ctrl .mode-pane.active { grid-template-columns: 1fr; }
   .swarm-ctrl .meters { grid-template-columns: repeat(3, 1fr); }
   .swarm-ctrl .clock { display: none; }
-  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto auto auto; }
+  .swarm-ctrl .story-row { grid-template-columns: 56px minmax(0, 1fr) auto auto auto auto auto; }
   .swarm-ctrl .sr-score { display: none; }
   .swarm-ctrl .ov-split { grid-template-columns: 1fr; }
   .swarm-ctrl .ov-split-r { display: none; }
+}
+
+@media (max-width: 700px) {
+  .swarm-ctrl .story-row { grid-template-columns: 36px minmax(0, 1fr) repeat(3, 33px); column-gap: 8px; }
+  .swarm-ctrl .story-row .sr-num { grid-area: 1 / 1; }
+  .swarm-ctrl .story-row .phase-badge { grid-area: 1 / 2; justify-self: start; }
+  .swarm-ctrl .story-row .sr-pause { grid-area: 1 / 3; }
+  .swarm-ctrl .story-row .sr-delete:not(.sr-pause) { grid-area: 1 / 4; }
+  .swarm-ctrl .story-row .chat-row-control-compact { grid-area: 1 / 5; }
+  .swarm-ctrl .story-row .sr-meta { grid-area: 2 / 1 / auto / -1; }
+  .swarm-ctrl .story-row .sr-progress { grid-area: 3 / 1 / auto / -1; }
 }
 
 /* ── Document tab (design mode → doc selection) ───────────────────────── */

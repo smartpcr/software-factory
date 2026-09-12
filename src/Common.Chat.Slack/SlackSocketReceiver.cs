@@ -156,6 +156,12 @@ internal sealed class SlackSocketReceiver(string appId, string fingerprint, Slac
                 || SlackApiClient.String(message, "user") != member.BotUserId || SlackApiClient.String(message, "bot_id") is { } bot && bot != member.BotId
                 || actions.ValueKind != JsonValueKind.Array || actions.GetArrayLength() != 1) return (null, "slack-interaction-invalid");
             var action = actions[0]; var key = SlackApiClient.String(action, "value");
+            if (SlackApiClient.String(action, "type") == "button" && SlackApiClient.String(action, "action_id") == "forge_identity_link")
+            {
+                if (key is not { Length: 64 } || !key.All(char.IsAsciiHexDigit)) return (null, "slack-interaction-invalid");
+                return (new("slack", member.ConnectionId, "envelope:" + envelopeId, new(member.ConnectionId, workspace, channel), sender!,
+                    "identity-link", ts, null, null, null, clock.GetUtcNow(), Command: "link", CommandArgument: key), null);
+            }
             if (SlackApiClient.String(action, "type") != "button" || !SlackMessageRenderer.ActionKey(key)) return (null, "slack-interaction-invalid");
             return (new("slack", member.ConnectionId, "envelope:" + envelopeId, new(member.ConnectionId, workspace, channel, thread), sender!, "action", ts, ts,
                 null, key, clock.GetUtcNow()), null);
