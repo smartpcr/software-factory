@@ -524,9 +524,15 @@ swarm-control `--sc-*` palette P28).
 
 **Views & their stores:**
 - `/plan` `<Board/>` (`useBoardStore`), `<DetailPanel/>`, `<CardModal/>` — Phase 1.
+- Plan & Design's Stories mode (`StoryList`) uses the shared story/task/bug type icons and
+  shows each story's target branch (`ProductStory.baseBranch`) beside its repository.
 - `/timeline` — Phase 2.
 - `/workstreams` — Phase 3; now also the **swarm-control surface** (story index + per-story
   drill-down) *(P28.9)* via `SwarmIndexView`/`SwarmStoryView`/`SwarmMasterPanel` + `useSwarmUiStore`.
+- Story index rows show the spawn's local start date/time (`createdAt`), wall-clock duration,
+  and PR target/feature branch (`baseBranch`). `StoryRunMetadata` updates its own elapsed clock;
+  done spawns use `updatedAt` as the end, matching the detail view's existing SPAWN duration.
+  Waiting and paused time are included. The current spawn contract has no separate completion timestamp.
 - `/prs` `<PrBoard/>`/`<PrCard/>`/`<PrDetailPanel/>` — Phase 4, comment list P24, build chip P27.
 - `/products`, `/settings`, `/crews` (`CrewsView.tsx` ~2,100 lines), `/work-items`, `/inbox`
   (`InboxView.tsx` P17), `/work-items/{id}/live` (`LiveExecutionView.tsx` P16).

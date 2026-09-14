@@ -7,6 +7,7 @@ import { useToastStore } from '@/state/useToastStore';
 import { RepoIcon } from '@/products/RepoIcon';
 import { useRepoLookup } from '@/workitems/useRepoLookup';
 import { EditStoryModal } from './EditStoryModal';
+import { TypeIcon } from './icons';
 
 // Story list view for Plan & Design. Shows each product-scoped story
 // as an expandable row with its associated cards underneath.
@@ -132,11 +133,13 @@ export function StoryList() {
         const isCollapsed = collapsed.has(id);
         const totalPts = groupCards.reduce((s, c) => s + c.pts, 0);
         const storyPts = story?.points ?? 0;
+        const repo = repoOf(story?.repoId);
+        const targetBranch = story?.baseBranch || 'main';
 
         return (
           <div key={id} style={{ marginBottom: 2 }}>
             {/* Story header row */}
-            <div style={storyRowStyle}>
+            <div className="story-list-header" style={storyRowStyle}>
               <div
                 style={{
                   display: 'flex',
@@ -178,23 +181,37 @@ export function StoryList() {
                   }}
                   title={story ? (story.description || 'Open story detail') : undefined}
                 >
+                  {story && (
+                    <span className="card-type-icon story" style={typeIconStyle} role="img" aria-label="Story" title="Story">
+                      <TypeIcon type="story" />
+                    </span>
+                  )}
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
                     {story?.name ?? 'No story'}
                   </span>
                   <span style={countBadge}>{groupCards.length}</span>
                 </button>
-                {story && (() => {
-                  const repo = repoOf(story.repoId);
-                  if (!repo && !story.repoId) return null;
-                  return (
-                    <span style={repoChipStyle} title={repo ? `${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})` : story.repoId ?? ''}>
-                      {repo && <RepoIcon kind={repo.kind} size={11} />}
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
-                        {repo?.displayName ?? story.repoId}
+                {story && (
+                  <span className="story-list-repo-target" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: '4px 12px', minWidth: 0, maxWidth: '55%' }}>
+                    {(repo || story.repoId) && (
+                      <span style={repoChipStyle} title={repo ? `${repo.displayName} (${repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})` : story.repoId ?? ''}>
+                        {repo && <RepoIcon kind={repo.kind} size={11} />}
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
+                          {repo?.displayName ?? story.repoId}
+                        </span>
                       </span>
+                    )}
+                    <span className="story-list-target-branch" style={repoChipStyle} title={`Target branch: ${targetBranch}`} aria-label={`Target branch: ${targetBranch}`}>
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" style={{ flexShrink: 0 }} aria-hidden="true">
+                        <circle cx="4" cy="3" r="2" />
+                        <circle cx="4" cy="13" r="2" />
+                        <circle cx="12" cy="3" r="2" />
+                        <path d="M4 5v6m8-6a6 6 0 0 1-6 6H4" />
+                      </svg>
+                      <code style={{ font: 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>{targetBranch}</code>
                     </span>
-                  );
-                })()}
+                  </span>
+                )}
               </div>
               <span style={{ width: 80, textAlign: 'center', fontSize: 11 }}>
                 {story?.status ?? '—'}
@@ -296,9 +313,12 @@ function CardRow({ card, onClick }: { card: Card; onClick: () => void }) {
     : card.priority === 'low' ? 'var(--text-tertiary)' : 'var(--text-secondary)';
 
   return (
-    <button type="button" onClick={onClick} style={cardRowStyle}>
+    <button type="button" onClick={onClick} className="story-list-card" style={cardRowStyle}>
       <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 2, minWidth: 0, paddingLeft: 24 }}>
-        <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', flexShrink: 0 }}>
+        <span className={`card-type-icon ${card.type}`} style={typeIconStyle} role="img" aria-label={card.type} title={card.type}>
+          <TypeIcon type={card.type} />
+        </span>
+        <span title={card.id} style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', minWidth: 0, maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {card.id}
         </span>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -443,11 +463,18 @@ const repoChipStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 4,
-  flexShrink: 0,
+  minWidth: 0,
+  maxWidth: '100%',
   fontSize: 10,
   fontFamily: 'var(--font-mono)',
   fontWeight: 500,
   color: 'var(--text-secondary)',
+};
+
+const typeIconStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  width: 14,
+  height: 14,
 };
 
 const tagStyle: React.CSSProperties = {

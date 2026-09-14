@@ -5,6 +5,7 @@ import { useSpawnStore } from '@/state/useSpawnStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useToastStore } from '@/state/useToastStore';
 import { StoryDeliveryStrip } from './StoryDeliveryStrip';
+import { StoryRunMetadata } from './StoryRunMetadata';
 import { CANONICAL_PHASES, phaseBadgeProps } from './storyPhaseBadge';
 import { computeStoryProgressPct } from './storyProgress';
 import { ChatRowControl } from './plugins/ChatRowControl';
@@ -197,6 +198,7 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
           {completeCount > 0 && <span className="seg" style={{ color: 'var(--sc-green)' }}><b>{completeCount}</b> complete</span>}
           {spawn.repoId && <span className="seg">repo <b>{spawn.repoId}</b></span>}
         </div>
+        <StoryRunMetadata spawn={spawn} />
         {detail && <StoryDeliveryStrip detail={detail} />}
         {!!spawn.chatSummary?.unroutedCount && <span className="sr-chip" title={Object.entries(spawn.chatSummary.unroutedReasons).map(([reason, count]) => `${reason.replaceAll('-', ' ')}: ${count}`).join('; ')}>
           {spawn.chatSummary.unroutedCount} chat alerts unrouted
