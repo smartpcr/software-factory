@@ -116,11 +116,31 @@ The next member-ID recovery correction adds management `recentLinkTargets` from
 the current operator's retained pending/cancelled requests for enabled, accessible
 Slack connections and matching workspaces. Settings prefers a verified link,
 otherwise restores the latest unambiguous input without checking ownership or
-granting authority. Revoke clears pending/cancelled targets. This correction is
-not deployed in PID 43620 and requires fresh restart approval. See the
+granting authority. Revoke clears pending/cancelled targets. This correction was
+deployed after approval at 21:23 UTC: API PID 43620 → 36144, retaining UI PID 72132.
+The real Settings page restores the saved member ID without typing, including
+after reload. Ownership remains unchecked and no identity or host route changes.
+See the
 [recovery checklist](chat/chat-plugin-release-gate.md#slack-member-id-recovery-2026-09-12).
 Regression: 508 backend passes (one live skip), 197 UI unit tests, 39 isolated
 browser checks and the UI build pass; evidence is in `.tmp-build/chat-identity-autofill/`.
+
+The user subsequently reported that Slack shows the private confirmation but
+clicking it leaves Forge waiting. The receiver reports `slack-interaction-invalid`.
+The normalizer required message metadata that Slack omits for ephemeral messages;
+the old fixture concealed this by using ordinary-message metadata. A callback
+repair and corrected protocol/identity fixtures were deployed after approval at
+21:41 UTC in API PID 35552, retaining UI PID 72132. The selected backend regression
+passes 521 checks (one live skip),
+including 13 new protocol cases and all 12 identity-confirmation cases. See the
+[repair checklist](chat/chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12).
+The user's private callback was processed at 21:42:30 UTC; its challenge was
+consumed and the intended Slack identity linked. The actual Settings badge and
+verified member-ID autofill persist after reload. All receivers remain receiving;
+the old Slack diagnostic count of four did not increase. Evidence under
+`.tmp-build/chat-slack-confirmation-repair/` includes deployed source/binary hashes,
+health, query-only proof metadata and the live Settings screenshot. Broader
+live-provider release gates remain incomplete.
 
 The current chat/auth source is documented in [the chat index](chat/README.md),
 [Stage 0B validation](chat/chat-plugin-stage0b-validation.md) and

@@ -108,6 +108,16 @@ internal sealed class SlackProviderFixture : HttpMessageHandler, IHttpClientFact
                 message = new { ts = messageId, thread_ts = thread, user = "UBOT" + workspace, bot_id = "B" + workspace },
                 actions = new[] { new { type = "button", action_id = actionId, value = key } } },
         });
+    // Slack omits the message body from ephemeral-message interactions.
+    // https://docs.slack.dev/messaging/#ephemeral-messages
+    public static JsonElement EphemeralButton(string id, string key, string workspace = "T1", string sender = "U1")
+        => JsonSerializer.SerializeToElement(new
+        {
+            type = "interactive", envelope_id = id,
+            payload = new { type = "block_actions", api_app_id = "A1", team = new { id = workspace }, user = new { id = sender, team_id = workspace },
+                channel = new { id = "C1" }, container = new { type = "message", channel_id = "C1", message_ts = "1700000000.000100", is_ephemeral = true },
+                actions = new[] { new { type = "button", action_id = "forge_identity_link", value = key } } },
+        });
     internal static async Task UntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));

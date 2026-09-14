@@ -1,6 +1,6 @@
 # Forge workstream chat plugins — implementation plan
 
-**Status:** Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. Section 5 closes five of seven release gates with current operator documentation and 37 shared provider contract cases; the deployed confirmation regression passes 498 backend checks, 197 UI tests and 37 browser cases (one live test skipped). Release acceptance remains held for actual provider UI setup and the dedicated delivery/reply/action/rotation exercise. Slack channel transport, provider cancellation fixes and the private identity-confirmation flow are deployed after approval in API PID 43620 (September 12, 09:41 UTC). Direct/proxied health, the confirmation capability/channel lookup and actual Settings checks pass; personal Slack approval remains pending. The plugin cutover, Telegram identity, assisted Slack installation and Settings layout have recorded live evidence. See [release gate](chat-plugin-release-gate.md), [live Slack/layout](chat-slack-live-setup.md) and [host activation](chat-plugin-activation-review.md).
+**Status:** Stages 0A, 0B, 1, 2, 3, 4, 5 and 6 implemented. Section 5 closes five of seven release gates with current operator documentation and 37 shared provider contract cases; the deployed backend regression passes 521 checks (one live skip), with unchanged UI evidence of 197 unit tests and 39 browser cases. Release acceptance remains held for complete provider UI setup and the dedicated delivery/reply/action/rotation exercise. Slack channel transport, provider cancellation fixes, member-ID recovery and the private-confirmation callback repair are deployed after approval in API PID 35552 (September 12, 21:41 UTC). Health and actual Settings checks pass. The user's private Slack approval was processed at 21:42 UTC; the saved identity and Settings badge are Linked, including after reload. The plugin cutover, Telegram identity, assisted Slack installation and Settings layout have recorded live evidence. See [release gate](chat-plugin-release-gate.md), [live Slack/layout](chat-slack-live-setup.md) and [host activation](chat-plugin-activation-review.md).
 **Design:** [chat-plugin-design.md](chat-plugin-design.md).
 **Baseline examined:** `70103c83`.
 
@@ -1034,7 +1034,7 @@ credentials. Never reuse a production chat receiver during the suite.
 **Status (2026-09-12): implementation/documentation complete; release held for
 live-provider acceptance.** Five of seven gates are closed. The
 [release report](chat-plugin-release-gate.md) maps each gate to source and evidence,
-records 486 passing backend checks (37 shared provider contract cases; one live
+records 521 passing backend checks (37 shared provider contract cases; one live
 skip), and records approved deployment plus remaining real-provider work. Checkbox
 completion below is not a substitute for the unchecked live gates.
 
@@ -1084,9 +1084,10 @@ workspaces sharing one app receiver while Telegram stays active.
 - [x] Verify the actual Settings form at desktop/narrow widths: saved channel
   selected automatically, confirmation enabled after ownership/account input,
   no raw command, Close/scrolling available and no page errors.
-- [ ] Verify actual Slack account approval through the private confirmation button.
+- [x] Verify actual Slack account approval through the private confirmation button
+  after the callback repair below: processed proof and Linked badge at 21:42 UTC.
 
-The deployed API is PID 43620. The personal Slack account is still unlinked;
+This checkpoint deployed API PID 43620. The personal Slack account remained unlinked;
 the read-only deployment check did not submit an approval request. See the
 [follow-up evidence](chat-plugin-release-gate.md#slack-identity-confirmation-follow-up-2026-09-12).
 
@@ -1100,10 +1101,30 @@ the read-only deployment check did not submit an approval request. See the
   39 isolated browser checks, including the ten new backend and two browser cases.
 - [x] Complete documentation consistency checks: 12 documents, 174 links and seven
   JSON examples pass; whitespace and deployment/source distinction are checked.
-- [ ] Deploy member-ID recovery after fresh restart approval and verify actual
-  autofill. API PID 43620 serves the private-confirmation flow but predates recovery.
+- [x] Deploy member-ID recovery after fresh restart approval and verify actual
+  autofill: September 12, 21:23 UTC, API PID 43620 → 36144, UI PID 72132 retained.
+  The actual Settings UI restores the saved ID on selection and after reload,
+  without test input. Ownership stays unchecked; identities and routes are unchanged.
 
 See [member-ID recovery evidence](chat-plugin-release-gate.md#slack-member-id-recovery-2026-09-12).
+
+**Slack private-confirmation callback repair (2026-09-12):**
+
+- [x] Reproduce the failed link using Slack's documented ephemeral callback without
+  a message body; correct the fixture that previously supplied ordinary-message metadata.
+- [x] Accept missing/partial message metadata only for ephemeral identity buttons.
+  Preserve app/workspace/channel provenance, bound proof, expiry and replay protection.
+- [x] Complete the broader chat/auth/migration regression: 521 passes, one explicit
+  live skip. Audit 12 documents, 183 local links, seven JSON examples and checkboxes.
+  The unchanged UI retains its 197 unit tests, 39 browser checks and build evidence.
+- [x] Deploy the callback repair after fresh restart approval at 21:41 UTC:
+  API PID 36144 → 35552, UI PID 72132 retained. Build, source/binary hashes and
+  direct/proxied health checks pass.
+- [x] Verify the user's private approval is processed at 21:42 UTC, its challenge
+  consumed and the actual Forge identity Linked. The Settings badge and verified
+  member-ID autofill persist after reload. RG-01/RG-03 stay open.
+
+See [callback repair evidence](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12).
 
 
 **LAN connectivity follow-up (2026-09-09):** the UI binds to `0.0.0.0:5181`;

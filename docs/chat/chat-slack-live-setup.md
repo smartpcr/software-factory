@@ -74,5 +74,10 @@ PID 72132 remained running at the layout checkpoint. The later approved backend
 deployment is recorded above; API PID 39092 served the verified channel transport
 correction. The subsequent approved 09:41 UTC deployment runs API PID 43620 with
 the [private identity-confirmation flow](chat-plugin-release-gate.md#slack-identity-confirmation-follow-up-2026-09-12).
-Personal Slack approval and saving a future host-alert destination remain separate
-setup steps.
+The approved 21:23 UTC restart replaced PID 43620 with PID 36144. Actual Settings
+checks verify saved member-ID autofill on selection and after reload. The user's
+private confirmation was visible in Slack, but that build rejected its callback.
+The [callback repair](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12)
+was deployed after approval at 21:41 UTC in API PID 35552. The user's private
+approval was processed at 21:42:30 UTC and the actual Settings badge stays Linked
+after reload. A future host-alert destination remains unset.

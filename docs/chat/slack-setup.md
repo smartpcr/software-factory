@@ -162,7 +162,8 @@ dispatched. This avoids adding the `users:read` scope solely for `bots.info`.
 ## Link an operator and answer questions
 
 In **Your chat identity → Link or re-link my account**, select the Slack connection,
-enter your personal Slack member ID and confirm ownership. Choose a saved channel
+check the automatically restored personal member ID, or enter it if no previous
+input is available, and confirm ownership. Choose a saved channel
 you have joined, then **Link my Slack account**. Forge opens the channel and
 requests a private **Confirm link** message. Select **Confirm link → Link account**
 in Slack; Forge observes the verified callback and closes its confirmation dialog.
@@ -171,16 +172,23 @@ required; app installation alone does not identify the current Forge browser use
 
 **Deployment:** this private-button flow was deployed after approval on September
 12 at 09:41 UTC (API PID 43620). The API capability, saved-channel lookup and
-actual Settings form pass live checks. The user's private-message approval still
-needs verification. Settings checks the backend's `slackLinkConfirmationAvailable`
+actual Settings form passed live checks. The later 21:41 UTC deployment in PID
+35552 fixes private callbacks; the user's actual approval and Linked badge were
+verified at 21:42 UTC. Settings checks the backend's `slackLinkConfirmationAvailable`
 capability before offering the flow on other hosts.
 See [linking recovery](chat-plugin-troubleshooting.md#configured-connection-shows-needs-linking).
 
 The later member-ID recovery correction reuses the same operator's previous
 input while link-request history is retained, preferring an existing verified
-account. The field stays editable and approval is still required. This additional
-backend change awaits a fresh approved restart; PID 43620 does not yet return
-remembered input.
+account. The field stays editable and approval is still required. This change
+was deployed after approval at 21:23 UTC in API PID 36144; actual Settings autofill
+and reload checks pass. Refresh Settings and reselect the connection to restore it.
+
+The user subsequently observed the private message but its confirmation was
+rejected. The callback normalizer incorrectly required message details omitted
+by Slack for ephemeral messages. The repair was deployed at 21:41 UTC in API PID
+35552. The private approval was processed, its challenge consumed and the identity
+linked; the Settings badge persists after reload. See the [current release record](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12).
 
 The request uses [chat.postEphemeral](https://docs.slack.dev/reference/methods/chat.postEphemeral/)
 with the existing `chat:write` bot scope. It requires both your account and the bot

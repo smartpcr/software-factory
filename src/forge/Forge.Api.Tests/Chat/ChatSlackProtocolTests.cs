@@ -9,6 +9,7 @@ namespace Forge.Api.Tests.Chat;
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Common.Chat;
 using Common.Chat.Slack;
 using Xunit;
@@ -205,6 +206,60 @@ public sealed class ChatSlackProtocolTests
             Assert.Null(envelope.ReplyToMessageId); Assert.Equal(scenario is "self" or "bot" or "edit" or "delete" ? "ignored" : "text", envelope.Kind);
         }
         cancel.Cancel(); await receiving;
+    }
+
+    [Theory]
+    [InlineData("missing-message", true)]
+    [InlineData("partial-message", true)]
+    [InlineData("full-message", true)]
+    [InlineData("wrong-app", false)]
+    [InlineData("wrong-user-workspace", false)]
+    [InlineData("wrong-channel", false)]
+    [InlineData("invalid-timestamp", false)]
+    [InlineData("invalid-token", false)]
+    [InlineData("foreign-author", false)]
+    [InlineData("foreign-bot", false)]
+    [InlineData("conflicting-timestamp", false)]
+    [InlineData("not-ephemeral", false)]
+    [InlineData("work-action", false)]
+    public async Task Private_identity_callbacks_accept_missing_message_without_relaxing_work_actions_or_provenance(string scenario, bool accepted)
+    {
+        using var f = new SlackProviderFixture(); await using var session = await f.OpenAsync();
+        var socket = Assert.Single(f.Sockets); var sink = new SlackFixtureSink();
+        using var cancel = new CancellationTokenSource(); var receiving = session.ReceiveAsync(sink, cancel.Token);
+        var token = new string('A', 64);
+        var frame = JsonNode.Parse(SlackProviderFixture.EphemeralButton("private-link", token).GetRawText())!;
+        var payload = frame["payload"]!;
+        switch (scenario)
+        {
+            case "partial-message": payload["message"] = new JsonObject { ["bot_id"] = "BT1" }; break;
+            case "full-message": payload["message"] = JsonNode.Parse(SlackProviderFixture.Button("source", "1700000000.000100", thread: null).GetRawText())!["payload"]!["message"]!.DeepClone(); break;
+            case "wrong-app": payload["api_app_id"] = "AOTHER"; break;
+            case "wrong-user-workspace": payload["user"]!["team_id"] = "TOTHER"; break;
+            case "wrong-channel": payload["channel"]!["id"] = "COTHER"; break;
+            case "invalid-timestamp": payload["container"]!["message_ts"] = 1700000000; break;
+            case "invalid-token": payload["actions"]![0]!["value"] = "not-a-challenge"; break;
+            case "foreign-author": payload["message"] = new JsonObject { ["user"] = "UOTHER" }; break;
+            case "foreign-bot": payload["message"] = new JsonObject { ["bot_id"] = "BOTHER" }; break;
+            case "conflicting-timestamp": payload["message"] = new JsonObject { ["ts"] = "1700000001.000100" }; break;
+            case "not-ephemeral": payload["container"]!["is_ephemeral"] = false; break;
+            case "work-action": payload["actions"]![0]!["action_id"] = "forge_0"; payload["actions"]![0]!["value"] = SlackProviderFixture.Key; break;
+        }
+        try
+        {
+            socket.Push(JsonSerializer.SerializeToElement(frame));
+            await SlackProviderFixture.UntilAsync(() => socket.Acknowledged.Count == 1);
+            if (accepted)
+            {
+                var envelope = Assert.Single(sink.Envelopes);
+                Assert.Equal("identity-link", envelope.Kind); Assert.Equal("link", envelope.Command); Assert.Equal(token, envelope.CommandArgument);
+                Assert.Equal("slack-one", envelope.ConnectionId); Assert.Equal("T1", envelope.Address.ExternalTenantId);
+                Assert.Equal("C1", envelope.Address.ChannelId); Assert.Equal("U1", envelope.SenderId);
+                Assert.Null(envelope.ActionToken); Assert.Null(envelope.ReplyToMessageId); Assert.Empty(sink.Diagnostics);
+            }
+            else { Assert.Empty(sink.Envelopes); Assert.Single(sink.Diagnostics); }
+        }
+        finally { cancel.Cancel(); await receiving; }
     }
 
     [Fact]

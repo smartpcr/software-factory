@@ -20,17 +20,26 @@ replaces copying a link command with a private approval button and automatic
 status checks. Its backend regression passes **498 tests** with one live skip;
 all 37 browser checks pass. The update is deployed after approval in API PID 43620
 (September 12, 09:41 UTC). The running capability/channel lookup and actual Settings
-form pass desktop/narrow checks. The private message and user approval still need
-live verification. The initial personal Slack member ID remains required when no
-verified account is available.
+form pass desktop/narrow checks. Private-message approval was unverified at that
+checkpoint and was later verified after the callback repair below. The initial
+personal Slack member ID remains required when no
+verified account or retained previous input is available.
 
 The subsequent [member-ID recovery correction](chat-plugin-release-gate.md#slack-member-id-recovery-2026-09-12)
 restores an ID entered in a previous link attempt for the same operator,
 connection and workspace. It remains unverified until Slack approval. This
-correction awaits a new approved backend restart; the deployed private-button
-flow remains usable by entering the member ID.
+correction was deployed after approval at 21:23 UTC in API PID 36144. The actual
+Settings page restores the saved ID on selection and after reload, without typing.
 The updated regression passes 508 backend checks (one live skip), 197 UI unit
 tests, the UI build and 39 isolated browser checks.
+
+The user's subsequent private confirmation appeared in Slack but its click was
+rejected by the receiver. The [callback repair](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12)
+handles Slack's omitted private-message metadata and was deployed after approval
+at 21:41 UTC in API PID 35552. The user's private approval was processed at 21:42 UTC;
+the saved identity and actual Settings badge remain Linked after reload.
+Its selected backend regression passes 521 checks with one explicit live skip.
+The broader live acceptance gates remain open.
 
 ## Start here
 
@@ -89,9 +98,12 @@ The Slack channel form-encoding correction and section 5's cancellation fixes we
 deployed after explicit approval at 08:55 UTC on September 12: API PID 39092,
 UI PID 72132 retained. Direct/proxied health and actual Settings channel validation
 pass; `#all-forge` is `ready`, with connection saved/applied revision 4/4.
-The later 09:41 UTC restart deployed Slack identity confirmation in API PID 43620;
-all three receivers are receiving and Vite remains PID 72132.
-The personal Slack account link and future host-alert destination are still unset;
+The 09:41 UTC restart deployed Slack identity confirmation in API PID 43620;
+the approved 21:23 UTC restart deployed member-ID recovery in API PID 36144.
+The approved 21:41 UTC restart deployed the callback repair in API PID 35552.
+All three receivers are receiving and Vite remains PID 72132. The personal Slack
+account is linked; the four old invalid-interaction diagnostics did not increase
+during successful approval. A future host-alert destination is still unset;
 see [troubleshooting](chat-plugin-troubleshooting.md#configured-connection-shows-needs-linking).
 The new Telegram destination, complete browser-only Slack setup, both providers'
 parent setup/delivery/replies, a second Slack workspace sharing the receiver,

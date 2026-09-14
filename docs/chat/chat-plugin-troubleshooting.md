@@ -70,18 +70,19 @@ after approval on September 12 at 09:41 UTC (API PID 43620); the actual Settings
 form and API capability pass. If the old command form is still visible, refresh
 Settings. On an older backend, Settings shows a host-update notice.
 
-If **My chat user ID** is blank despite a previous attempt, the deployed form only
-reuses verified identities. A correction restores the operator's last entered ID
-for the same connection/workspace while request history is retained. It awaits a
-new approved backend restart. Until then, enter the same personal member ID again;
-the private confirmation button already works. A remembered ID is not proof.
+If **My chat user ID** is blank despite a previous attempt, refresh Settings and
+reselect the saved connection. The correction deployed at 21:23 UTC in API PID
+36144 restores the operator's last entered ID for the same connection/workspace
+while request history is retained. Verified identities take precedence. A blank
+field can still mean no matching retained input or a revoked link. A remembered
+ID is not proof and ownership confirmation remains unchecked.
 
 To link your account:
 
 1. Expand **Your chat identity → Link or re-link my account**.
 2. Select the saved Slack connection, such as **forge**. **Workspace or bot ID**
    fills with that installation's workspace ID automatically.
-3. Enter your personal Slack member ID in **My chat user ID**, then check
+3. Check the restored personal Slack member ID, or enter it if needed, then check
    **I confirm this is my own chat account**. A display name or bot ID cannot
    establish your personal identity.
 4. Choose **Confirmation channel**, then **Link my Slack account**. A sole saved
@@ -101,6 +102,16 @@ does not prove you saw a message. A resend invalidates the previous challenge;
 channel. No additional DM or user-token scopes are needed. The first personal
 member ID still needs to be supplied; a bot connection cannot infer which Slack
 account belongs to the signed-in Forge user.
+
+**Confirm link has no effect:** the September 12 PID 36144 build rejects private
+callbacks that omit message details and records `slack-interaction-invalid`.
+This is a Forge receiver defect. The fix accepts Slack's ephemeral callback
+format while retaining bound proof and normal work-action validation. It was
+deployed at 21:41 UTC in API PID 35552, and a real private approval now creates
+the identity link; see the [repair checklist](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12).
+If your old request expired, use **Send a new confirmation** and approve that newest
+message. Expired or replaced requests cannot complete the link. If Settings already
+shows Linked, no further confirmation is needed.
 
 The link challenge is separate from the earlier Slack CLI app-installation
 confirmation. Do not paste a Slack login code or a previous installation code

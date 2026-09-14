@@ -89,14 +89,19 @@ Close exits the drawer. Standalone connection setup in Chat settings also has Cl
    requests a private **Confirm link** button; select **Link my Slack account**,
    then approve in Slack. It checks completion automatically, with a channel link
    and fresh-request fallback in its dialog. This update is deployed in API PID
-   43620; Settings detects older hosts and explains the pending update. Linking
+   35552; Settings detects older hosts and explains the pending update. Linking
    requires an active plugin receiver, remains scoped to the selected installation,
    and does not grant new product permissions. Revoke/re-link is available here.
 
 The later Slack member-ID recovery correction restores a previous entry for the
 same operator, connection and workspace when retained request history is available.
 It leaves ownership unchecked and requires provider approval. This correction
-awaits a new approved backend restart; the private-button flow is already deployed.
+was deployed after approval at 21:23 UTC in API PID 36144; actual Settings autofill
+and reload checks pass. The subsequent callback-format repair was deployed at
+21:41 UTC in API PID 35552. The user's actual private approval now produces a
+verified identity and a Linked Settings badge that persists after reload. Its
+[repair and live evidence](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12)
+are tracked separately.
 
 Use **Repair / edit** to replace credentials or change product grants. Recheck channel
 access after restoring Slack membership or unarchiving a channel. Connections sharing

@@ -14,12 +14,17 @@ No commit, provider test message or credential rotation was performed in this pa
 The later Slack identity-button follow-up was deployed after fresh approval at
 09:41 UTC: API PID 39092 → 43620; UI PID 72132 was retained. Direct/proxied health,
 the new API capability and destinations, and the actual Settings form pass.
-The private Slack message and the user's approval remain unverified; see the
-separate follow-up record below.
+The private Slack message and the user's approval were unverified at that
+checkpoint; the later successful callback record is below.
 
-A subsequent member-ID recovery correction is implemented but not deployed.
-It reuses the requesting operator's recent input for the same Slack connection;
-API PID 43620 predates that correction. Its separate checklist is below.
+The member-ID recovery correction was deployed after approval at 21:23 UTC:
+API PID 43620 → 36144, retaining UI PID 72132. The actual Settings page restores
+the saved input on selection and after reload without typing. Personal proof
+remains separate. The user subsequently reported that the private Slack message
+appeared but its confirmation had no effect. The callback-format repair was
+deployed after approval at 21:41 UTC in API PID 35552. The user's private approval
+was processed at 21:42 UTC, and the actual Settings badge stays Linked after reload.
+Its separate checklist is below.
 
 ## Section 5 evidence map
 
@@ -225,8 +230,9 @@ dialog handle the human approval; no command or challenge code is copied.
   automatically, **Link my Slack account** enables after entering the member ID
   and confirming ownership, and Close/scrolling work without horizontal overflow.
   No page errors; the temporary operator session was logged out.
-- [ ] Verify the actual private Slack message and the user's **Confirm link →
-  Link account** approval. The personal Slack account is still unlinked.
+- [x] Verify the actual private Slack message and the user's **Confirm link →
+  Link account** approval after the callback repair below. The personal account
+  was linked at 21:42 UTC, with processed proof and the actual Settings badge verified.
 
 Evidence is separate from the earlier deployment: `.tmp-build/chat-identity/`
 contains `backend.trx`, `backend.log`, `ui-unit.log`, `ui-build.log`, `browser.log`
@@ -267,11 +273,78 @@ access. This is previous input, never proof or a new permission grant.
   authenticated input-recovery cases, **197 UI unit tests**, the UI build and
   **39 isolated browser checks** including reload, edit and workspace isolation.
 - [x] Check 12 documents, 174 local links, seven JSON examples, whitespace and
-  release checkboxes; all pass. Deployed API binary hashes remain unchanged.
-- [ ] Deploy after a new explicit restart approval, then verify the actual saved
-  member ID is filled in by Settings. The current API PID 43620 still needs manual
-  input; the already-deployed private-confirmation button remains available.
+  release checkboxes at the pre-deployment checkpoint; all pass.
+- [x] Deploy after explicit approval at 21:23 UTC: API PID 43620 → 36144.
+  Clean rebuild succeeds with zero errors; all six tested source hashes match.
+  UI PID 72132 is retained. Direct/proxied health return HTTP 200.
+- [x] Verify the real Settings page restores the saved member ID on connection
+  selection and after reload without typing. The only saved confirmation channel
+  is selected automatically. Ownership remains unchecked until explicitly selected;
+  the link button then enables. At 1440px/390px, Close and scrolling remain available,
+  with no horizontal overflow or page errors. Identity links and host routes are unchanged.
 
-Evidence is in `.tmp-build/chat-identity-autofill/`. The existing deployment record
-and its 498-test/37-browser checkpoint remain historical evidence, not a claim
-that member-ID recovery is running. No live approval request was sent in this pass.
+Evidence is in `.tmp-build/chat-identity-autofill/`: `deploy-before.json`,
+`deploy.log`, `deploy-after.json`, `deployed-autofill.json` and
+`deployed-autofill-{1440,390}.png`. Deployment records contain process paths,
+source/binary SHA-256 hashes and health responses. The verified API binary hash
+starts `946EDAA68A2E`; Slack `675ABE2C7F26`; Telegram `98A2659A6D9C`.
+The earlier 498-test/37-browser checkpoint remains historical evidence.
+No live approval request was sent by the autofill check. All three receivers
+are receiving, but Slack reports four `slack-interaction-invalid` diagnostics;
+the personal Slack link remains absent. Autofill success does not prove linking.
+
+## Slack private-confirmation callback repair (2026-09-12)
+
+The user saw the requested private message in Slack and clicked its confirmation,
+but Forge continued waiting. The running receiver reported
+`slack-interaction-invalid`. The normalizer required `message.ts` and the bot's
+`message.user` before accepting any button. Slack's
+[ephemeral-message documentation](https://docs.slack.dev/messaging/#ephemeral-messages)
+explains that these message bodies are omitted from interaction payloads; the
+[block-actions reference](https://docs.slack.dev/reference/interaction-payloads/block_actions-payload/)
+also makes the message optional. The former test fixture incorrectly attached
+ordinary-message metadata to private confirmations, concealing this incompatibility.
+No raw live callback or credential was captured; the documented format reproduces
+the failure and is consistent with the live diagnostic.
+
+- [x] Reproduce the missing-message failure before changing the receiver: the
+  existing identity round-trip test fails because the account remains unlinked.
+- [x] Accept omitted/partial message metadata for `forge_identity_link` only when
+  Slack marks the container ephemeral. Reject conflicting metadata when supplied.
+  Ordinary work-action buttons retain message-author and timestamp validation.
+- [x] Correct the private-message fixture. Verify sender/workspace mismatch,
+  cancellation, expiry, revision changes, replacement, replay and token redaction
+  using that format. Add 13 protocol cases for omitted/partial/full metadata,
+  malformed or foreign context, and rejection of ordinary buttons without messages.
+- [x] Complete the broader chat/auth/migration regression: **521 passes**, one
+  explicit live skip. All 12 identity-confirmation cases and 13 new protocol cases
+  pass. The unchanged frontend retains its 197 unit/39 browser passes and build
+  evidence; those suites were not rerun for this receiver-only change.
+- [x] Audit 12 documents, 183 local links, seven JSON examples, synchronized release
+  checkboxes and whitespace. Record tested source hashes; deployed binaries are
+  unchanged from the verified member-ID recovery build.
+- [x] Deploy the callback repair after fresh restart approval at 21:41 UTC:
+  API PID 36144 → 35552, with UI PID 72132 retained. The clean build has zero
+  errors, all ten recorded source hashes match, and direct/proxied health return
+  HTTP 200. The deployed Slack binary SHA-256 begins `C337EB1F3E93`.
+- [x] Verify the user's actual private approval was processed at 21:42:30 UTC.
+  The inbox records `identity-link`, `processed`, `linked` for the intended user
+  and workspace; the single-use challenge is consumed and an active identity
+  record is created. No public reply was sent (`ResponseState: none`).
+- [x] Verify the actual Settings page displays **forge — Linked**, restores the
+  verified member ID and disables redundant linking. The badge persists after
+  reload; the check changes no identities or host routes and has no page errors.
+  Polling/dialog closure remains covered by the existing browser tests; the user's
+  original popup closing was not directly observed. RG-01/RG-03 remain incomplete.
+
+Evidence: `.tmp-build/chat-slack-confirmation-repair/` contains `before.trx`
+(one failure), `focused.trx` (63 passes), `backend.trx` (521 passes, one live skip),
+`summary.json` (source hashes/documentation checks), `before-status.json` (read-only live
+health/diagnostics and absent Slack identity), and test logs. Deployment evidence
+adds `deploy-before.json`, `deploy.log`, `deploy-after.json`, `deployed-status.json`,
+`live-proof.json`, `deployed-linked.json` and `deployed-linked-1440.png`.
+The proof read uses query-only SQLite and omits challenge hashes/tokens. The
+diagnostic checks sent no external message or identity mutation; the user's
+approval created the link through the normal receiver. All three receivers remain
+receiving. Slack's diagnostic count remains four at the old pre-deployment
+timestamp, with no increase observed; that historical diagnostic is not erased.

@@ -24,7 +24,7 @@ public sealed class ChatSlackIdentityConfirmationTests
         .Body.GetProperty("blocks")[1].GetProperty("elements")[0].GetProperty("value").GetString()!;
 
     private static JsonElement Click(string id, string token, string sender = "U1", string workspace = "T1")
-        => SlackProviderFixture.Button(id, "1700000000.000100", token, workspace: workspace, sender: sender, thread: null, actionId: "forge_identity_link");
+        => SlackProviderFixture.EphemeralButton(id, token, workspace, sender);
 
     [Fact]
     public async Task Private_button_links_only_the_requested_user_and_workspace_without_public_reply_or_browser_token()
@@ -69,6 +69,7 @@ public sealed class ChatSlackIdentityConfirmationTests
         });
         await f.ReceiveAsync(Click("stale", token)); await f.DispatchAsync();
         Assert.Null(f.Services.GetRequiredService<HostIdentityStore>().FindLink("slack", "T1", "U1"));
+        Assert.Equal("link-invalid-or-expired", Assert.Single(await f.InboxAsync()).Result);
     }
 
     [Theory]

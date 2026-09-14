@@ -354,11 +354,27 @@ VM-02/VM-22 have added automated evidence; the live release gates remain open.
 
 The subsequent [member-ID recovery correction](chat-plugin-release-gate.md#slack-member-id-recovery-2026-09-12)
 restores the same operator's prior input while retaining workspace/connection
-boundaries, ownership confirmation and provider proof. Deployment remains pending
-fresh approval; the API is still PID 43620.
+boundaries, ownership confirmation and provider proof. It was deployed after
+approval at 21:23 UTC: API PID 43620 → 36144, UI PID 72132 retained. The actual
+Settings page restores the saved ID without typing, including after reload.
+Ownership starts unchecked; routes and identities remain unchanged. Evidence:
+`.tmp-build/chat-identity-autofill/{deploy-after,deployed-autofill}.json`.
 Ten new authenticated backend cases and two isolated browser cases pass, bringing
 the selected regression to 508 backend passes (one live skip), 197 UI unit tests,
 39 browser checks and a passing UI build.
+
+The user then saw the private confirmation in Slack, but Forge did not accept
+the click. The receiver reports `slack-interaction-invalid`; the fixture had
+incorrectly included message metadata that Slack omits for ephemeral messages.
+The [callback repair checklist](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12)
+records the failing reproduction, corrected fixture and 521 backend passes (one
+live skip). All 13 added protocol cases and 12 identity-confirmation cases pass.
+The approved 21:41 UTC restart deployed the repair in API PID 35552. The user's
+private approval was processed at 21:42:30 UTC and its challenge consumed; the
+actual Settings badge remains Linked after reload. Evidence is under
+`.tmp-build/chat-slack-confirmation-repair/`, including `live-proof.json` and
+`deployed-linked.json`. VM-02/VM-22 gain format-specific and actual-provider
+identity evidence; RG-01/RG-03 remain open for the other required exercises.
 
 The existing `Catalog_ClassificationMatchesDbBoundary` test remains excluded for
 its pre-existing Phase 83 `repos` classification mismatch. Phase 106's model,

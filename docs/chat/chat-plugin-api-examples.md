@@ -140,8 +140,11 @@ in API PID 43620. Check `slackLinkConfirmationAvailable` in management before us
 The later member-ID recovery change adds `recentLinkTargets` to management, with
 `connectionId`, `externalTenantId` and `externalUserId`. These are only the current
 operator's previous inputs for accessible Slack connections, never verified links.
-This field is optional for compatibility and awaits a new approved backend
-restart after PID 43620. Only `links` indicates completed personal proof.
+This field is optional for older-host compatibility and was deployed after
+approval at 21:23 UTC in API PID 36144. Only `links` indicates completed personal
+proof. The private-callback repair was deployed at 21:41 UTC in API PID 35552,
+and an actual user approval now produces a verified link; see the
+[release record](chat-plugin-release-gate.md#slack-private-confirmation-callback-repair-2026-09-12).
 
 POST a saved destination and your personal Slack user ID:
 

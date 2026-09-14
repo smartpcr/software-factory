@@ -151,12 +151,24 @@ internal sealed class SlackSocketReceiver(string appId, string fingerprint, Slac
             var thread = SlackApiClient.String(message, "thread_ts");
             var actions = SlackApiClient.Object(payload, "actions");
             if (!SlackApiClient.Id(sender) || sender == member.BotUserId || !SlackApiClient.Id(channel) || channel![0] is not ('C' or 'G')
-                || !SlackApiClient.Timestamp(ts) || SlackApiClient.String(message, "ts") != ts || thread is not null && !SlackApiClient.Timestamp(thread)
+                || !SlackApiClient.Timestamp(ts) || thread is not null && !SlackApiClient.Timestamp(thread)
                 || SlackApiClient.String(SlackApiClient.Object(payload, "channel"), "id") != channel
-                || SlackApiClient.String(message, "user") != member.BotUserId || SlackApiClient.String(message, "bot_id") is { } bot && bot != member.BotId
                 || actions.ValueKind != JsonValueKind.Array || actions.GetArrayLength() != 1) return (null, "slack-interaction-invalid");
             var action = actions[0]; var key = SlackApiClient.String(action, "value");
-            if (SlackApiClient.String(action, "type") == "button" && SlackApiClient.String(action, "action_id") == "forge_identity_link")
+            var identityLink = SlackApiClient.String(action, "type") == "button" && SlackApiClient.String(action, "action_id") == "forge_identity_link";
+            if (identityLink && SlackApiClient.True(container, "is_ephemeral"))
+            {
+                // Slack omits the message body for ephemeral interactions. The app-owned socket,
+                // workspace and sender plus the host's bound, single-use challenge establish proof.
+                // If Slack includes message metadata, reject any conflicting authorship or timestamp.
+                if (message.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.Object)
+                    || !OptionalMessageFieldMatches(message, "ts", ts!)
+                    || !OptionalMessageFieldMatches(message, "user", member.BotUserId)
+                    || !OptionalMessageFieldMatches(message, "bot_id", member.BotId)) return (null, "slack-interaction-invalid");
+            }
+            else if (SlackApiClient.String(message, "ts") != ts || SlackApiClient.String(message, "user") != member.BotUserId
+                || SlackApiClient.String(message, "bot_id") is { } bot && bot != member.BotId) return (null, "slack-interaction-invalid");
+            if (identityLink)
             {
                 if (key is not { Length: 64 } || !key.All(char.IsAsciiHexDigit)) return (null, "slack-interaction-invalid");
                 return (new("slack", member.ConnectionId, "envelope:" + envelopeId, new(member.ConnectionId, workspace, channel), sender!,
@@ -168,6 +180,10 @@ internal sealed class SlackSocketReceiver(string appId, string fingerprint, Slac
         }
         return (null, "slack-event-unsupported");
     }
+
+    private static bool OptionalMessageFieldMatches(JsonElement message, string name, string expected)
+        => message.ValueKind != JsonValueKind.Object || !message.TryGetProperty(name, out var value)
+            || value.ValueKind == JsonValueKind.String && value.GetString() == expected;
 
     private static (string? Text, string? Command, string? Argument) ParseCommand(string? input)
     {
