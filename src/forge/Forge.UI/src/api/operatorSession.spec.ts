@@ -114,6 +114,18 @@ describe('local launcher browser sign-in', () => {
 
 
 describe('automatic localhost sign-in', () => {
+  it.each([
+    ['an HTTP failure', () => Promise.resolve(json({}, 500))],
+    ['a network failure', () => Promise.reject(new TypeError('Failed to fetch'))],
+  ])('reports that Forge.Api is not running after %s', async (_case, response) => {
+    vi.stubGlobal('window', { location: { hostname: 'localhost', origin: 'http://localhost:5181' } });
+    fetchMock.mockImplementationOnce(response);
+    const { getOperatorStatus } = await import('./operatorSession');
+    await expect(getOperatorStatus()).rejects.toThrow(
+      'Forge.Api is not running on http://localhost:5180. Start it with scripts\\run-forge-ui.ps1 -ServerOnly.',
+    );
+  });
+
   it('offers code pairing on a remote hostname without attempting local Windows sign-in', async () => {
     vi.stubGlobal('window', { location: { hostname: 'xd003', origin: 'http://xd003:5181' } });
     fetchMock.mockResolvedValueOnce(json({ state: 'Pair browser', userId: null, localSignInAvailable: true }));

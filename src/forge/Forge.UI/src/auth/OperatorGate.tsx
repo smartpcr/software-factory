@@ -91,7 +91,10 @@ export function OperatorGate({ children }: { children: ReactNode }) {
             <p style={{ color: '#a7adb7', fontSize: 13 }}>Sessions last up to eight hours. Signing out keeps this browser signed out until you sign in again.</p>
           </form>
         ) : null}
-        <button type="button" onClick={() => { setError(''); void getOperatorStatus().then(setStatus).catch(() => setError('Could not connect to Forge.')); }} style={{ marginTop: 16 }}>Check again</button>
+        <button type="button" onClick={() => {
+          setError('');
+          void getOperatorStatus().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Connection failed.'));
+        }} style={{ marginTop: 16 }}>Check again</button>
         {error && <p role="alert" style={{ color: '#ffb0a7' }}>{error}</p>}
       </section>
     </main>

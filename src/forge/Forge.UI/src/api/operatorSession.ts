@@ -25,6 +25,13 @@ export interface OperatorStatus {
   codeDeliveryAvailable?: boolean;
 }
 
+function apiUnavailableMessage(): string {
+  if (typeof window !== 'undefined' && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) {
+    return 'Forge.Api is not running on http://localhost:5180. Start it with scripts\\run-forge-ui.ps1 -ServerOnly.';
+  }
+  return 'Forge.Api is unavailable on the Forge host. Ask the host administrator to start it.';
+}
+
 export function clearOperatorSession(): void {
   csrfToken = null;
   csrfRequest = null;
@@ -60,8 +67,13 @@ export async function operatorFetch(input: RequestInfo | URL, init: RequestInit 
 }
 
 export async function getOperatorStatus(): Promise<OperatorStatus> {
-  const response = await fetch(`${baseUrl}/api/operator/status`, { credentials: 'include', cache: 'no-store' });
-  if (!response.ok) throw new Error('Could not connect to the local Forge host.');
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/api/operator/status`, { credentials: 'include', cache: 'no-store' });
+  } catch {
+    throw new Error(apiUnavailableMessage());
+  }
+  if (!response.ok) throw new Error(apiUnavailableMessage());
   const status = await response.json() as OperatorStatus;
   if (!['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) status.localSignInAvailable = false;
   return status;
