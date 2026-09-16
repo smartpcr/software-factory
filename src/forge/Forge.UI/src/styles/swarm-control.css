@@ -690,6 +690,41 @@
 .swarm-ctrl .story-row .sr-sub .seg { display: inline-flex; gap: 4px; align-items: center; }
 .swarm-ctrl .story-row .sr-sub b { color: var(--sc-text); font-weight: 600; }
 
+.swarm-ctrl .sr-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 18px;
+  margin: 7px 0 2px;
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+}
+.swarm-ctrl .sr-run-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.swarm-ctrl .sr-run-meta dt {
+  flex-shrink: 0;
+  color: var(--sc-text-dim);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.swarm-ctrl .sr-run-meta dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--sc-text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.swarm-ctrl .sr-run-meta .sr-target-branch code {
+  color: var(--sc-cyan);
+  font: inherit;
+}
+
 .swarm-ctrl .phase-badge {
   align-self: start;
   font-family: var(--sc-font-display);
