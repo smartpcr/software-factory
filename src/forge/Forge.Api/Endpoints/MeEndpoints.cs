@@ -170,8 +170,8 @@ public static class MeEndpoints
         var displayName = row.DisplayName;
         var email = row.Email;
         // No GET creates users or promotes roles. The host command owns enrollment.
-        var effectiveRole = "human";
-        if (!string.IsNullOrEmpty(productId) && productId != "all")
+        var effectiveRole = row.Id == RequireRole.BuiltInProductOwnerId ? RequireRole.ProductOwner : "human";
+        if (row.Id != RequireRole.BuiltInProductOwnerId && !string.IsNullOrEmpty(productId) && productId != "all")
         {
             effectiveRole = await control.UserProductRoles.AsNoTracking()
                 .Where(r => r.UserId == row.Id && r.ProductId == productId)

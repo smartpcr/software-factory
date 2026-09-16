@@ -134,12 +134,13 @@ describe('automatic localhost sign-in', () => {
   }
   const unpaired = { state: 'Pair browser' as const, userId: null, localSignInAvailable: true };
 
-  it('automatically establishes a session directly with the API and shares concurrent attempts', async () => {
+  it.each(['Pair browser', 'Needs operator enrollment'] as const)('automatically establishes a session from %s and shares concurrent attempts', async (state) => {
     browser();
     fetchMock.mockImplementation(async (url) => String(url).endsWith('/status')
       ? json({ state: 'Paired', userId: 'existing' }) : json({ token: 'csrf' }));
     const { restoreLocalOperator } = await import('./operatorSession');
-    const statuses = await Promise.all([restoreLocalOperator(unpaired), restoreLocalOperator(unpaired)]);
+    const status = { ...unpaired, state };
+    const statuses = await Promise.all([restoreLocalOperator(status), restoreLocalOperator(status)]);
     expect(statuses.every(s => s.userId === 'existing')).toBe(true);
     const calls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/local-sign-in'));
     expect(calls).toHaveLength(1);

@@ -57,7 +57,6 @@ public sealed class LocalBrowserSignInTests
     [InlineData("forwarded")]
     [InlineData("no-csrf")]
     [InlineData("no-origin")]
-    [InlineData("no-enrollment")]
     [InlineData("revoked")]
     [InlineData("deleted")]
     [InlineData("multiple")]
@@ -132,5 +131,54 @@ public sealed class LocalBrowserSignInTests
         Assert.False(await db.UserProductRoles.AnyAsync());
         app.Services.GetRequiredService<HostIdentityStore>().RevokeEnrollment("existing");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/products")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task First_Local_Login_Uses_Windows_Identity_Regardless_Of_Unrelated_Accounts(int existingUsers)
+    {
+        await using var factory = new ForgeWebApplicationFactory();
+        await using var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+            s.AddSingleton<ILocalBrowserIdentity>(new Peer(true))));
+        using var client = app.AnonymousClient();
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        for (var i = 0; i < existingUsers; i++)
+            db.Users.Add(new UserRow { Id = "existing-" + i, DisplayName = i == 0 ? Environment.UserName : "Unrelated", Role = "human" });
+        await db.SaveChangesAsync();
+        await OperatorTestIdentity.RefreshCsrfAsync(client);
+        using var response = await client.PostAsync("/api/operator/local-sign-in", null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var identities = app.Services.GetRequiredService<HostIdentityStore>();
+        Assert.True(identities.HasEnrollment);
+        Assert.Equal(Math.Max(1, existingUsers), await db.Users.CountAsync());
+        Assert.False(await db.UserProductRoles.AnyAsync());
+        {
+            var id = Assert.Single(identities.EnrolledUserIds);
+            if (existingUsers > 0) Assert.Equal("existing-0", id);
+            Assert.False(identities.GetEnrollment(id)!.HostAdmin);
+            await OperatorTestIdentity.RefreshCsrfAsync(client);
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/operator/local-sign-in", null)).StatusCode);
+            Assert.Equal(Math.Max(1, existingUsers), await db.Users.CountAsync());
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task First_Login_Cannot_Bootstrap_From_Unverified_Or_Proxied_Peer(bool trusted, bool proxied)
+    {
+        await using var factory = new ForgeWebApplicationFactory();
+        await using var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+            s.AddSingleton<ILocalBrowserIdentity>(new Peer(trusted))));
+        using var client = app.AnonymousClient();
+        if (proxied) client.DefaultRequestHeaders.Add("X-Forge-Proxy", "vite");
+        await OperatorTestIdentity.RefreshCsrfAsync(client);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/operator/local-sign-in", null)).StatusCode);
+        Assert.False(app.Services.GetRequiredService<HostIdentityStore>().HasEnrollmentHistory);
+        using var scope = app.Services.CreateScope();
+        Assert.False(await scope.ServiceProvider.GetRequiredService<ControlDbContext>().Users.AnyAsync());
     }
 }

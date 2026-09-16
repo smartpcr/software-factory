@@ -99,7 +99,7 @@ public sealed class ForgeCapabilityAuthorizer(
 
         var product = await this.ResolveProductAsync(target.ProductId, ct);
         if (product is null) return false;
-        var role = await control.UserProductRoles.AsNoTracking()
+        var role = actor.UserId == RequireRole.BuiltInProductOwnerId ? RequireRole.ProductOwner : await control.UserProductRoles.AsNoTracking()
             .Where(r => r.UserId == actor.UserId && r.ProductId == product.Id).Select(r => r.Role).SingleOrDefaultAsync(ct);
         if (role is null || !ForgeCapabilities.Roles.Contains(role)
             || (capability != ForgeCapabilities.SpawnRead && role != RequireRole.ProductOwner)) return false;
@@ -156,6 +156,8 @@ public sealed class ForgeCapabilityAuthorizer(
     {
         if (actor is null || !actors.IsCurrent(actor) || !await control.Users.AnyAsync(u => u.Id == actor.UserId, ct)) return Array.Empty<string>();
         var userId = actor.UserId;
+        if (userId == RequireRole.BuiltInProductOwnerId)
+            return await control.Products.AsNoTracking().Select(p => p.Id).ToListAsync(ct);
         var grants = await control.UserProductRoles.AsNoTracking().Where(r => r.UserId == userId).ToListAsync(ct);
         var ids = grants.Where(r => ForgeCapabilities.Roles.Contains(r.Role)).Select(r => r.ProductId).ToList();
         if (ids.Count == 0) return Array.Empty<string>();
@@ -167,8 +169,8 @@ public sealed class ForgeCapabilityAuthorizer(
     {
         if (actor is null || !actors.IsCurrent(actor) || !await control.Users.AnyAsync(u => u.Id == actor.UserId, ct)) return false;
         var product = await this.ResolveProductAsync(productId, ct);
-        return product is not null && await control.UserProductRoles.AsNoTracking()
-            .AnyAsync(r => r.UserId == actor.UserId && r.ProductId == product.Id && r.Role == RequireRole.ProductOwner, ct);
+        return product is not null && (actor.UserId == RequireRole.BuiltInProductOwnerId || await control.UserProductRoles.AsNoTracking()
+            .AnyAsync(r => r.UserId == actor.UserId && r.ProductId == product.Id && r.Role == RequireRole.ProductOwner, ct));
     }
 
     private static Task<bool> OwnsRepoAsync(ProductDbContext db, string productId, string? repoId, CancellationToken ct) => repoId is null
