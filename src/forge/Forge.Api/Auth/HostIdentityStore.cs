@@ -49,6 +49,7 @@ public sealed class HostIdentityStore
     }
     public string? ChallengeUserId(string token, string purpose) => this.Read(s => this.FindChallenge(s, token, purpose)?.UserId);
     public bool HasEnrollment => this.Read(s => s.Enrollments.Values.Any(e => e.Enabled));
+    public bool HasEnrollmentHistory => this.Read(s => s.Enrollments.Count != 0);
 
     // Only the host-local command calls this; it is deliberately absent from HTTP routes.
     public void Enroll(string userId, bool hostAdmin)

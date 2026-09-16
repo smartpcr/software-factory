@@ -62,10 +62,10 @@ export function OperatorGate({ children }: { children: ReactNode }) {
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg, #0b0d10)', color: 'var(--text, #e6e7e8)' }}>
       <section aria-labelledby="operator-title" style={{ width: 'min(480px, 90vw)', padding: 32, border: '1px solid #34383f', borderTop: '3px solid #f6ab40', borderRadius: 8 }}>
         <div style={{ letterSpacing: '.2em', color: '#f6ab40', marginBottom: 24 }}>FORGE</div>
-        <h1 id="operator-title">{status?.state === 'Pair browser' && localReady ? 'Sign in to Forge' : status?.state ?? 'Connecting to Forge'}</h1>
-        {status?.state === 'Needs operator enrollment' ? (
+        <h1 id="operator-title">{localReady ? 'Sign in to Forge' : status?.state ?? 'Connecting to Forge'}</h1>
+        {status?.state === 'Needs operator enrollment' && !localReady ? (
           <p>A host administrator must enroll your operator identity on this computer. Then run the Pair browser command and return here.</p>
-        ) : status?.state === 'Pair browser' ? (
+        ) : status?.state === 'Pair browser' || localReady ? (
           <form onSubmit={(event) => { void submit(event); }}>
             {localReady && <>
               <p>Forge signs you in automatically from the Windows account running this host.</p>
@@ -81,7 +81,7 @@ export function OperatorGate({ children }: { children: ReactNode }) {
               value={challenge} onChange={(event) => setChallenge(event.target.value)} required
               style={{ display: 'block', width: '100%', boxSizing: 'border-box', padding: 12, margin: '8px 0 16px', background: '#151a21', color: 'inherit', border: '1px solid #50555d' }} />
             <button type="submit" disabled={busy || challenge.trim().length !== 64} style={{ padding: '10px 20px' }}>{busy ? 'Pairing…' : 'Pair browser'}</button>
-            {status.codeDeliveryAvailable && <p>
+            {status?.codeDeliveryAvailable && <p>
               <button type="button" disabled={busy} onClick={() => { void sendCode(); }} style={{ padding: '10px 20px' }}>
                 {busy ? 'Sending…' : 'Send me a pairing code'}
               </button>

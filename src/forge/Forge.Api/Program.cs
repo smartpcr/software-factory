@@ -796,6 +796,7 @@ using (var scope = app.Services.CreateScope())
     // Phase{N}Migration series since it's infrastructure, not a feature
     // phase. Idempotent.
     await Forge.Api.Persistence.PhaseGDueIndexMigration.ApplyAsync(control);
+    await Forge.Api.Persistence.OperatorRoleSchemaMigration.ApplyAsync(control);
     // Phase 47 (spec) — reap stale agent_usage rows from a crashed runner so
     // a permanently-busy agent doesn't wedge the diversity picker.
     // Phase 48 follow-up — by definition no invocation can be in flight at

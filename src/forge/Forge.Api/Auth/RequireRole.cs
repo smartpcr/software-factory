@@ -13,6 +13,8 @@ using Microsoft.EntityFrameworkCore;
 public static class RequireRole
 {
     public const string ProductOwner = "product-owner";
+    // xiaodoli's existing stable account ID; display names cannot confer authority.
+    public const string BuiltInProductOwnerId = "user-e34bb713f38e45768d79547e40a62e61";
 
     public static IResult? Check(HttpContext ctx, ControlDbContext db, params string[] roles) =>
         CheckForProduct(ctx, db, ProductScope.Read(ctx) ?? ctx.Items[ProductDbContextFactory.SlugItemKey] as string, roles);
@@ -36,6 +38,7 @@ public static class RequireRole
             || !db.Users.AsNoTracking().Any(u => u.Id == id)) return null;
         var product = db.Products.AsNoTracking().SingleOrDefault(p => p.Id == productId || p.Slug == productId);
         if (product is null) return null;
+        if (id == BuiltInProductOwnerId) return ProductOwner;
         return db.UserProductRoles.AsNoTracking().Where(r => r.UserId == id && r.ProductId == product.Id).Select(r => r.Role).SingleOrDefault();
     }
 

@@ -190,6 +190,8 @@ public sealed class OperatorCodeDelivery(TimeProvider clock)
 
 public static class OperatorSessionEndpoints
 {
+    private static readonly SemaphoreSlim LocalEnrollmentGate = new(1, 1);
+
     public static void MapOperatorSessionEndpoints(this WebApplication app)
     {
         app.MapGet("/api/operator/status", async (HttpContext ctx, HostIdentityStore identities, ForgeActorResolver actors,
@@ -200,7 +202,8 @@ public static class OperatorSessionEndpoints
             var enrolledIds = identities.EnrolledUserIds;
             var enrolled = await control.Users.AnyAsync(u => enrolledIds.Contains(u.Id), ctx.RequestAborted);
             return Results.Ok(new { state = actor is not null ? "Paired" : enrolled ? "Pair browser" : "Needs operator enrollment", userId = actor?.UserId,
-                localSignInAvailable = OperatingSystem.IsWindows() && await LocalEnrollmentAsync(identities, control, ctx.RequestAborted) is not null,
+                localSignInAvailable = OperatingSystem.IsWindows() && (!identities.HasEnrollmentHistory
+                    || await LocalEnrollmentAsync(identities, control, ctx.RequestAborted) is not null),
                 codeDeliveryAvailable = enrolled && DeliveryChatId(chat.CurrentValue) is not null });
         }).AllowAnonymous();
         app.MapGet("/api/operator/csrf", (HttpContext ctx, IAntiforgery anti) =>
@@ -225,9 +228,10 @@ public static class OperatorSessionEndpoints
             ctx.Response.Headers.CacheControl = "no-store";
             // A loopback proxy must never lend its Windows identity to another caller.
             if (ctx.Request.Headers.ContainsKey("X-Forge-Proxy") || ctx.Request.Headers.ContainsKey("Forwarded")
-                || ctx.Request.Headers.ContainsKey("X-Forwarded-For") || !browser.IsHostUser(ctx))
+                || ctx.Request.Headers.ContainsKey("X-Forwarded-For")
+                || !OperatorAuthentication.IsLoopbackOrigin(ctx.Request.Headers.Origin.ToString()) || !browser.IsHostUser(ctx))
                 return Results.Problem(title: "Connect directly from the Forge host user's browser", statusCode: 403);
-            var enrollment = await LocalEnrollmentAsync(identities, control, ctx.RequestAborted);
+            var enrollment = await EnsureLocalEnrollmentAsync(identities, control, ctx.RequestAborted);
             if (enrollment is null)
                 return Results.Problem(title: "Local sign-in requires exactly one enrolled Forge account. Use browser pairing to select an account.", statusCode: 403);
             return await SignInAsync(ctx, enrollment, sessions, anti);
@@ -308,6 +312,38 @@ public static class OperatorSessionEndpoints
         var ids = identities.EnrolledUserIds.ToList();
         var users = await control.Users.Where(u => ids.Contains(u.Id)).Select(u => u.Id).Take(2).ToListAsync(ct);
         return users.Count == 1 && identities.GetEnrollment(users[0]) is { Enabled: true } enrollment ? enrollment : null;
+    }
+
+    private static async Task<OperatorEnrollment?> EnsureLocalEnrollmentAsync(HostIdentityStore identities, ControlDbContext control, CancellationToken ct)
+    {
+        await LocalEnrollmentGate.WaitAsync(ct);
+        try
+        {
+            // Only the verified host browser can bootstrap. Never undo a revocation or
+            // replace a missing/ambiguous enrolled account with a new identity.
+            if (identities.HasEnrollmentHistory) return await LocalEnrollmentAsync(identities, control, ct);
+            if (!OperatingSystem.IsWindows()) return null;
+            using var windows = System.Security.Principal.WindowsIdentity.GetCurrent();
+            if (windows.User is null) return null;
+            var localId = "windows:" + windows.User.Value;
+            var name = windows.Name;
+            var shortName = name.Split('\\').Last();
+            var user = await control.Users.SingleOrDefaultAsync(u => u.Id == localId, ct);
+            if (user is null)
+            {
+                var users = await control.Users.Where(u => u.DisplayName == name || u.DisplayName == shortName).Take(2).ToListAsync(ct);
+                if (users.Count == 1) user = users[0];
+            }
+            if (user is null)
+            {
+                user = new UserRow { Id = localId, DisplayName = name, Role = "human" };
+                control.Users.Add(user);
+                await control.SaveChangesAsync(ct);
+            }
+            identities.Enroll(user.Id, hostAdmin: false);
+            return identities.GetEnrollment(user.Id);
+        }
+        finally { LocalEnrollmentGate.Release(); }
     }
 
     private static async Task<IResult> SignInAsync(HttpContext ctx, OperatorEnrollment enrollment, OperatorSessions sessions, IAntiforgery anti)
