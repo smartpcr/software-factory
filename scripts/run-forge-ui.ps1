@@ -351,17 +351,36 @@ Stop-TargetProcesses -IncludeServer:$targetServer -IncludeUI:$targetUI
 #  2. An `OutputPath` env var redirected the build OUT of bin\Debug to a
 #     shared out dir, leaving a fossil exe in bin\Debug that the launcher
 #     kept starting. Committed fixes silently never deployed either way.
-# So: `dotnet clean` the project at its REAL (possibly redirected) output
-# (project-scoped — it won't touch sibling projects sharing the out dir),
-# then force-remove the project-local obj\ and the legacy bin\ fossil dir.
-# Removal FAILS LOUDLY when a file is still locked — turning the silent
-# stale-binary trap into an actionable error.
+# So: best-effort `dotnet clean` the project at its REAL (possibly redirected)
+# output (project-scoped — it won't touch sibling projects sharing the out
+# dir), then force-remove the project-local obj\ and the legacy bin\ fossil
+# dir. The forced removal — not the clean — is the authoritative lock check:
+# it FAILS LOUDLY when a file is still held, turning the silent stale-binary
+# trap into an actionable error.
 if ($Rebuild) {
     if ($targetServer) {
         $serverProjDir = Split-Path -Parent $ServerProj
         Write-Host "`n🧹 Cleaning Forge.Api build artifacts..." -ForegroundColor Cyan
-        dotnet clean $ServerProj -c Debug --nologo | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Server clean failed — an output file is likely locked by a running Forge.Api; kill whatever owns port $ApiPort (Get-NetTCPConnection -LocalPort $ApiPort -State Listen) and retry." }
+        # Best-effort. `dotnet clean` earns its place ONLY for a redirected
+        # OutputPath (artifacts outside the project dir, which the bin\obj
+        # removal below cannot reach). It is NOT the lock check — the forced
+        # removal below is, and that one reports a genuine lock accurately.
+        #
+        # 2026-09-16 — a TFM bump is the first thing that breaks clean: after
+        # Directory.Build.props moved net8.0 -> net10.0, clean died with
+        # NETSDK1005 ("assets file doesn't have a target for 'net10.0'"),
+        # because clean never restores and obj\project.assets.json was still
+        # the pre-bump net8.0 one. Treating that as fatal — with the real error
+        # swallowed by Out-Null — blamed a nonexistent Forge.Api file lock and
+        # blocked the very rebuild that regenerates the assets and fixes it.
+        # So: surface the output, warn, and let removal + build (which DO
+        # restore) proceed.
+        $cleanOutput = & dotnet clean $ServerProj -c Debug --nologo 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ⚠️  dotnet clean failed (non-fatal) — removing bin\obj directly instead." -ForegroundColor Yellow
+            $cleanOutput | Select-String -Pattern 'error|: warning' | Select-Object -First 10 |
+                ForEach-Object { Write-Host "     $_" -ForegroundColor DarkYellow }
+        }
         foreach ($sub in @('bin', 'obj')) {
             $artifactDir = Join-Path $serverProjDir $sub
             if (Test-Path $artifactDir) {
