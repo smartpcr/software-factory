@@ -524,8 +524,11 @@ if ($targetServer) {
     # overrides (and FORGE_CHAT_SETTINGS_PATH) pass through unchanged.
     # See docs/chat/host-chat-configuration.md.
 
+    # Load the built appsettings files even though child tools use the repo as cwd.
+    # The operator CLI also reads configuration from the executable directory.
+    $serverContentRoot = Split-Path -Parent $serverExe
     $serverProc = Start-Process -FilePath $serverExe `
-        -ArgumentList "--environment","Development" `
+        -ArgumentList "--environment","Development","--contentRoot",('"' + $serverContentRoot + '"') `
         -WorkingDirectory $RepoRoot `
         -RedirectStandardOutput $serverLog `
         -RedirectStandardError $serverErr `
