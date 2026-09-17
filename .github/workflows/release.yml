@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -16,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_NOTES_INPUT: ${{ inputs.release_notes }}
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY || secrets.GITHUB_TOKEN }}
       NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
     steps:
       - name: Checkout repository
@@ -27,7 +28,12 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # 10.0.x builds the solution (global.json pins 10.0.100); 8.0.x
+          # supplies the targeting pack for net8.0 libraries such as
+          # CopilotAgentOrchestrator.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Install nbgv tool
         run: dotnet tool install --global nbgv
@@ -59,29 +65,24 @@ jobs:
       - name: Test ProgressTree.UnitTests (Release)
         run: dotnet test src/ProgressTree.UnitTests/ProgressTree.UnitTests.csproj --configuration Release --no-build --verbosity normal
 
-      - name: Pack NuGet package ExecutionEngine
+      - name: Pack NuGet packages
+        shell: bash
         run: |
-          dotnet pack src/ExecutionEngine/ExecutionEngine.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
-
-      - name: Pack NuGet package CopilotAgentOrchestrator
-        run: |
-          dotnet pack src/agents/CopilotAgentOrchestrator/CopilotAgentOrchestrator.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
-
-      - name: Pack NuGet package CopilotChat
-        run: |
-          dotnet pack src/agents/CopilotChat/CopilotChat.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
+          set -euo pipefail
+          for project in \
+            src/ExecutionEngine/ExecutionEngine.csproj \
+            src/ProgressTree/ProgressTree.csproj \
+            src/agents/CopilotAgentOrchestrator/CopilotAgentOrchestrator.csproj \
+            src/agents/CopilotChat/CopilotChat.csproj
+          do
+            echo "::group::pack $project"
+            dotnet pack "$project" \
+              --configuration Release \
+              --no-build \
+              --output ./packages \
+              -p:ContinuousIntegrationBuild=true
+            echo "::endgroup::"
+          done
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -89,9 +90,15 @@ jobs:
           name: nuget-packages-${{ steps.version.outputs.version }}
           path: packages/*.nupkg
 
-      - name: Publish package to GitHub Packages
+      - name: Publish packages to GitHub Packages
         if: ${{ env.NUGET_API_KEY != '' }}
-        run: dotnet nuget push ./packages/*.nupkg --api-key "$NUGET_API_KEY" --source "$NUGET_SOURCE" --skip-duplicate
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for package in ./packages/*.nupkg; do
+            dotnet nuget push "$package" --api-key "$NUGET_API_KEY" --source "$NUGET_SOURCE" --skip-duplicate
+          done
 
       - name: Prepare release notes
         run: |
@@ -105,7 +112,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: ExecutionEngine ${{ steps.version.outputs.version }}
+          name: Workflow ${{ steps.version.outputs.version }}
           body_path: RELEASE_NOTES.md
           files: packages/*.nupkg
         env:

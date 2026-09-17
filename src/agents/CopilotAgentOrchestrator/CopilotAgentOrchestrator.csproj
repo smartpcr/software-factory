@@ -7,6 +7,11 @@
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <Description>Subagent orchestration for the GitHub Copilot SDK: spawn Explore / Task / GeneralPurpose / CodeReview agents with per-type model defaults, run them sequentially, in parallel, or as a dependency DAG, and aggregate their results.</Description>
+    <PackageTags>copilot;agent;orchestration;subagent;llm;ai;dag</PackageTags>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="GitHub.Copilot.SDK" />
   </ItemGroup>

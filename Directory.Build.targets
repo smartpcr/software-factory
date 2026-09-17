@@ -1,0 +1,58 @@
+<Project>
+
+  <!--
+    Packaging metadata lives in Directory.Build.targets rather than
+    Directory.Build.props on purpose.
+
+    Directory.Build.props is imported at the TOP of every project, before the
+    project body runs, so a Condition on $(IsPackable) there always sees an
+    empty value and never applies. Directory.Build.targets is imported at the
+    BOTTOM, after the .csproj has set <IsPackable>, so the condition below
+    evaluates correctly.
+  -->
+  <PropertyGroup Condition="'$(IsPackable)' == 'true'">
+    <Authors>xiaodong li</Authors>
+    <Owners>$(Authors)</Owners>
+    <Company>AzureStack Compute</Company>
+    <Product>OnCall</Product>
+    <Copyright>Copyright © $(Company) $([System.DateTime]::Now.Year)</Copyright>
+    <PackageId Condition="'$(PackageId)' == ''">$(AssemblyName)</PackageId>
+    <Title Condition="'$(Title)' == ''">$(AssemblyName)</Title>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/smartpcr/workflow</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/smartpcr/workflow</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <RequireLicenseAcceptance>false</RequireLicenseAcceptance>
+    <NoPackageAnalysis>true</NoPackageAnalysis>
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+
+    <!-- SourceLink (built into the .NET SDK) so consumers can step into sources. -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+    <!--
+      GitHub Packages rejects .snupkg symbol packages, so no symbol package is
+      produced. Release keeps the pdbonly DebugType from Directory.Build.props;
+      switching to embedded makes `dotnet pack` fail with NU5026 because the
+      pack output group still expects a standalone .pdb next to the assembly.
+    -->
+    <IncludeSymbols>false</IncludeSymbols>
+
+    <!-- GitHub.Copilot.SDK is still prerelease; don't fail pack on NU5104. -->
+    <NoWarn>$(NoWarn);NU5104</NoWarn>
+  </PropertyGroup>
+
+  <!-- Nerdbank.GitVersioning derives PackageVersion/AssemblyVersion from git history. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <PackageReference Include="Nerdbank.GitVersioning" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' == 'true' AND Exists('$(MSBuildProjectDirectory)/README.md')">
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(IsPackable)' == 'true' AND Exists('$(MSBuildProjectDirectory)/README.md')">
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+</Project>

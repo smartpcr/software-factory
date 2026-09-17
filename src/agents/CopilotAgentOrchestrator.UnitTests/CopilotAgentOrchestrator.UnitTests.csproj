@@ -13,9 +13,9 @@
     <Using Include="FluentAssertions" />
   </ItemGroup>
 
-  <!-- Link Chat/Questions prompt files as test data -->
+  <!-- Link CopilotChat/Questions prompt files as test data -->
   <ItemGroup>
-    <None Include="..\Chat\Questions\*.md" Link="Questions\%(Filename)%(Extension)">
+    <None Include="..\CopilotChat\Questions\*.md" Link="Questions\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

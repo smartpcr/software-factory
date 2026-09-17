@@ -39,27 +39,9 @@
     <PackageReference Include="Reqnroll.MsTest" />
   </ItemGroup>
 
-  <!-- git version -->
-  <ItemGroup Condition="'$(IsPackable)' == 'true'">
-    <PackageReference Include="Nerdbank.GitVersioning" PrivateAssets="all" />
-  </ItemGroup>
-
-  <PropertyGroup Condition="'$(IsPackable)' == 'true'">
-    <Owners>$(Authors)</Owners>
-    <ID>$(AssemblyName)</ID>
-    <Title>$(AssemblyName)</Title>
-    <PackageId>$(AssemblyName)</PackageId>
-    <PackageVersion>$(PackageVersion)</PackageVersion>
-    <!-- Assembly info -->
-    <Product>OnCall</Product>
-    <Authors>xiaodong li</Authors>
-    <Company>AzureStack Compute</Company>
-    <Copyright>Copyright © $(Company) $([System.DateTime]::Now.Year)</Copyright>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/smartpcr/common</PackageProjectUrl>
-    <RequireLicenseAcceptance>False</RequireLicenseAcceptance>
-    <NoPackageAnalysis>True</NoPackageAnalysis>
-    <GenerateSymbolPackage>False</GenerateSymbolPackage>
-    <IncludeBuildOutput>false</IncludeBuildOutput>
-  </PropertyGroup>
+  <!--
+    NuGet packaging metadata and Nerdbank.GitVersioning live in
+    Directory.Build.targets: conditions on $(IsPackable) cannot be evaluated
+    here because this file is imported before the project body sets it.
+  -->
 </Project>

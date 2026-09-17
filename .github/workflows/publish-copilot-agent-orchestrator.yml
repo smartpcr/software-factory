@@ -1,0 +1,115 @@
+name: Publish CopilotAgentOrchestrator
+
+# Publishes the CopilotAgentOrchestrator NuGet package to GitHub Packages
+# (https://nuget.pkg.github.com/smartpcr/index.json).
+#
+# This workflow is intentionally project-scoped rather than solution-scoped:
+# CopilotAgentOrchestrator has no ProjectReferences, so it restores, builds,
+# tests and packs on its own without depending on a green Workflow.sln.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/agents/CopilotAgentOrchestrator/**'
+      - 'src/agents/CopilotAgentOrchestrator.UnitTests/**'
+      - 'src/agents/CopilotChat/Questions/**'
+      - 'Directory.Build.props'
+      - 'Directory.Build.targets'
+      - 'Directory.Packages.props'
+      - 'nuget.config'
+      - 'global.json'
+      - 'version.json'
+      - '.github/workflows/publish-copilot-agent-orchestrator.yml'
+  pull_request:
+    paths:
+      - 'src/agents/CopilotAgentOrchestrator/**'
+      - 'src/agents/CopilotAgentOrchestrator.UnitTests/**'
+      - 'Directory.Build.props'
+      - 'Directory.Build.targets'
+      - '.github/workflows/publish-copilot-agent-orchestrator.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and pack only; do not push to GitHub Packages.'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-copilot-agent-orchestrator-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PROJECT: src/agents/CopilotAgentOrchestrator/CopilotAgentOrchestrator.csproj
+  TEST_PROJECT: src/agents/CopilotAgentOrchestrator.UnitTests/CopilotAgentOrchestrator.UnitTests.csproj
+  NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+  NUGET_API_KEY: ${{ secrets.NUGET_API_KEY || secrets.GITHUB_TOKEN }}
+  DOTNET_NOLOGO: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  publish:
+    name: Pack and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Nerdbank.GitVersioning needs the full history to compute the
+          # package version from the git height.
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          # 10.0.x satisfies global.json and builds the net10.0 test project;
+          # 8.0.x supplies the targeting pack for the net8.0 library.
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: |
+          dotnet restore "$PROJECT"
+          dotnet restore "$TEST_PROJECT"
+
+      - name: Build (Release)
+        run: dotnet build "$TEST_PROJECT" --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test "$TEST_PROJECT" --configuration Release --no-build --verbosity normal
+
+      - name: Pack
+        run: |
+          dotnet pack "$PROJECT" \
+            --configuration Release \
+            --no-build \
+            --output ./packages \
+            -p:ContinuousIntegrationBuild=true
+
+      - name: Show package version
+        run: ls -l ./packages
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CopilotAgentOrchestrator-nupkg
+          path: packages/*.nupkg
+          if-no-files-found: error
+
+      - name: Publish to GitHub Packages
+        if: github.event_name != 'pull_request' && inputs.dry_run != true && env.NUGET_API_KEY != ''
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for package in ./packages/*.nupkg; do
+            dotnet nuget push "$package" \
+              --api-key "$NUGET_API_KEY" \
+              --source "$NUGET_SOURCE" \
+              --skip-duplicate
+          done

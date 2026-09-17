@@ -7,10 +7,15 @@ on:
       - 'v*'
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         configuration: [Debug, Release]
@@ -18,9 +23,16 @@ jobs:
     env:
       SOLUTION_FILE: Workflow.sln
       NUGET_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY || secrets.GITHUB_TOKEN }}
 
     steps:
+      # src/.story-artifacts contains paths up to 245 chars; combined with the
+      # runner workspace prefix these exceed MAX_PATH and fail `git checkout`
+      # on windows runners.
+      - name: Enable git long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -29,7 +41,12 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # 10.0.x builds the solution (global.json pins 10.0.100); 8.0.x
+          # supplies the targeting pack for net8.0 libraries such as
+          # CopilotAgentOrchestrator.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore dependencies
         run: dotnet restore ${{ env.SOLUTION_FILE }}
@@ -61,41 +78,25 @@ jobs:
         if: steps.detect-tests.outputs.has-tests != 'true'
         run: echo "No test projects found. Skipping tests."
 
-      - name: Pack NuGet package ExecutionEngine
+      - name: Pack NuGet packages
         if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
-          dotnet pack src/ExecutionEngine/ExecutionEngine.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
-
-      - name: Pack NuGet package ProgressTree
-        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
-        run: |
-          dotnet pack src/ProgressTree/ProgressTree.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
-
-      - name: Pack NuGet package CopilotAgentOrchestrator
-        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
-        run: |
-          dotnet pack src/agents/CopilotAgentOrchestrator/CopilotAgentOrchestrator.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
-
-      - name: Pack NuGet package CopilotChat
-        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
-        run: |
-          dotnet pack src/agents/CopilotChat/CopilotChat.csproj \
-            --configuration Release \
-            --no-build \
-            --output ./packages \
-            -p:ContinuousIntegrationBuild=true
+          set -euo pipefail
+          for project in \
+            src/ExecutionEngine/ExecutionEngine.csproj \
+            src/ProgressTree/ProgressTree.csproj \
+            src/agents/CopilotAgentOrchestrator/CopilotAgentOrchestrator.csproj \
+            src/agents/CopilotChat/CopilotChat.csproj
+          do
+            echo "::group::pack $project"
+            dotnet pack "$project" \
+              --configuration Release \
+              --no-build \
+              --output ./packages \
+              -p:ContinuousIntegrationBuild=true
+            echo "::endgroup::"
+          done
 
       - name: List packages
         if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
@@ -109,7 +110,7 @@ jobs:
           path: packages/*.nupkg
 
       - name: Publish NuGet package
-        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest' && env.NUGET_API_KEY != ''
+        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest' && github.event_name == 'push' && env.NUGET_API_KEY != ''
         shell: bash
         run: |
           set -euo pipefail
