@@ -2,6 +2,7 @@
 
 | Doc | What it covers |
 |-----|----------------|
+| [guide/](guide/README.md) | Usage guide with screenshots, slide deck and walkthrough video |
 | [setup.md](setup.md) | Local install, config keys, troubleshooting |
 | [providers.md](providers.md) | ADO + GitHub credentials, webhooks, per-user PATs |
 | [daily-flow.md](daily-flow.md) | A typical sprint day, mapped to the views |
