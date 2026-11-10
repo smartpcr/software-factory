@@ -9,15 +9,15 @@ A .NET 8.0 monorepo with three major subsystems: **Forge** (AI-powered software 
 Forge is an AI-agent-powered engineering management system that connects to ADO/GitHub, syncs work items and PRs, dispatches tasks to AI coding agents, and tracks builds end-to-end. It runs as a local two-process stack: ASP.NET Core API + React SPA.
 
 ```
-┌────────────────────┐       ┌──────────────────┐
-│  Forge.UI (React)  │──────▶│  Forge.Api       │──────▶  ADO / GitHub REST
-│  Vite · port 5181  │ REST  │  ASP.NET 8       │
-│                    │◀──────│  port 5180       │
+┌────────────────────┐        ┌──────────────────┐
+│  Forge.UI (React)  │───────▶│  Forge.Api       │──────▶  ADO / GitHub REST
+│  Vite · port 5181  │ REST   │  ASP.NET 8       │
+│                    │◀───────│  port 5180       │
 │                    │SignalR │  ┌────────────┐  │  background jobs
-└────────────────────┘       │  │ SQLite DB  │  │  ├─ WorkItemSyncJob (20 min)
-                             │  │ forge.db   │  │  ├─ PrSyncJob (20 min)
-                             │  └────────────┘  │  ├─ BuildSyncJob (20 min)
-                             └──────────────────┘  └─ CrewQueueWorker
+└────────────────────┘        │  │ SQLite DB  │  │  ├─ WorkItemSyncJob (20 min)
+                              │  │ forge.db   │  │  ├─ PrSyncJob (20 min)
+                              │  └────────────┘  │  ├─ BuildSyncJob (20 min)
+                              └──────────────────┘  └─ CrewQueueWorker
 ```
 
 ### Key capabilities
