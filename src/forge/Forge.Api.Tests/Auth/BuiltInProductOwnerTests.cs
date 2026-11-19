@@ -47,11 +47,19 @@ public sealed class BuiltInProductOwnerTests
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE user_product_roles DROP COLUMN UpdatedAt");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE user_product_roles DROP COLUMN GrantedAt");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE user_product_roles DROP COLUMN GrantedBy");
         await OperatorRoleSchemaMigration.ApplyAsync(db);
         await OperatorRoleSchemaMigration.ApplyAsync(db);
         var grant = await db.UserProductRoles.AsNoTracking().SingleAsync();
         Assert.Equal("existing", grant.UserId);
         Assert.Equal("product-owner", grant.Role);
         Assert.Equal(DateTimeOffset.UnixEpoch, grant.UpdatedAt);
+        Assert.Equal(DateTimeOffset.UnixEpoch, grant.GrantedAt);
+        Assert.Null(grant.GrantedBy);
+
+        // A repaired table accepts new EF grants (GrantedAt is NOT NULL).
+        db.UserProductRoles.Add(new UserProductRoleRow { UserId = "existing", ProductId = "q", Role = "eng" });
+        await db.SaveChangesAsync();
     }
 }

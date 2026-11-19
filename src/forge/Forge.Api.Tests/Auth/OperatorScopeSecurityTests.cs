@@ -35,6 +35,32 @@ public sealed class OperatorScopeSecurityTests
     }
 
     [Fact]
+    public async Task Created_Product_Is_Granted_To_Its_Creator_And_Listed_Only_For_Them()
+    {
+        await using var app = new ForgeWebApplicationFactory();
+        await CapabilityParityTests.SeedTargetsAsync(app);
+        await app.EnrollAsync("admin", admin: true, productId: "p");
+        await app.EnrollAsync("reader", productId: "p", role: "eng");
+        using var admin = await app.PairedClientAsync("admin");
+        using var reader = await app.PairedClientAsync("reader");
+
+        var created = await admin.PostAsJsonAsync("/api/products", new { id = "harness", name = "harness" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var adminList = await admin.GetFromJsonAsync<JsonElement>("/api/products");
+        Assert.Contains(adminList.EnumerateArray(), p => p.GetProperty("id").GetString() == "harness");
+        var readerList = await reader.GetFromJsonAsync<JsonElement>("/api/products");
+        Assert.DoesNotContain(readerList.EnumerateArray(), p => p.GetProperty("id").GetString() == "harness");
+
+        using var scope = app.Services.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+        var grant = await control.UserProductRoles.AsNoTracking().SingleAsync(r => r.ProductId == "harness");
+        Assert.Equal("admin", grant.UserId);
+        Assert.Equal(RequireRole.ProductOwner, grant.Role);
+        Assert.Equal("admin", grant.GrantedBy);
+    }
+
+    [Fact]
     public async Task Aggregate_Reads_Include_Only_Granted_Products_And_Detail_Aliases_Cannot_Cross_Them()
     {
         await using var app = new ForgeWebApplicationFactory();

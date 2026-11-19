@@ -694,6 +694,7 @@ public static class ProductsEndpoints
         [FromBody] CreateProductRequest req,
         ControlDbContext control,
         ProductDbContext db,
+        ForgeActionContext action,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -742,6 +743,25 @@ public static class ProductsEndpoints
             CreatedAt = DateTimeOffset.UtcNow,
         };
         control.Products.Add(row);
+
+        // Product reads require an explicit user_product_roles grant (see
+        // ForgeCapabilityAuthorizer.ReadableProductIdsAsync). Without one the
+        // creator could not see the product they just made, so the creating
+        // operator becomes its product owner in the same save.
+        var creator = await action.ActorAsync();
+        if (creator is not null
+            && creator.UserId != RequireRole.BuiltInProductOwnerId
+            && await control.Users.AnyAsync(u => u.Id == creator.UserId))
+        {
+            control.UserProductRoles.Add(new UserProductRoleRow
+            {
+                UserId = creator.UserId,
+                ProductId = row.Id,
+                Role = RequireRole.ProductOwner,
+                GrantedBy = creator.UserId,
+            });
+        }
+
         await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
         var product = MapProduct(row);

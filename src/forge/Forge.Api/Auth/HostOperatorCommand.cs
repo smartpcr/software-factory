@@ -93,8 +93,10 @@ public static class HostOperatorCommand
                 if (roleName is null || !ForgeCapabilities.Roles.Contains(roleName) || productId is null || productId == "all"
                     || identities.GetEnrollment(id) is not { Enabled: true } || !await db.Users.AnyAsync(u => u.Id == id)
                     || !await db.Products.AnyAsync(p => p.Id == productId)) throw new ArgumentException("Specify an enrolled user, existing product ID, and supported role.");
+                // The CLI can run against a control DB the API has not upgraded yet.
+                await OperatorRoleSchemaMigration.ApplyAsync(db);
                 var role = await db.UserProductRoles.FindAsync(id, productId);
-                if (role is null) { role = new() { UserId = id, ProductId = productId }; db.UserProductRoles.Add(role); }
+                if (role is null) { role = new() { UserId = id, ProductId = productId, GrantedBy = "host-cli" }; db.UserProductRoles.Add(role); }
                 role.Role = roleName;
                 role.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync();

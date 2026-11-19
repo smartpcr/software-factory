@@ -1470,6 +1470,13 @@ public class UserProductRoleRow
     /// <summary>One of: human, eng, rev, qa, arch, tech-lead, product-owner.</summary>
     public string Role { get; set; } = "human";
 
+    /// <summary>When the grant was first created. Older control DBs already
+    /// carry this as a NOT NULL column, so EF must always write it.</summary>
+    public DateTimeOffset GrantedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Who or what created the grant (user id, or a system marker).</summary>
+    public string? GrantedBy { get; set; }
+
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
