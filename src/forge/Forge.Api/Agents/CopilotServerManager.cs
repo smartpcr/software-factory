@@ -9,7 +9,7 @@ namespace Forge.Api.Agents;
 using System.Diagnostics;
 using System.Text.Json;
 using Forge.Api.Auth;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
@@ -40,6 +40,7 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     private readonly IOptions<AgentRunnerOptions> options;
     private readonly ILogger<CopilotServerManager> log;
     private readonly IAuthService? ghAuth;
+    private readonly AgentProviderSettingsStore? agentProviders;
     private readonly SemaphoreSlim startLock = new(1, 1);
 
     /// <summary>
@@ -67,6 +68,10 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     private const int PingRetryDelayMs = 250;
 
     private CopilotClient? serverClient;
+    private string? connectionToken;
+    private string? serverAccount;
+    private string? lastStartError;
+    private DateTimeOffset? lastStartErrorAt;
     private Process? serverProcess;
     private int resolvedPort;
     private bool disposed;
@@ -87,10 +92,14 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
         IEnumerable<IAuthService> authServices,
         // Optional so the existing unit-test constructions keep working; in
         // the DI container it is always resolved to the real singleton.
-        Forge.Api.Persistence.IForgeDbPaths? dbPaths = null)
+        Forge.Api.Persistence.IForgeDbPaths? dbPaths = null,
+        // Optional for the same reason; null = always use the GitHub
+        // provider's account (pre-agent-provider-settings behaviour).
+        AgentProviderSettingsStore? agentProviders = null)
     {
         this.options = options;
         this.log = log;
+        this.agentProviders = agentProviders;
         this.pidFilePath = Path.Combine(dbPaths?.Folder ?? Path.GetTempPath(), "forge-copilot-server.pid");
         // 2026-05-20 — Phase 75b: SDK 1.0.0-beta.x requires CLI-level
         // authentication via env var (COPILOT_GITHUB_TOKEN). The 0.3.0
@@ -119,14 +128,13 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
     {
         await this.EnsureRunningAsync(ct);
 
-        // 2026-05-20 — Phase 75b: In CliUrl mode the SDK 1.0.0-beta.x
-        // explicitly rejects `GitHubToken` and `UseLoggedInUser` —
-        // "external server manages its own auth" — so per-session
-        // clients connect bare. The shared server was already
-        // authenticated at EnsureRunningAsync time.
+        // Per-session clients attach to the shared runtime. It was
+        // authenticated at spawn (EnsureRunningAsync), so they carry no
+        // GitHub token -- only the connection token the runtime was started
+        // with (SDK 1.0.x authenticates every TCP client with it).
         return new CopilotClientOptions
         {
-            CliUrl = $"localhost:{this.resolvedPort}",
+            Connection = RuntimeConnection.ForUri($"localhost:{this.resolvedPort}", this.connectionToken),
         };
     }
 
@@ -291,6 +299,50 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
         catch (Exception ex) { this.log.LogDebug(ex, "Failed to clear Copilot server PID file {Path}", this.pidFilePath); }
     }
 
+    /// <summary>
+    /// GitHub token for the account Copilot agents run as: the Settings →
+    /// Agent providers choice, else the GitHub provider's account. Every
+    /// Copilot session and CLI run must use this, not the GitHub provider's
+    /// token directly: the per-session token decides whose Copilot quota a
+    /// request is billed to, so a session carrying the provider's token
+    /// bypasses the chosen account even though the shared server runs as it.
+    /// </summary>
+    public async Task<string?> GetAgentGitHubTokenAsync(CancellationToken ct)
+    {
+        var chosen = this.agentProviders?.CopilotAccount;
+        if (chosen is not null)
+        {
+            return this.ghAuth is GitHubAuthService gh ? await gh.GetAccessTokenForAccountAsync(chosen, ct) : null;
+        }
+        return this.ghAuth is null ? null : await this.ghAuth.GetAccessTokenAsync(ct);
+    }
+
+    /// <summary>Running state for the agent-provider settings page.</summary>
+    public CopilotServerState State => new(
+        this.serverClient is not null, this.serverAccount, this.lastStartError, this.lastStartErrorAt);
+
+    /// <summary>
+    /// Tear down the shared server so the next agent turn starts a fresh one
+    /// with the currently selected account. Unlike <see cref="StopAsync"/> it
+    /// does not mark the manager as stopping. In-flight Copilot turns lose
+    /// their connection.
+    /// </summary>
+    public async Task RestartForAccountChangeAsync()
+    {
+        if (this.disposed || this.stopping) return;
+        await this.startLock.WaitAsync();
+        try
+        {
+            await this.DisposeServerInnerAsync();
+            this.lastStartError = null;
+            this.lastStartErrorAt = null;
+        }
+        finally
+        {
+            this.startLock.Release();
+        }
+    }
+
     public Task StopAsync(CancellationToken cancellationToken)
     {
         if (this.disposed) return Task.CompletedTask;
@@ -450,7 +502,7 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
                 }
             }
 
-            var cliPath = ResolveCopilotCli(this.options.Value.CopilotCliPath);
+            var cliPath = ResolveCopilotCli(this.options.Value.CopilotCliPath, AppContext.BaseDirectory);
             this.log.LogInformation(
                 "Starting shared Copilot server: cli={Cli}", cliPath);
 
@@ -499,8 +551,26 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
             // CLI still starts (a full env-clear crashed it — ncrypto::CSPRNG).
             var spawnEnv = ChildProcessEnv.ToDictionary();
             string? ghToken = null;
-            if (this.ghAuth is not null)
+            var chosenAccount = this.agentProviders?.CopilotAccount;
+            if (chosenAccount is not null)
             {
+                // Agent-provider setting: run Copilot as this account,
+                // without switching gh's active account (which the GitHub
+                // repository provider and git keep using).
+                ghToken = this.ghAuth is GitHubAuthService gh
+                    ? await gh.GetAccessTokenForAccountAsync(chosenAccount, ct)
+                    : null;
+                if (ghToken is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Copilot is set to GitHub account '{chosenAccount}', but gh has no token for it. "
+                        + "Sign it in with `gh auth login`, or pick another account in Settings → Agent providers.");
+                }
+                this.serverAccount = chosenAccount;
+            }
+            else if (this.ghAuth is not null)
+            {
+                this.serverAccount = null;
                 try { ghToken = await this.ghAuth.GetAccessTokenAsync(ct); }
                 catch (Exception ex)
                 {
@@ -514,14 +584,17 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
                 spawnEnv["COPILOT_GITHUB_TOKEN"] = ghToken;
             }
 
+            // SDK 1.0.x: the runtime is spawned through a connection object.
+            // TCP on a free port so per-session clients can attach; the
+            // connection token is ours so GetClientOptionsAsync can hand it
+            // to them. Environment goes on the connection (setting it on the
+            // options as well throws).
+            this.connectionToken = Guid.NewGuid().ToString("N");
+            var connection = RuntimeConnection.ForTcp(0, this.connectionToken, cliPath, this.options.Value.CopilotCliExtraArgs);
+            connection.Environment = spawnEnv;
             var serverOptions = new CopilotClientOptions
             {
-                CliPath = cliPath,
-                CliArgs = this.options.Value.CopilotCliExtraArgs,
-                UseStdio = false,
-                Port = 0,
-                AutoStart = false,
-                Environment = spawnEnv,
+                Connection = connection,
             };
             // Set client-level auth options ONLY when we have an explicit
             // token; otherwise the SDK default (UseLoggedInUser=true)
@@ -546,8 +619,8 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
 
             var client = new CopilotClient(serverOptions);
             await client.StartAsync();
-            this.resolvedPort = client.ActualPort
-                ?? throw new InvalidOperationException("Copilot server started but ActualPort is null");
+            this.resolvedPort = client.RuntimePort
+                ?? throw new InvalidOperationException("Copilot server started but RuntimePort is null");
             this.serverClient = client;
 
             // Take explicit ownership of the SDK-spawned copilot.exe root.
@@ -576,6 +649,8 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            this.lastStartError = ex.Message;
+            this.lastStartErrorAt = DateTimeOffset.UtcNow;
             this.log.LogError(ex, "Failed to start shared Copilot server");
             throw;
         }
@@ -749,10 +824,22 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static string ResolveCopilotCli(string? overridePath)
+    /// <summary>
+    /// Which Copilot runtime to spawn: an explicit, existing
+    /// <c>Forge:Agents:CopilotCliPath</c>; else the runtime the SDK package
+    /// bundles into <c>runtimes\win-x64\native\</c> at build time; else the
+    /// legacy npm / PATH lookups. The bundled copy is pinned to the SDK's own
+    /// protocol version. A system <c>copilot.exe</c> updates itself (1.0.115
+    /// moved to protocol 4 while SDK 1.0.34 speaks 3), which is what broke
+    /// every Copilot agent on 2026-11-19.
+    /// </summary>
+    internal static string ResolveCopilotCli(string? overridePath, string baseDirectory)
     {
         if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
             return overridePath;
+
+        var bundled = Path.Combine(baseDirectory, "runtimes", "win-x64", "native", "copilot.exe");
+        if (File.Exists(bundled)) return bundled;
 
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         if (!string.IsNullOrEmpty(appData))
@@ -786,3 +873,6 @@ public sealed class CopilotServerManager : IHostedService, IAsyncDisposable
         this.startLock.Dispose();
     }
 }
+
+/// <summary>Shared Copilot server state for Settings → Agent providers. <c>Account</c> is null when it runs as the GitHub provider's account.</summary>
+public sealed record CopilotServerState(bool Running, string? Account, string? LastStartError, DateTimeOffset? LastStartErrorAt);

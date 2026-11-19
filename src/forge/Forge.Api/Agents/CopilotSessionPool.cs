@@ -7,7 +7,7 @@
 namespace Forge.Api.Agents;
 
 using System.Collections.Concurrent;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 
 /// <summary>
 /// Phase 55 / Phase E (docs/forge/sloppy_guard.md) -- cache of live

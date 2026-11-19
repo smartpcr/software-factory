@@ -193,12 +193,18 @@ public sealed class AgentMemoryStore
     /// code-intelligence:ENABLE-MCP architecture.md: 40/40 iters
     /// generator-inactive, all "Session not found", until an operator
     /// Restart cleared the row.)
+    /// <para>Also "is already tracked by this client" (Copilot SDK 1.0.x):
+    /// the shared client still holds an undisposed session object for that
+    /// id, which Forge no longer has a handle to, so it can never be resumed
+    /// on this server. Observed 2026-11-19 on harness:DSH architecture.md
+    /// after a quota-failed turn: every later turn failed until a restart.</para>
     /// </summary>
     public static bool IsStaleSessionResumeFailure(string? failureReason)
     {
         if (string.IsNullOrEmpty(failureReason)) return false;
         return failureReason.Contains("session not found", StringComparison.OrdinalIgnoreCase)
-            || failureReason.Contains("session.resume failed", StringComparison.OrdinalIgnoreCase);
+            || failureReason.Contains("session.resume failed", StringComparison.OrdinalIgnoreCase)
+            || failureReason.Contains("is already tracked by this client", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

@@ -165,10 +165,15 @@ export function WorkstreamsView() {
 
   // Phase 6.4 — open a PR from this workstream via the configured provider.
   async function onOpenPr(ws: Workstream) {
-    // window.prompt is also a browser-default modal — left in place pending
-    // a styled prompt component (follow-up). The confirm below was the more
-    // pressing replacement: misusing yes/no for a 2-provider choice.
-    const title = window.prompt('PR title', `${ws.name}: ${ws.summary.split('.')[0]}`);
+    // Themed prompt (askText) instead of the native window.prompt.
+    const entered = await useConfirmStore.getState().askText({
+      title: 'Open a pull request',
+      body: `From workstream ${ws.name}.`,
+      tone: 'info',
+      confirmLabel: 'Continue',
+      input: { label: 'PR title', initialValue: `${ws.name}: ${ws.summary.split('.')[0]}`, maxLength: 256 },
+    });
+    const title = entered?.trim();
     if (!title) return;
     const useGithub = await useConfirmStore.getState().ask({
       title: 'Pick a provider for this PR',

@@ -570,6 +570,21 @@ export interface CurrentUser {
 }
 
 /** Phase 10.1 — per-user preferences. */
+/** GET /api/settings/agent-providers. */
+export interface AgentProviderSettings {
+  copilot: {
+    /** Explicit choice; null = follow the GitHub provider's account (defaultAccount). */
+    selectedAccount: string | null;
+    defaultAccount: string | null;
+    effectiveAccount: string | null;
+    accounts: { login: string; activeInGh: boolean; state: string; scopes: string | null }[];
+    updatedAt: string | null;
+    updatedBy: string | null;
+    server: { running: boolean; account: string | null; lastStartError: string | null; lastStartErrorAt: string | null };
+  };
+  claude: { apiKeyConfigured: boolean; cliPath: string | null };
+}
+
 export interface UserSettings {
   userId: string;
   defaultAdoOrgUrl: string | null;

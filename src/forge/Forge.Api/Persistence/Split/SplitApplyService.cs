@@ -690,7 +690,7 @@ public sealed class SplitApplyService
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task<List<string>> ExtractProductSchemaStatementsAsync(SqliteConnection conn, CancellationToken ct)
+    internal static async Task<List<string>> ExtractProductSchemaStatementsAsync(SqliteConnection conn, CancellationToken ct)
     {
         var productTables = DbBoundary.AllTables
             .Where(t => t.Kind == DbKind.Product)

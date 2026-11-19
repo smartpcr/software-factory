@@ -85,6 +85,41 @@ public sealed class OperatorScopeSecurityTests
     }
 
     [Fact]
+    public async Task Split_Host_Product_Without_Own_Db_File_Reads_Its_Spawn_From_Control_Db()
+    {
+        // A product created after the split has no {slug}.db; its rows live in
+        // the control DB (factory fallback). Detail reads must follow the same
+        // route rather than deny, while other products stay out of reach.
+        await using var app = new ForgeWebApplicationFactory();
+        await CapabilityParityTests.SeedTargetsAsync(app);
+        await app.EnrollAsync("po", productId: "p");
+        using var client = await app.PairedClientAsync("po");
+        client.DefaultRequestHeaders.Add(ProductScope.HeaderName, "p");
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={app.DbPath}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "CREATE TABLE IF NOT EXISTS forge_seed_state (Key TEXT PRIMARY KEY, DoneAt TEXT NOT NULL);"
+                + "INSERT OR REPLACE INTO forge_seed_state (Key, DoneAt) VALUES ('phase73-split-applied', '2026-11-19T00:00:00Z');";
+            cmd.ExecuteNonQuery();
+        }
+        SplitMarkerCache.ResetForTesting();
+        try
+        {
+            Assert.True(SplitMarkerCache.IsPhase73Applied(app.Services.GetRequiredService<IForgeDbPaths>()));
+            Assert.False(app.Services.GetRequiredService<IForgeDbPaths>().ProductDbExists("alpha"));
+            using var own = await client.GetAsync("/api/stories/story-p/spawn");
+            Assert.Equal(HttpStatusCode.OK, own.StatusCode);
+            Assert.Contains("\"spawn-p\"", await own.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/stories/story-q/spawn")).StatusCode);
+        }
+        finally
+        {
+            SplitMarkerCache.ResetForTesting();
+        }
+    }
+
+    [Fact]
     public async Task Cached_Success_Cannot_Bypass_A_Current_Role_Check()
     {
         await using var app = new ForgeWebApplicationFactory();

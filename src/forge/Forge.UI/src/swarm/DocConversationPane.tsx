@@ -218,21 +218,27 @@ export function DocConversationPane({ storyId, docId }: Props) {
    * binding on every future iter. Used to break cross-doc convergence
    * loops where the agent keeps re-litigating the same decision (e.g.
    * "DefaultAction lives in sidecar — STOP flipping. tech-spec HC-3 is
-   * authoritative."). The text is collected via window.prompt() — the
-   * existing ConfirmDialog only renders single-line bodies and a
-   * full-fledged textarea modal is out of scope for this quick win.
+   * authoritative."). The text is collected in the themed confirm dialog
+   * (askText) rather than window.prompt(), whose native browser chrome
+   * ignored the app theme.
    * The pin scopes to this specific doc (workItemId set) so it only
    * affects this artifact, not unrelated sibling docs.
    */
   async function handlePin() {
-    const text = window.prompt(
-      `Pin a binding decision for ${key}.md:\n\n`
-      + `The text below will be prepended to every future iter prompt as an `
-      + `OPERATOR DECISION PIN that the agent must follow. Use this when the `
-      + `same critique keeps appearing across iters (e.g. "DefaultAction lives `
-      + `in sidecar — stop flipping. tech-spec HC-3 is authoritative.").`,
-      '',
-    );
+    const text = await useConfirmStore.getState().askText({
+      title: `Pin a decision for ${key}.md`,
+      body: 'Added to every future iteration prompt for this document as an OPERATOR DECISION PIN the agent '
+        + 'must follow. Use it when the same critique keeps coming back across iterations.',
+      tone: 'info',
+      confirmLabel: 'Pin decision',
+      cancelLabel: 'Cancel',
+      input: {
+        label: 'Decision',
+        placeholder: 'e.g. DefaultAction lives in sidecar — stop flipping. tech-spec HC-3 is authoritative.',
+        rows: 5,
+        maxLength: 4000,
+      },
+    });
     if (text === null) return; // cancelled
     const trimmed = text.trim();
     if (!trimmed) {

@@ -460,8 +460,9 @@
     "outputPricePerMTok": 5.0,
     "supportsTools": true,
     "supportsStreaming": true,
-    "status": "live",
-    "reasoningOverride": false
+    "status": "retired",
+    "reasoningOverride": false,
+    "_statusChanged_note": "Retired 2026-11-19 \u2014 the live Copilot catalog no longer serves this model, so the runner would reject it at session.create. Kept for historical cost lookups."
   },
   {
     "id": "gemini-3.7-flash",

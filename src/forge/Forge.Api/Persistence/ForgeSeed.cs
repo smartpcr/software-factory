@@ -85,7 +85,7 @@ public static class ForgeSeed
     /// <see cref="SeedPrototypeDataAsync"/> so board structure stays consistent
     /// across every product.
     /// </summary>
-    private static IEnumerable<ColumnRow> CanonicalBoardColumns() =>
+    internal static IEnumerable<ColumnRow> CanonicalBoardColumns() =>
     [
         new ColumnRow { Id = "backlog", Name = "Backlog", Sort = 0, WipLimit = 20 },
         new ColumnRow { Id = "design",  Name = "Design",  Sort = 1, WipLimit = 6 },

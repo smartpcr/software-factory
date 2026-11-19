@@ -45,6 +45,8 @@ public class Phase93StaleSessionSelfHealTests
     [InlineData("Session not found: abc", true)]
     // Case-insensitive.
     [InlineData("SESSION NOT FOUND", true)]
+    // SDK 1.0.x: the shared client still holds an undisposed session for the id.
+    [InlineData("Session '8de1fb36-b56c-420a-95fe-ae1203e472fd' is already tracked by this client.", true)]
     // Unrelated failures must NOT be treated as stale-session (no needless reset).
     [InlineData("copilot.exe hard timeout: exceeded 30m budget", false)]
     [InlineData("generator-max-turns cap reached", false)]

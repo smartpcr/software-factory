@@ -15,7 +15,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Forge.Api.Auth;
 using Forge.Api.Services;
-using GitHub.Copilot.SDK;
+using GitHub.Copilot;
 using Microsoft.Extensions.Options;
 
 /// <summary>
@@ -159,7 +159,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         }
         if (!string.IsNullOrEmpty(memoryStorePath))
         {
-            sessionConfig.ConfigDir = memoryStorePath;
+            sessionConfig.ConfigDirectory = memoryStorePath;
         }
         if (!string.IsNullOrEmpty(context.WorktreePath))
         {
@@ -187,7 +187,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         }
         if (!string.IsNullOrEmpty(memoryStorePath))
         {
-            resumeConfig.ConfigDir = memoryStorePath;
+            resumeConfig.ConfigDirectory = memoryStorePath;
         }
         if (!string.IsNullOrEmpty(context.WorktreePath))
         {
@@ -1105,12 +1105,11 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var fullPrompt = string.IsNullOrEmpty(context.SoulMd)
             ? prompt
             : $"{context.SoulMd}\n\n---\n\n{prompt}";
+        // The agent-provider account (Settings → Agent providers), not the
+        // GitHub provider's: it decides whose Copilot quota is billed.
         string? ghToken = null;
-        if (this.ghAuth is not null)
-        {
-            try { ghToken = await this.ghAuth.GetAccessTokenAsync(ct); }
-            catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot CLI session"); }
-        }
+        try { ghToken = await this.copilotServer.GetAgentGitHubTokenAsync(ct); }
+        catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot CLI session"); }
 
         // copilot CLI: `--prompt -` reads from stdin, `--model` selects model.
         // (Recent copilot CLI versions dropped the `-m` short form — the
@@ -1433,12 +1432,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             // Resolve a GitHub token for per-session auth. When connecting to
             // the shared server via CliUrl the SDK cannot discover auth on its
             // own — we must supply it explicitly.
+            // Same account the shared server runs as (Settings → Agent
+            // providers). The per-session token decides whose Copilot quota
+            // is billed; using the GitHub provider's token here billed the
+            // provider account even after the operator switched (2026-11-19:
+            // xiaodoli at 0% premium quota kept failing every turn).
             string? ghToken = null;
-            if (this.ghAuth is not null)
-            {
-                try { ghToken = await this.ghAuth.GetAccessTokenAsync(effectiveCt); }
-                catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot session"); }
-            }
+            try { ghToken = await this.copilotServer.GetAgentGitHubTokenAsync(effectiveCt); }
+            catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot session"); }
             var (sessionConfig, resumeConfig, memorySessionId, shouldResumeSession) =
                 CreateCopilotSessionConfigs(context, ghToken);
 
@@ -1670,7 +1671,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             // with verdict=iterate and the next iter starts fresh.
             if (session is not null)
             {
-                subscription = session.On(evt =>
+                subscription = session.On<SessionEvent>(evt =>
                 {
                 // 2026-05-19 — Phase 75: refresh the inactivity watchdog ONLY
                 // on observable-progress events (the per-case Interlocked
@@ -1845,9 +1846,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             // tell at a glance whether the session is
                             // running with 6K of context (good) or 200K
                             // (bloated; SDK is replaying history).
-                            if (sessUsage.Data.ConversationTokens is double ct2)
+                            if (sessUsage.Data.ConversationTokens is long ct2)
                             {
-                                conversationTokensLatest = (long)ct2;
+                                conversationTokensLatest = ct2;
                             }
                             break;
 
@@ -2188,9 +2189,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         if (contents is null) return null;
         foreach (var c in contents)
         {
-            // SDK exposes ExitCode as double? (Nullable<double>); cast to
+            // SDK 1.0.34 exposes ExitCode as long? (was double? in the beta); cast to
             // int once we've unwrapped the nullable.
-            if (c is ToolExecutionCompleteContentTerminal term && term.ExitCode is double ec)
+            if (c is ToolExecutionCompleteContentTerminal term && term.ExitCode is long ec)
             {
                 return (int)ec;
             }

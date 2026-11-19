@@ -457,12 +457,12 @@ public class CopilotMemoryStoreTests
             Assert.True(Directory.Exists(memoryPath));
             Assert.Equal("session-sdk-test", sessionConfig.SessionId);
             Assert.Equal("gpt-5.5", sessionConfig.Model);
-            Assert.Equal(memoryPath, sessionConfig.ConfigDir);
+            Assert.Equal(memoryPath, sessionConfig.ConfigDirectory);
             Assert.Equal(worktree, sessionConfig.WorkingDirectory);
             Assert.Equal("gh-token", sessionConfig.GitHubToken);
             Assert.Equal("soul prompt", sessionConfig.SystemMessage?.Content);
             Assert.Equal("gpt-5.5", resumeConfig.Model);
-            Assert.Equal(memoryPath, resumeConfig.ConfigDir);
+            Assert.Equal(memoryPath, resumeConfig.ConfigDirectory);
             Assert.Equal(worktree, resumeConfig.WorkingDirectory);
             Assert.Equal("gh-token", resumeConfig.GitHubToken);
         }

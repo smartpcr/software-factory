@@ -27,8 +27,13 @@
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
     <!-- Phase 95 — DPAPI-encrypted chat-bridge bot-token blob (%LOCALAPPDATA%\Forge\chat-token.bin). -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" />
-    <!-- Phase 11.5b — GitHub Copilot SDK for the in-process streaming runner. -->
-    <PackageReference Include="GitHub.Copilot.SDK" />
+    <!-- Phase 11.5b — GitHub Copilot SDK for the in-process streaming runner.
+         1.0.34 (Forge only; other projects stay on the central beta): its build
+         downloads the matching Copilot runtime (CLI 1.0.112, protocol 3) into
+         runtimes\win-x64\native\, and CopilotServerManager runs that copy, so a
+         self-updated system copilot.exe (1.0.115 speaks protocol 4) can no longer
+         break the SDK handshake. -->
+    <PackageReference Include="GitHub.Copilot.SDK" VersionOverride="1.0.34" />
     <!-- Phase 46 — workstreams.yaml decomposition artefact + plan front-matter parser. -->
     <PackageReference Include="YamlDotNet" />
     <!-- Phase 59 Stage C — Roslyn-in-process impacted-test resolver

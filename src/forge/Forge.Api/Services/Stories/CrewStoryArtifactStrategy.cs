@@ -9749,9 +9749,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // etc.) still surface as the generic
             // InvalidOperationException so they need operator
             // attention.
-            var msg = $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict}"
-                + (string.IsNullOrEmpty(result.SloppyReason) ? string.Empty : $" (reason={result.SloppyReason})")
-                + $" after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened -- bump max-iterations or restart the architect crew.";
+            var msg = FailedLoopMessage(phaseTag, result);
             if (string.Equals(result.FinalVerdict, "sloppy", StringComparison.OrdinalIgnoreCase))
             {
                 throw new SloppyVerdictException(result, msg);
@@ -10935,6 +10933,32 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string StoragePath,
         string MimeType,
         long SizeBytes);
+
+    /// <summary>
+    /// The operator-facing failure text for a non-pass gen-eval loop; it
+    /// becomes the spawn's LastError (the halted banner). A verdict replayed
+    /// from history at the iteration cap gets its own wording: no agent ran,
+    /// and Retry only re-drives the loop, which replays the same verdict
+    /// forever. The fix is the item's Restart (clears iterations), so say so
+    /// instead of "bump max-iterations or restart the architect crew".
+    /// </summary>
+    internal static string FailedLoopMessage(string phaseTag, DeliverableLoopResult result)
+    {
+        var reason = string.IsNullOrEmpty(result.SloppyReason) ? string.Empty : $" (reason={result.SloppyReason})";
+        if (result.ReplayedFromHistory)
+        {
+            var doc = phaseTag.StartsWith("plan:", StringComparison.Ordinal) ? phaseTag["plan:".Length..] : phaseTag;
+            var cap = result.IterationCap is { } c ? $"{result.Iterations}/{c}" : result.Iterations.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return $"{doc} is already at its iteration cap ({cap}) with verdict={result.FinalVerdict}{reason}, "
+                + $"final score {result.FinalScore}, from earlier runs. No agent ran: Retry re-drives the loop, "
+                + "which replays this saved verdict. Open the document and use Restart (Conversation tab) to clear "
+                + "its iterations and start again at iteration 1.";
+        }
+
+        return $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict}{reason}"
+            + $" after {result.Iterations} iterations (final score {result.FinalScore}). "
+            + "The plan PR will not be opened -- bump max-iterations or restart the architect crew.";
+    }
 
     /// <summary>
     /// Phase 56 — one stage of the unified per-iter / post-pass gate

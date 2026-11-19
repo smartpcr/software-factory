@@ -527,7 +527,16 @@ public sealed record DeliverableLoopResult(
     /// <see cref="SloppyReasons.TokenCap"/> /
     /// <see cref="SloppyReasons.IterCap"/>). Null on any other verdict.
     /// </summary>
-    string? SloppyReason = null);
+    string? SloppyReason = null,
+    /// <summary>
+    /// True when no iteration ran: the loop returned a verdict already
+    /// persisted at (or past) the iteration cap. A plain re-drive (spawn
+    /// Retry) always lands here again, so callers must tell the operator to
+    /// Restart the item (wipe iterations) instead of retrying.
+    /// </summary>
+    bool ReplayedFromHistory = false,
+    /// <summary>The iteration cap in force for this run (set on replays).</summary>
+    int? IterationCap = null);
 
 /// <inheritdoc cref="IDeliverableLoop"/>
 public sealed class DeliverableLoop : IDeliverableLoop
@@ -917,7 +926,9 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     lastPersisted.Iter,
                     lastPersisted.Score,
                     new List<long>(),
-                    0m);
+                    0m,
+                    ReplayedFromHistory: true,
+                    IterationCap: maxIter);
             }
         }
 

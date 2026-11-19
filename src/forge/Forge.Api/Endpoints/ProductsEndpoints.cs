@@ -695,6 +695,7 @@ public static class ProductsEndpoints
         ControlDbContext control,
         ProductDbContext db,
         ForgeActionContext action,
+        Forge.Api.Persistence.Split.ProductDbProvisioner provisioner,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -731,6 +732,20 @@ public static class ProductsEndpoints
             return Results.Problem(title: $"Slug '{slug}' is already in use", statusCode: 409);
         }
 
+        // On a split host every product owns {slug}.db. Create it before the
+        // product row exists, so no request can route the new product to the
+        // control DB fallback, and before anything is tracked on `control`:
+        // later pipeline steps save that context, so an early return must
+        // leave it clean. The file is dropped again if the row fails to save.
+        var provisioned = await provisioner.ProvisionAsync(slug, ctx.RequestAborted);
+        if (provisioned.ConflictPath is not null)
+        {
+            return Results.Problem(
+                title: $"A database file for slug '{slug}' already exists",
+                detail: $"'{provisioned.ConflictPath}' is not attached to any product. Move it aside or choose another slug.",
+                statusCode: 409);
+        }
+
         var maxSort = await control.Products.Select(p => (int?)p.Sort).MaxAsync() ?? -1;
         var row = new ProductRow
         {
@@ -762,7 +777,15 @@ public static class ProductsEndpoints
             });
         }
 
-        await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        try
+        {
+            await control.SaveChangesAsync(); await db.SaveChangesAsync();
+        }
+        catch
+        {
+            if (provisioned.CreatedPath is not null) provisioner.Discard(provisioned.CreatedPath);
+            throw;
+        }
 
         var product = MapProduct(row);
         await hub.Clients.All.SendAsync("product.changed", new { kind = "created", product });

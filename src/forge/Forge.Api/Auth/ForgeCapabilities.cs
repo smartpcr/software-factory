@@ -85,7 +85,7 @@ public sealed class ForgeActorResolver(HostIdentityStore identities, OperatorSes
 
 /// <summary>Fixed policy shared by HTTP and provider invocations, including current target membership.</summary>
 public sealed class ForgeCapabilityAuthorizer(
-    HostIdentityStore identities, ForgeActorResolver actors, ControlDbContext control, IProductDbContextFactory products, IForgeDbPaths paths)
+    HostIdentityStore identities, ForgeActorResolver actors, ControlDbContext control, IProductDbContextFactory products)
 {
     public async Task<bool> IsAllowedAsync(ForgeActor? actor, string capability, ForgeActionTarget target, CancellationToken ct = default)
     {
@@ -104,9 +104,11 @@ public sealed class ForgeCapabilityAuthorizer(
         if (role is null || !ForgeCapabilities.Roles.Contains(role)
             || (capability != ForgeCapabilities.SpawnRead && role != RequireRole.ProductOwner)) return false;
 
+        // Same DB the endpoints read: the per-product file when it exists, else
+        // the control DB. Products created after the split have no file and
+        // live in the control DB, so a missing file is not a reason to deny.
+        // Every row below is still scoped to this product by OwnsRepoAsync.
         var db = products.CreateFor(product.Slug);
-        if (SplitMarkerCache.IsPhase73Applied(paths) && !paths.ProductDbExists(product.Slug)
-            && (target.SpawnId is not null || target.StoryId is not null || target.WorkstreamId is not null || target.WorkItemId is not null)) return false;
         StorySpawnRow? spawn = null;
         if (target.SpawnId is not null || target.StoryId is not null)
         {

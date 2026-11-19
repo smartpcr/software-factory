@@ -26,6 +26,13 @@ if (args.Contains("--operator", StringComparer.Ordinal))
     return;
 }
 
+// Offline DB maintenance (run with Forge.Api stopped); same no-workload rule.
+if (args.Contains("--db", StringComparer.Ordinal))
+{
+    Environment.ExitCode = await Forge.Api.Persistence.Split.ProductDbMoveCommand.RunAsync(args);
+    return;
+}
+
 // Pin every descendant of this process to a Windows JobObject with
 // KILL_ON_JOB_CLOSE before any agent code runs. If Forge.Api dies unclean,
 // the OS reaps every child copilot.exe / claude.exe / git.exe with us, so
@@ -243,6 +250,9 @@ builder.Services.AddCors(options =>
     // /api/admin/db/split-apply (PO-role + Forge:Db:SplitEnabled gated).
     // Singleton: no per-request state.
     builder.Services.AddSingleton<Forge.Api.Persistence.Split.SplitApplyService>();
+
+    // Creates {slug}.db for products added after the split (POST /api/products).
+    builder.Services.AddSingleton<Forge.Api.Persistence.Split.ProductDbProvisioner>();
 
     // Phase G.4 — single dispatcher for all Phase{N}Migration.ApplyAsync calls.
     // Routes by PhaseMigrationCatalog.Kind: Control migrations run once
@@ -682,6 +692,8 @@ builder.Services.Configure<AgentRunnerOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<SoulOptions>(builder.Configuration.GetSection(SoulOptions.SectionName));
 builder.Services.AddSingleton<ISoulService, SoulService>();
 builder.Services.AddHttpClient(AgentRunnerDispatcher.ClientName);
+// Host-wide choice of which GitHub account the shared Copilot server runs as.
+builder.Services.AddSingleton<Forge.Api.Agents.AgentProviderSettingsStore>();
 builder.Services.AddSingleton<CopilotServerManager>();
 // CopilotServerManager registered as a hosted service unconditionally —
 // its StartAsync is a no-op (the CLI server starts lazily on first use)
@@ -1136,6 +1148,7 @@ app.MapSprintEndpoints();
 app.MapAuthEndpoints();
 app.MapMeEndpoints();
 app.MapMeSettingsEndpoints();
+app.MapAgentProviderSettingsEndpoints();
 app.MapCrewsEndpoints();
 app.MapBackendPolicyEndpoints();
 app.MapModelsEndpoints();

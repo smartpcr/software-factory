@@ -42,6 +42,7 @@ import type {
   CrewQueueStats,
   TimelineResponse,
   UserSettings,
+  AgentProviderSettings,
   Workstream,
   WorkItemSyncRun,
 } from '@/types';
@@ -2008,6 +2009,20 @@ export const forgeApi = {
   /** GET /api/me/settings. */
   async getMySettings(): Promise<UserSettings> {
     return fetchJson<UserSettings>('/api/me/settings');
+  },
+
+  /** GET /api/settings/agent-providers — which credentials each agent runtime uses. */
+  async getAgentProviders(): Promise<AgentProviderSettings> {
+    return fetchJson<AgentProviderSettings>('/api/settings/agent-providers');
+  },
+
+  /** PUT /api/settings/agent-providers/copilot — host admin; null = follow the GitHub provider's account. */
+  async setCopilotAccount(account: string | null): Promise<AgentProviderSettings> {
+    return fetchJson<AgentProviderSettings>('/api/settings/agent-providers/copilot', {
+      method: 'PUT',
+      body: JSON.stringify({ account }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 
   /** PATCH /api/me/settings. */

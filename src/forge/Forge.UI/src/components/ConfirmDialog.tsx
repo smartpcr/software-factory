@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useConfirmStore } from '@/state/useConfirmStore';
 
 /**
@@ -15,6 +15,13 @@ export function ConfirmDialog() {
   const cancel = useConfirmStore((s) => s.cancel);
   const confirm = useConfirmStore((s) => s.confirm);
   const confirmBtnRef = useRef<HTMLButtonElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
+  const [value, setValue] = useState('');
+
+  // askText: seed the field each time a new dialog opens.
+  useEffect(() => {
+    if (pending?.input) setValue(pending.input.initialValue ?? '');
+  }, [pending]);
 
   // Esc cancels — always. Enter is handled NATIVELY by whatever element
   // has focus (the autofocused confirm button, or the cancel button if the
@@ -32,9 +39,12 @@ export function ConfirmDialog() {
     return () => window.removeEventListener('keydown', onKey);
   }, [pending, cancel]);
 
-  // Autofocus the primary button so Enter dismisses without extra clicks.
+  // Autofocus the text field for askText, else the primary button so Enter
+  // dismisses without extra clicks.
   useEffect(() => {
-    if (pending) confirmBtnRef.current?.focus();
+    if (!pending) return;
+    if (pending.input) inputRef.current?.focus();
+    else confirmBtnRef.current?.focus();
   }, [pending]);
 
   if (!pending) return null;
@@ -42,6 +52,9 @@ export function ConfirmDialog() {
   const tone = pending.tone ?? 'warn';
   const confirmLabel = pending.confirmLabel ?? 'Confirm';
   const cancelLabel  = pending.cancelLabel ?? 'Cancel';
+  const input = pending.input;
+  const blocked = !!input && (input.required ?? true) && value.trim().length === 0;
+  const accept = () => { if (!blocked) confirm(input ? value : undefined); };
 
   // Allow plain strings to carry paragraph breaks via "\n\n".
   const bodyNode = typeof pending.body === 'string'
@@ -64,7 +77,7 @@ export function ConfirmDialog() {
             {tone === 'danger' ? '✕' : tone === 'info' ? 'ⓘ' : '!'}
           </span>
           <span className="confirm-dialog__eyebrow">
-            {tone === 'danger' ? 'DESTRUCTIVE' : tone === 'info' ? 'CONFIRM' : 'WARNING'}
+            {input ? 'INPUT' : tone === 'danger' ? 'DESTRUCTIVE' : tone === 'info' ? 'CONFIRM' : 'WARNING'}
           </span>
         </div>
         <h3 className="confirm-dialog__title" id="confirm-dialog-title">{pending.title}</h3>
@@ -75,6 +88,36 @@ export function ConfirmDialog() {
               <li key={i}><span className="confirm-dialog__bullet">›</span>{item}</li>
             ))}
           </ul>
+        )}
+        {input && (
+          <label className="confirm-dialog__field">
+            {input.label && <span className="confirm-dialog__field-label">{input.label}</span>}
+            {(input.rows ?? 1) > 1 ? (
+              <textarea
+                ref={(el) => { inputRef.current = el; }}
+                className="confirm-dialog__input"
+                rows={input.rows}
+                value={value}
+                placeholder={input.placeholder}
+                maxLength={input.maxLength}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter inserts a newline; Ctrl/Cmd+Enter submits.
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); accept(); }
+                }}
+              />
+            ) : (
+              <input
+                ref={(el) => { inputRef.current = el; }}
+                className="confirm-dialog__input"
+                value={value}
+                placeholder={input.placeholder}
+                maxLength={input.maxLength}
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); accept(); } }}
+              />
+            )}
+          </label>
         )}
         <div className="confirm-dialog__actions">
           <button
@@ -88,13 +131,16 @@ export function ConfirmDialog() {
             ref={confirmBtnRef}
             type="button"
             className={`confirm-dialog__btn confirm-dialog__btn--confirm confirm-dialog__btn--${tone}`}
-            onClick={confirm}
+            onClick={accept}
+            disabled={blocked}
           >
             {confirmLabel}
           </button>
         </div>
         <div className="confirm-dialog__hint">
-          <kbd>Esc</kbd> cancel · <kbd>Tab</kbd> to focus, <kbd>Enter</kbd> to activate
+          {input && (input.rows ?? 1) > 1
+            ? <><kbd>Esc</kbd> cancel · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> {confirmLabel.toLowerCase()}</>
+            : <><kbd>Esc</kbd> cancel · <kbd>Tab</kbd> to focus, <kbd>Enter</kbd> to activate</>}
         </div>
       </div>
     </div>
