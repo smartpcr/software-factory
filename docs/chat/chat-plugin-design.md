@@ -239,6 +239,10 @@ a draft but never appears as ready remote control. After the first destination,
 Each destination shows mode, event filters, pause state, external conversation link
 and health. Duplicate subscriptions to the same destination/policy are rejected.
 
+> **Revised 2026-11-19 (designed, not built):** subscriptions gain a per-workstream
+> conversation scope, and stories can be auto-enabled from a host default. See
+> [per-workstream conversations](chat-per-workstream-conversations.md).
+
 Default conversation policy is one Telegram topic or Slack thread **per top-level
 row per destination**. All its child workstreams share that conversation and identify
 their target in each message. Enabling BEYOND-AST creates one conversation, not 32
@@ -1067,7 +1071,8 @@ Proposed API surface (all new; paths subject to normal endpoint conventions):
 
 Connection mutation requires `chat.connection.manage` (host administrator).
 Connections carry
-explicit product access grants; selecting a connection and receiving its metadata
+explicit product access grants (an **All products** connection writes them for
+every current and future product — [DEC-1](chat-per-workstream-conversations.md#dec-1)); selecting a connection and receiving its metadata
 requires access to that product and connection. Workstream configuration uses its
 product-scoped management permissions. Every endpoint validates parent ownership
 and child membership instead of trusting client-provided IDs. Responses redact secrets and

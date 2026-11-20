@@ -777,6 +777,11 @@ public static class ProductsEndpoints
             });
         }
 
+        // Chat connections marked "All products" cover products created later
+        // too (docs/chat/chat-per-workstream-conversations.md DEC-1): grant them
+        // in the same save so the new product's stories can use them at once.
+        await Forge.Api.Services.Chat.ChatConfigurationService.GrantAllProductsConnectionsAsync(control, row.Id);
+
         try
         {
             await control.SaveChangesAsync(); await db.SaveChangesAsync();

@@ -7,6 +7,7 @@
 namespace Forge.Api.Services.Chat;
 
 using Forge.Api.Persistence;
+using Forge.Api.Services.Stories;
 using Microsoft.EntityFrameworkCore;
 
 public sealed class ChatScopeLifecycleService(ControlDbContext control)
@@ -69,10 +70,15 @@ public sealed class ChatScopeLifecycleService(ControlDbContext control)
     }
 }
 
-public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbContextFactory products, ChatScopeResolver resolver)
+public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbContextFactory products, ChatScopeResolver resolver,
+    ChatHostDefaultService? hostDefaults = null)
 {
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
+        // "Set up once": enable new stories from the host default before reconciling, so a
+        // story spawned since the last pass is picked up in this one.
+        if (hostDefaults is not null) await hostDefaults.SweepAsync(ct);
+
         var active = await control.SpawnPlugins.Where(p => p.PluginId == "chat" && p.RetiredAt == null).ToListAsync(ct);
         foreach (var group in active.GroupBy(p => p.ProductId))
         {
@@ -97,12 +103,19 @@ public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbCont
                     if (control.ChangeTracker.HasChanges()) await control.SaveChangesAsync(ct);
                     continue;
                 }
-                var missing = batch.Where(p => !spawns.TryGetValue(p.SpawnId, out var spawn) || ChatConfigurationService.RunIdentity(spawn) != p.RunIdentity).Select(p => p.SpawnId).ToList();
+                // Products without their own DB file share the control DB, so a spawn of another product
+                // can be visible here; there it only belongs to this product when its repo does.
+                HashSet<string>? ownRepos = resolver.SharesControlDb(product)
+                    ? (await db!.Repos.AsNoTracking().Where(r => r.ProductId == product.Id).Select(r => r.Id).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal)
+                    : null;
+                var missing = batch.Where(p => !spawns.TryGetValue(p.SpawnId, out var spawn) || ChatConfigurationService.RunIdentity(spawn) != p.RunIdentity
+                    || ownRepos is not null && (spawn.RepoId is null || !ownRepos.Contains(spawn.RepoId))).Select(p => p.SpawnId).ToList();
                 if (missing.Count > 0) await ChatScopeLifecycleService.RetireAsync(control, product.Id, missing, ct);
                 var liveIds = ids.Except(missing).ToList();
                 var liveSubscriptions = await control.ChatSubscriptions.Where(s => s.ProductId == product.Id && liveIds.Contains(s.SpawnId!)).Select(s => s.Id).ToListAsync(ct);
                 foreach (var binding in await control.ChatConversationBindings.Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.ProvisioningState == "degraded" && b.RetiredAt == null).ToListAsync(ct))
                     binding.ProvisioningState = binding.ConversationId is not null ? "ready" : "pending";
+                await RetireFinishedWorkstreamBindingsAsync(control, db!, liveSubscriptions, ct);
                 var slackBindings = await control.ChatConversationBindings.Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.RetiredAt == null
                     && control.ChatConnections.Any(c => c.Id == b.ConnectionId && c.ProviderId == "slack")).ToListAsync(ct);
                 if (slackBindings.Count > 0)
@@ -117,5 +130,35 @@ public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbCont
                 if (control.ChangeTracker.HasChanges()) await control.SaveChangesAsync(ct);
             }
         }
+    }
+
+    /// <summary>
+    /// A per-workstream conversation ends with its workstream: once the workstream is
+    /// complete, cancelled, historic or gone, retire its binding. The delivery loop's
+    /// retirement pass then closes the Telegram topic (idempotent closeForumTopic) or
+    /// marks the Slack root retired. Story conversations (ChildKey empty) and live
+    /// siblings are untouched. A workstream restarted later gets a new conversation on
+    /// its next message.
+    /// </summary>
+    internal static async Task<int> RetireFinishedWorkstreamBindingsAsync(
+        ControlDbContext control, ProductDbContext db, IReadOnlyCollection<string> liveSubscriptions, CancellationToken ct)
+    {
+        var childBindings = await control.ChatConversationBindings
+            .Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.RetiredAt == null && b.ChildKey != "").ToListAsync(ct);
+        if (childBindings.Count == 0) return 0;
+        var keys = childBindings.Select(b => b.ChildKey).Distinct(StringComparer.Ordinal).ToList();
+        var statuses = await db.Workstreams.AsNoTracking().Where(w => keys.Contains(w.Id))
+            .Select(w => new { w.Id, w.Status }).ToDictionaryAsync(w => w.Id, w => w.Status, StringComparer.Ordinal, ct);
+        var retired = 0;
+        foreach (var binding in childBindings)
+        {
+            var finished = !statuses.TryGetValue(binding.ChildKey, out var status)
+                || status is "complete" or "cancelled" or WorkstreamStatuses.Historic;
+            if (!finished) continue;
+            binding.RetiredAt = DateTimeOffset.UtcNow; binding.Revision++;
+            retired++;
+        }
+
+        return retired;
     }
 }

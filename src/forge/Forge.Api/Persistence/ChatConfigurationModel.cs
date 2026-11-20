@@ -61,10 +61,18 @@ internal static class ChatConfigurationModel
         binding.ToTable("chat_conversation_bindings");
         binding.HasKey(x => x.Id);
         binding.Property(x => x.Revision).IsConcurrencyToken();
-        binding.HasIndex(x => new { x.SubscriptionId, x.SubscriptionRevision }).IsUnique().HasFilter("RetiredAt IS NULL")
-            .HasDatabaseName("IX_chat_conversation_bindings_active_revision");
+        // One live conversation per (subscription revision, child). ChildKey is '' for the
+        // story conversation, so story bindings stay unique (SQLite treats NULLs as distinct).
+        binding.Property(x => x.ChildKey).HasDefaultValue("");
+        binding.HasIndex(x => new { x.SubscriptionId, x.SubscriptionRevision, x.ChildKey }).IsUnique().HasFilter("RetiredAt IS NULL")
+            .HasDatabaseName("IX_chat_conversation_bindings_active_child");
         binding.HasIndex(x => new { x.ConnectionId, x.ExternalTenantId, x.ChannelId, x.ConversationId });
         binding.HasOne<ChatSubscriptionRow>().WithMany().HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
         binding.HasOne<ChatConnectionRow>().WithMany().HasForeignKey(x => x.ConnectionId).OnDelete(DeleteBehavior.Restrict);
+
+        var hostDefault = mb.Entity<ChatHostDefaultRow>();
+        hostDefault.ToTable("chat_host_defaults");
+        hostDefault.HasKey(x => x.HostId);
+        hostDefault.Property(x => x.Revision).IsConcurrencyToken();
     }
 }

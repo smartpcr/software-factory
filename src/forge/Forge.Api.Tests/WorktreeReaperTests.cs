@@ -188,7 +188,103 @@ public class WorktreeReaperTests : IAsyncLifetime
         Assert.True(Directory.Exists(pathActive), "registered active worktree must be KEPT.");
     }
 
+    [Fact]
+    public async Task RunForProduct_ClosesMergedCompleteBranch_LocalAndOrigin()
+    {
+        if (!GitAvailable()) return;
+
+        // harness:DSH 2026-11-19: PRs #6/#7 merged, the merge heal marked the
+        // rows complete and the reaper removed the worktrees, but the ws/*
+        // branches stayed on origin. The reaper must now close them too.
+        var br = "ws/test/stage-merged";
+        var path = await this.AddWorktreeAsync("stage-merged", br);
+        await RunAsync(this.clonePath, "git", "push", "origin", br);
+
+        var (conn, _, db) = await NewProductDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            db.Repos.Add(this.repo);
+            db.Workstreams.Add(NewWs("ws-merged", br, "complete"));
+            db.Prs.Add(NewPr("pr-1", br, "merged", isActive: false));
+            await db.SaveChangesAsync();
+
+            var removed = await this.NewReaper().RunForProductAsync(db, "test", TimeSpan.Zero, CancellationToken.None);
+
+            Assert.Equal(1, removed);
+        }
+
+        Assert.False(Directory.Exists(path), "complete worktree should be reaped.");
+        Assert.False(await this.LocalBranchExistsAsync(br), "merged branch should be deleted locally.");
+        Assert.False(await this.OriginBranchExistsAsync(br), "merged branch should be deleted on origin.");
+    }
+
+    [Fact]
+    public async Task RunForProduct_KeepsBranches_ThatAreNotSafelyMerged()
+    {
+        if (!GitAvailable()) return;
+
+        // Each branch is complete-with-a-merged-PR except for one disqualifier.
+        var brOpenPr = "ws/test/open-pr";      // a second PR from the branch is still open
+        var brShared = "ws/test/shared";       // another row on the branch is still active
+        var brNoPr = "ws/test/no-pr";          // complete but no PR merged from it
+        var brPlan = "story/test/plan";        // a spawn's plan branch
+        foreach (var b in new[] { brOpenPr, brShared, brNoPr, brPlan })
+        {
+            await RunAsync(this.clonePath, "git", "branch", b, "HEAD");
+            await RunAsync(this.clonePath, "git", "push", "origin", b);
+        }
+
+        var (conn, _, db) = await NewProductDbAsync();
+        await using (conn)
+        await using (db)
+        {
+            db.Repos.Add(this.repo);
+            db.Workstreams.Add(NewWs("ws-open", brOpenPr, "complete"));
+            db.Prs.Add(NewPr("pr-open-1", brOpenPr, "merged", isActive: false));
+            db.Prs.Add(NewPr("pr-open-2", brOpenPr, "review", isActive: true));
+            db.Workstreams.Add(NewWs("ws-shared-done", brShared, "complete"));
+            db.Workstreams.Add(NewWs("ws-shared-live", brShared, "active"));
+            db.Prs.Add(NewPr("pr-shared", brShared, "merged", isActive: false));
+            db.Workstreams.Add(NewWs("ws-nopr", brNoPr, "complete"));
+            db.Workstreams.Add(NewWs("ws-plan", brPlan, "complete"));
+            db.Prs.Add(NewPr("pr-plan", brPlan, "merged", isActive: false));
+            db.StorySpawns.Add(new StorySpawnRow { Id = "spawn-1", StoryId = "test", RepoId = "repo-1", PlanBranch = brPlan });
+            await db.SaveChangesAsync();
+
+            await this.NewReaper().RunForProductAsync(db, "test", TimeSpan.Zero, CancellationToken.None);
+        }
+
+        foreach (var b in new[] { brOpenPr, brShared, brNoPr, brPlan })
+        {
+            Assert.True(await this.LocalBranchExistsAsync(b), $"{b} must be kept locally.");
+            Assert.True(await this.OriginBranchExistsAsync(b), $"{b} must be kept on origin.");
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    private WorktreeReaper NewReaper() => new(
+        scopeFactory: null!,
+        git: this.git,
+        config: new ConfigurationBuilder().Build(),
+        logger: NullLogger<WorktreeReaper>.Instance);
+
+    private static PrRow NewPr(string id, string branch, string col, bool isActive) => new()
+    {
+        Id = id,
+        RepoId = "repo-1",
+        Branch = branch,
+        Base = "main",
+        Col = col,
+        IsActive = isActive,
+    };
+
+    private async Task<bool> LocalBranchExistsAsync(string branch)
+        => (await CaptureAsync(this.clonePath, "git", "show-ref", "--verify", "--quiet", $"refs/heads/{branch}")).Code == 0;
+
+    private async Task<bool> OriginBranchExistsAsync(string branch)
+        => (await CaptureAsync(this.originPath, "git", "show-ref", "--verify", "--quiet", $"refs/heads/{branch}")).Code == 0;
 
     private async Task<string> AddWorktreeAsync(string leaf, string branch)
     {

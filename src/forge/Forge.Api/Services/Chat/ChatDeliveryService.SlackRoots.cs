@@ -22,7 +22,7 @@ public sealed partial class ChatDeliveryService
             var connection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == binding.ConnectionId, ct);
             var session = await supervisor.GetAsync(connection, ct); if (session is null) continue;
             var desired = binding.RootDesiredState;
-            var message = new ChatSemanticNotification(binding.Id, "conversation-root", "Forge workstream",
+            var message = new ChatSemanticNotification(binding.Id, "conversation-root", binding.Title ?? "Forge workstream",
                 desired == "completed" ? "This workstream is complete. Open Forge for its results." : "Forge workstream updates and questions appear in this thread.", desired == "completed" ? 2 : 1, []);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, session.Cancellation.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
             ChatProviderResult<bool> result;

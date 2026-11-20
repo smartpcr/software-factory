@@ -508,43 +508,53 @@ export function StoryDeliveryStrip({ detail }: Props) {
     navigate(`/workstreams/${encodeURIComponent(detail.spawn.storyId)}?${params.toString()}`);
   }
 
+  // The strip's width grows with the DAG depth (80 workstreams is ~2,400px),
+  // so it sits in a horizontal scroller that shows a scrollbar only when the
+  // strip is wider than the row. A click whose target is the scroller itself
+  // is a scrollbar drag, not a click on the row, so it must not bubble to
+  // SwarmStoryRow's navigate-on-click.
   return (
     <div
-      className="ws-strip"
-      role="group"
-      aria-label="Story delivery progress tree"
-      style={{ width: widthPx, height: heightPx }}
+      className="ws-strip-scroll"
+      onClick={(e) => { if (e.target === e.currentTarget) e.stopPropagation(); }}
     >
-      <svg
-        className="ws-strip-edges"
-        width={widthPx}
-        height={heightPx}
-        aria-hidden="true"
+      <div
+        className="ws-strip"
+        role="group"
+        aria-label="Story delivery progress tree"
+        style={{ width: widthPx, height: heightPx }}
       >
-        {edges.map((e) => (
-          <path key={e.id} className={`ws-edge stage-${e.stage}`} d={e.d} />
-        ))}
-      </svg>
-      {allRects.map((r) => {
-        const p = pos(r.key);
-        return (
-          <span
-            key={r.key}
-            className={`ws-chip stage-${r.stage} ${r.status}`}
-            style={{ left: p.x, top: p.y, cursor: 'pointer' }}
-            title={buildTooltip(r)}
-            role="button"
-            tabIndex={0}
-            onClick={(e) => handleRectClick(r, e)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleRectClick(r, e as unknown as ReactMouseEvent);
-              }
-            }}
-          />
-        );
-      })}
+        <svg
+          className="ws-strip-edges"
+          width={widthPx}
+          height={heightPx}
+          aria-hidden="true"
+        >
+          {edges.map((e) => (
+            <path key={e.id} className={`ws-edge stage-${e.stage}`} d={e.d} />
+          ))}
+        </svg>
+        {allRects.map((r) => {
+          const p = pos(r.key);
+          return (
+            <span
+              key={r.key}
+              className={`ws-chip stage-${r.stage} ${r.status}`}
+              style={{ left: p.x, top: p.y, cursor: 'pointer' }}
+              title={buildTooltip(r)}
+              role="button"
+              tabIndex={0}
+              onClick={(e) => handleRectClick(r, e)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleRectClick(r, e as unknown as ReactMouseEvent);
+                }
+              }}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

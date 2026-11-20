@@ -80,11 +80,16 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                     if (destination is null) continue;
                     var connection = await control.ChatConnections.SingleOrDefaultAsync(c => c.Id == destination.ConnectionId && c.DeletedAt == null && c.Enabled, ct);
                     if (connection is null || spawnScope && !await control.ChatConnectionProducts.AnyAsync(g => g.ConnectionId == connection.Id && g.ProductId == scope.ProductId, ct)) continue;
-                    var binding = await control.ChatConversationBindings.SingleOrDefaultAsync(b => b.SubscriptionId == sub.Id && b.SubscriptionRevision == sub.Revision && b.RetiredAt == null, ct);
+                    // Per-workstream subscriptions give each workstream its own topic/thread, created
+                    // lazily here on its first message; story-level events keep the story conversation.
+                    var childKey = ChildKey(sub, owned);
+                    var binding = await control.ChatConversationBindings.SingleOrDefaultAsync(b => b.SubscriptionId == sub.Id && b.SubscriptionRevision == sub.Revision
+                        && b.ChildKey == childKey && b.RetiredAt == null, ct);
                     if (binding is null)
                     {
                         binding = new() { Id = Guid.NewGuid().ToString("N"), SubscriptionId = sub.Id, SubscriptionRevision = sub.Revision,
-                            ActivationGeneration = sub.ActivationGeneration, ConnectionId = connection.Id, ExternalTenantId = destination.ExternalTenantId, ChannelId = destination.ChannelId };
+                            ActivationGeneration = sub.ActivationGeneration, ConnectionId = connection.Id, ExternalTenantId = destination.ExternalTenantId, ChannelId = destination.ChannelId,
+                            ChildKey = childKey, Title = ConversationTitle(owned, childKey) };
                         control.ChatConversationBindings.Add(binding);
                     }
                     var target = new ChatDeliveryTarget(1, scope.Kind, scope.ProductId, scope.SpawnId, scope.HostId, parent?.RunIdentity,
@@ -119,5 +124,22 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
             return true;
         }
         finally { runtime.EnqueueGate.Release(); }
+    }
+
+    /// <summary>
+    /// The workstream a notification's conversation belongs to: its verified child workstream
+    /// when the subscription is per-workstream and threaded, else empty (the story conversation).
+    /// Planning artifacts and story status have no child workstream and stay on the story.
+    /// </summary>
+    internal static string ChildKey(ChatSubscriptionRow subscription, ChatOwnedScope owned)
+        => subscription.ConversationScope == ChatConversationScopes.Workstream && subscription.ConversationPolicy != "flat"
+            && owned.Spawn is not null && !string.IsNullOrEmpty(owned.WorkstreamId) ? owned.WorkstreamId! : "";
+
+    /// <summary>Telegram topic name / Slack root heading: "{story} · {workstream}" or the story id.</summary>
+    internal static string? ConversationTitle(ChatOwnedScope owned, string childKey)
+    {
+        var story = owned.Spawn?.StoryId;
+        if (string.IsNullOrEmpty(story)) return null;
+        return childKey.Length == 0 ? story : $"{story} · {(string.IsNullOrWhiteSpace(owned.WorkstreamName) ? childKey : owned.WorkstreamName)}";
     }
 }

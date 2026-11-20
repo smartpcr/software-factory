@@ -366,4 +366,148 @@ public class Stage52DoneGateTests
                 kv => kv.Key.EndsWith($"@ws/{wsId}", StringComparison.Ordinal) && kv.Value);
         }
     }
+
+    // ── 4. [integration] Implement-phase merge heal also closes the branch ──
+
+    /// <summary>
+    /// harness:DSH 2026-11-19: PRs #6 / #7 merged while their rows sat in
+    /// <c>merging</c>; DriveImplementAsync's "Healed already-merged workstream"
+    /// path marked them complete but, unlike DriveReviewAsync, never closed the
+    /// branch, so the ws/* branches stayed on origin. (In production the review
+    /// drive merges the PR, review→merging, and the implement drive heals the
+    /// row in the same tick.) The row is seeded <c>active</c> here because
+    /// DriveReviewAsync, which runs first and has its own cleanup, does not
+    /// scan <c>active</c> rows, so only the heal can complete it.
+    /// </summary>
+    [Fact]
+    public async Task Implement_Merge_Heal_Closes_The_Merged_Branch()
+    {
+        const string storyId = "WI-heal-closes-branch";
+        const string spawnId = "spawn-" + storyId;
+        const string productId = "prod-heal";
+        const string repoId = "repo-heal";
+        const string wsId = "s1-heal";
+
+        using var f = ForgeWebApplicationFactory.WithOrchestratorEnabled();
+        using (f.CreateClient()) { /* boot + apply migrations */ }
+
+        using (var scope = f.Services.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            control.Products.Add(new ProductRow { Id = productId, Name = "Heal", Slug = "heal", CreatedAt = DateTimeOffset.UtcNow });
+            db.Repos.Add(new RepoRow
+            {
+                Id = repoId,
+                ProductId = productId,
+                DisplayName = "Heal repo",
+                Kind = "local",
+                RemoteUrl = "file://heal",
+                CloneRoot = "/tmp/heal",
+                DefaultBranch = "main",
+            });
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = storyId,
+                Provider = "ado",
+                Track = "dev",
+                Type = "feature",
+                State = "active",
+                Title = "Heal closes branch",
+                Priority = "med",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            db.StorySpawns.Add(new StorySpawnRow
+            {
+                Id = spawnId,
+                StoryId = storyId,
+                StoryTitle = "Heal closes branch",
+                Phase = StorySpawnPhases.Implement,
+                PlanBranch = $"story/{storyId}/plan",
+                PlanPrId = "PR-heal-plan",
+                RepoId = repoId,
+                BaseBranch = "main",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                StoryPoints = 3,
+                AutoMerge = true,
+            });
+            db.Workstreams.Add(new WorkstreamRow
+            {
+                Id = wsId,
+                RepoId = repoId,
+                Name = wsId,
+                Branch = $"ws/{wsId}",
+                Base = "main",
+                Epic = string.Empty,
+                Status = "active",
+                Category = WorkstreamCategories.Impl,
+                WorktreeJson = "[]",
+                AgentsJson = "[]",
+                PrsJson = JsonSerializer.Serialize(new[] { "PR-heal-1" }),
+                CardsJson = "[]",
+                Summary = string.Empty,
+                StorySpawnId = spawnId,
+                PlanAnchor = $"phase-foundation/stage-{wsId}",
+                PhaseAnchor = "phase-foundation",
+            });
+            db.Prs.Add(new PrRow
+            {
+                Id = "PR-heal-1",
+                RepoId = repoId,
+                Col = "merged",
+                Title = "[impl] " + wsId,
+                Branch = $"ws/{wsId}",
+                Base = "main",
+                Workstream = wsId,
+                Epic = string.Empty,
+                EpicColor = string.Empty,
+                AuthorJson = "{}",
+                CreatedAt = DateTimeOffset.UtcNow.ToString("O"),
+                UpdatedAt = DateTimeOffset.UtcNow.ToString("O"),
+                IsActive = false,
+                LastSyncStatus = "idle",
+                Provider = "local",
+                WorkItemId = wsId,
+                Description = "seed",
+            });
+            foreach (var fileName in new[] { "architecture.md", "tech-spec.md", "implementation-plan.md", "e2e-scenarios.md" })
+            {
+                db.Deliverables.Add(new DeliverableRow
+                {
+                    WorkItemId = $"plan-doc:{spawnId}:{fileName}",
+                    CrewId = "crew-arch",
+                    GeneratorAgentId = "G",
+                    EvaluatorAgentId = "E",
+                    Iter = 1,
+                    Score = 95,
+                    DimsJson = "{}",
+                    Verdict = "pass",
+                    Notes = string.Empty,
+                    GeneratorSummary = string.Empty,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
+            }
+            await control.SaveChangesAsync();
+            await db.SaveChangesAsync();
+        }
+
+        using (var scope = f.Services.CreateScope())
+        {
+            var orch = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+            await orch.DriveAsync(storyId);
+        }
+
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var ws = await db.Workstreams.AsNoTracking().FirstAsync(w => w.Id == wsId);
+            Assert.Equal("complete", ws.Status);
+        }
+
+        var git = Assert.IsType<InMemoryStoryGitOps>(f.Services.GetRequiredService<IStoryGitOps>());
+        Assert.Contains(git.DeletedBranches,
+            kv => kv.Key.EndsWith($"@ws/{wsId}", StringComparison.Ordinal) && kv.Value);
+    }
 }

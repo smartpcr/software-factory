@@ -71,7 +71,13 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         { await this.CancelAsync(delivery, notification.Status == "superseded" ? "superseded" : "expired", ct); return; }
         if (ChatPayloadConverter.Read(notification) is null)
         { delivery.State = "failed"; delivery.LastError = "unsupported-payload"; await budget.SaveAsync(control, ct); return; }
+        // Actionable messages are ordered per conversation: a stuck alert in one workstream's
+        // topic must not hold back another workstream's (same subscription, different ChildKey).
+        var deliveryChild = delivery.Actionable
+            ? await control.ChatConversationBindings.AsNoTracking().Where(b => b.Id == delivery.BindingId).Select(b => b.ChildKey).SingleOrDefaultAsync(ct) ?? ""
+            : "";
         if (delivery.Actionable && await control.ChatDeliveries.AnyAsync(d => d.Id != delivery.Id && d.SubscriptionId == delivery.SubscriptionId
+            && control.ChatConversationBindings.Any(b => b.Id == d.BindingId && b.ChildKey == deliveryChild)
             && d.Actionable && (d.DomainRevision < delivery.DomainRevision || d.DomainRevision == delivery.DomainRevision && d.CreatedAt < delivery.CreatedAt)
             && (d.State == "pending" || d.State == "retry" || d.State == "sending" || d.State == "uncertain" || d.State == "failed"), ct))
         { delivery.LastError = "blocked-by-earlier-action"; delivery.NextAttemptAt = now.AddSeconds(5).ToUnixTimeMilliseconds(); await budget.SaveAsync(control, ct); return; }
@@ -96,7 +102,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 binding.ProvisioningState = "provisioning"; binding.OperationOwner = runtime.ProcessId; binding.RecoveryDeadline = now.AddSeconds(60);
                 await budget.SaveAsync(control, ct);
                 ChatProviderResult<ChatConversation> result;
-                try { result = await session.Provider.EnsureConversationAsync(validated.Value!, Enum.Parse<ChatConversationPolicy>(target.ConversationPolicy, true), binding.Id, "Forge workstream", timeout.Token); }
+                try { result = await session.Provider.EnsureConversationAsync(validated.Value!, Enum.Parse<ChatConversationPolicy>(target.ConversationPolicy, true), binding.Id, binding.Title ?? "Forge workstream", timeout.Token); }
                 catch { result = ChatProviderResult<ChatConversation>.Fail(ChatFailureKind.UnknownOutcome, "conversation-outcome-unknown"); }
                 if (!result.Succeeded || result.Value!.Address.ConnectionId != address.ConnectionId
                     || result.Value.Address.ExternalTenantId != address.ExternalTenantId || result.Value.Address.ChannelId != address.ChannelId)

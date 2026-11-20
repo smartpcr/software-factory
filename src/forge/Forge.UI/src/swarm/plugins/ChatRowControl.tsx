@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { chatApi, chatReason, type ChatConnection, type ChatDestination, type ChatManagement, type ChatRoute, type ChatSetup, type ChatSummary } from './chatApi';
+import { chatApi, chatReason, HOST_DEFAULT_ORIGIN, routeForSave, type ChatConnection, type ChatDestination, type ChatManagement, type ChatRoute, type ChatSetup, type ChatSummary } from './chatApi';
 import { reloadChatSummaries, useChatSummary } from './chatStore';
 import { ChatConnectionEditor } from './ChatConnectionEditor';
 import { ChatDestinationSetup } from './ChatDestinationSetup';
@@ -10,7 +10,7 @@ import './chat.css';
 
 interface Props { productId: string; spawnId: string; title: string; summary?: ChatSummary; compact?: boolean }
 export interface ChatRouteDraft extends ChatRoute { key: string; providerId: string; connectionId: string }
-export const emptyChatRoute = (interactive = true): ChatRouteDraft => ({ key: crypto.randomUUID(), providerId: '', connectionId: '', destinationId: '', conversationPolicy: 'flat', interactive, contentMode: 'metadata' });
+export const emptyChatRoute = (interactive = true): ChatRouteDraft => ({ key: crypto.randomUUID(), providerId: '', connectionId: '', destinationId: '', conversationPolicy: 'flat', interactive, contentMode: 'metadata', conversationScope: 'workstream' });
 export function changeChatProvider(route: ChatRouteDraft, providerId: string, connections: ChatConnection[]): ChatRouteDraft {
   return { ...route, providerId, connectionId: connections.find(c => c.providerId === providerId)?.id ?? '', destinationId: '', conversationPolicy: providerId === 'slack' ? 'thread' : 'topic' };
 }
@@ -38,6 +38,10 @@ export function ChatRouteFields({ route, connections, destinations, canManageCon
       }}><option value="">Choose channel</option>{channels.filter(d => d.id === route.destinationId || d.displayName.toLowerCase().includes(filter.toLowerCase())).map(d => <option key={d.id} value={d.id}>{d.displayName}{d.accessState === 'unavailable' ? ' · needs repair' : ''}</option>)}</select></label>
       {canManageConnections && <button type="button" className="chat-text-button" onClick={e => onChannelSetup(e.currentTarget)}>Discover or add channel</button>}
     </>}
+    {route.conversationPolicy !== 'flat' && <label>Conversations<select value={route.conversationScope ?? 'workstream'} onChange={e => onChange({ ...route, conversationScope: e.target.value as 'story' | 'workstream' })}>
+      <option value="workstream">One {route.providerId === 'slack' ? 'thread' : 'topic'} per workstream</option>
+      <option value="story">One {route.providerId === 'slack' ? 'thread' : 'topic'} for the whole story</option></select></label>}
+    {route.conversationPolicy !== 'flat' && (route.conversationScope ?? 'workstream') === 'workstream' && <p className="chat-help">Each workstream gets its own {route.providerId === 'slack' ? 'thread' : 'topic'} on its first message; it closes when the workstream finishes. Plan and story messages use the story {route.providerId === 'slack' ? 'thread' : 'topic'}.</p>}
     <label>Mode<select value={route.interactive ? 'interactive' : 'notifications'} onChange={e => onChange({ ...route, interactive: e.target.value === 'interactive' })}>
       <option value="interactive" disabled={notificationOnlySlice}>Interactive remote control</option><option value="notifications">Notification-only</option></select></label>
     <label>Content policy<select value={route.contentMode} onChange={e => onChange({ ...route, contentMode: e.target.value })}>
@@ -108,7 +112,8 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
   function fromSaved(setup: ChatSetup, choices: ChatConnection[], channels: ChatDestination[]) {
     return setup.plugin.subscriptions.map(s => {
       const destination = channels.find(d => d.id === s.destinationId);
-      return { ...s, key: crypto.randomUUID(), connectionId: destination?.connectionId ?? '', providerId: choices.find(c => c.id === destination?.connectionId)?.providerId ?? '', eventKinds: JSON.parse(s.eventKindsJson) as string[] };
+      return { ...s, key: crypto.randomUUID(), connectionId: destination?.connectionId ?? '', providerId: choices.find(c => c.id === destination?.connectionId)?.providerId ?? '', eventKinds: JSON.parse(s.eventKindsJson) as string[],
+        conversationScope: (s.conversationScope === 'workstream' ? 'workstream' : 'story') as 'story' | 'workstream' };
     });
   }
   useEffect(() => {
@@ -147,7 +152,7 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
     setBusy(true); setError('');
     try {
       const next = await chatApi.save(productId, spawnId, { expectedRevision: saved.plugin.revision, enabled,
-        destinations: routes.filter(r => r.destinationId).map(({ destinationId, conversationPolicy, interactive, contentMode, eventKinds, paused }) => ({ destinationId, conversationPolicy, interactive, contentMode, eventKinds, paused })),
+        destinations: routes.filter(r => r.destinationId).map(routeForSave),
         activateNewRun: saved.plugin.reason === 'new-run-needs-activation' });
       setSaved(next); await reloadChatSummaries(productId); close();
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -177,6 +182,7 @@ function ChatPanel({ productId, spawnId, title, onClose }: Props & { onClose: ()
         <div hidden={!!editor}>
           {saved.hostReason && <p className="chat-notice">{chatReason(saved.hostReason)} Configuration can still be saved.</p>}
           {!saved.canManage && <p className="chat-notice">A product owner can configure this row. Host administration is a separate permission.</p>}
+          {saved.plugin.copyOrigin === HOST_DEFAULT_ORIGIN && <p className="chat-help">Using the host default from Settings → Chat. Saving here makes these this story's own settings; turning chat off here keeps it off.</p>}
           <fieldset disabled={busy || !saved.canManage || !!editor}>
             <label className="chat-toggle-line"><span><strong>Enable chat remote control</strong><small>Chat settings leave the story's work state unchanged.</small></span>
               <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /></label>

@@ -133,6 +133,8 @@ internal sealed class RuntimeProvider(string id) : IChatProviderPlugin
     public ConcurrentDictionary<string, RuntimeSession> Sessions { get; } = new();
     public int SendCalls;
     public int ProvisionCalls;
+    /// <summary>Conversation title passed to EnsureConversationAsync, keyed by operation key (the binding id).</summary>
+    public ConcurrentDictionary<string, string> Titles { get; } = new();
     public bool UncertainProvision;
     public string? SharedReceptionKey { get; set; }
     public ChatSettingsValidation ValidateSettings(int version, JsonElement settings) => ChatSettingsValidation.Success;
@@ -158,6 +160,7 @@ internal sealed class RuntimeProvider(string id) : IChatProviderPlugin
         public ValueTask<ChatProviderResult<ChatConversation>> EnsureConversationAsync(ChatDestination destination, ChatConversationPolicy policy, string operationKey, string title, CancellationToken ct = default)
         {
             Interlocked.Increment(ref provider.ProvisionCalls);
+            provider.Titles[operationKey] = title;
             return ValueTask.FromResult(provider.UncertainProvision ? ChatProviderResult<ChatConversation>.Fail(ChatFailureKind.UnknownOutcome, "uncertain")
                 : ChatProviderResult<ChatConversation>.Success(new(destination.Address with { ConversationId = operationKey }, "root")));
         }

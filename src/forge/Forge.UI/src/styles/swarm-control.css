@@ -872,10 +872,24 @@
  * StoryDeliveryStrip for the layout algorithm (barycentric lane
  * assignment over longest-path layering).
  */
+/* Horizontal scroller around the strip: the strip is an explicit-size box
+ * that can be far wider than the row (one column per dependency depth), so
+ * clip it to the row and scroll. The scrollbar appears only on overflow. */
+.swarm-ctrl .ws-strip-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin-top: 6px;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sc-border-2) transparent;
+}
+.swarm-ctrl .ws-strip-scroll::-webkit-scrollbar { height: 6px; }
+.swarm-ctrl .ws-strip-scroll::-webkit-scrollbar-thumb { background: var(--sc-border-2); border-radius: 3px; }
+.swarm-ctrl .ws-strip-scroll::-webkit-scrollbar-thumb:hover { background: var(--sc-muted); }
 .swarm-ctrl .ws-strip {
   position: relative;
   display: block;
-  margin-top: 6px;
   /* Width and height are computed inline from the laid-out grid; we
    * leave room for the SVG edge layer to bleed into the inter-column
    * gap. The element behaves as an explicit-size box rather than

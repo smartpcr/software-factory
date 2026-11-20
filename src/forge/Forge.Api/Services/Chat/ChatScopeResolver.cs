@@ -13,12 +13,41 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 public sealed record ChatOwnedScope(ProductRow? Product, StorySpawnRow? Spawn, string? WorkItemId, string? WorkstreamId,
-    string? ArtifactKey, string? Reason, bool Degraded = false);
+    string? ArtifactKey, string? Reason, bool Degraded = false, string? WorkstreamName = null);
 
 public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContextFactory products, IForgeDbPaths paths,
     IOptions<ChatPluginOptions> options)
 {
-    public bool ProductAvailable(ProductRow product) => !SplitMarkerCache.IsPhase73Applied(paths) || paths.ProductDbExists(product.Slug);
+    /// <summary>
+    /// Whether this product's rows can be read with confidence. True before the
+    /// split, or when the product has its own DB file. A product WITHOUT a file is
+    /// available only when its rows still live in the shared control DB (a product
+    /// created after the split and not yet moved, e.g. harness): the factory falls
+    /// back to that DB and finds its repos there. A moved product whose file went
+    /// missing has no rows left in the control DB, so it stays unavailable and its
+    /// chat configuration is marked degraded instead of being retired as "deleted".
+    /// </summary>
+    /// <summary>
+    /// True when this product has no DB file of its own after the split, so its reads fall back
+    /// to the shared control DB where OTHER products' rows are visible too; callers must then
+    /// filter by repo ownership.
+    /// </summary>
+    public bool SharesControlDb(ProductRow product)
+        => SplitMarkerCache.IsPhase73Applied(paths) && !paths.ProductDbExists(product.Slug);
+
+    public bool ProductAvailable(ProductRow product)
+    {
+        if (!SplitMarkerCache.IsPhase73Applied(paths) || paths.ProductDbExists(product.Slug)) return true;
+        try
+        {
+            // CreateFor caches one context per slug; do not dispose it.
+            return products.CreateFor(product.Slug).Repos.AsNoTracking().Any(r => r.ProductId == product.Id);
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
 
     public async Task<ChatOwnedScope> ResolveAsync(ChatEventInput input, CancellationToken ct)
     {
@@ -58,7 +87,7 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
                 || child is not null && child.RepoId != spawn.RepoId
                 || !await db.Repos.AnyAsync(r => r.Id == spawn.RepoId && r.ProductId == product.Id, ct))
                 return new(product, null, null, null, null, "unresolved-scope");
-            return new(product, spawn, input.WorkItemId, child?.Id, artifact, null);
+            return new(product, spawn, input.WorkItemId, child?.Id, artifact, null, false, child?.Name);
         }
         catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
         { return new(product, null, null, null, null, "ownership-unverified", true); }

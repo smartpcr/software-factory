@@ -44,7 +44,7 @@ public sealed partial class ChatConfigurationService(
         var grants = await control.ChatConnectionProducts.AsNoTracking().Where(g => g.ConnectionId == id).Select(g => g.ProductId).ToListAsync(ct);
         using var settings = JsonDocument.Parse(row.SettingsJson);
         return new(row.Id, row.ProviderId, row.InstallationId, row.DisplayName, row.Enabled, row.Revision, row.SettingsVersion,
-            settings.RootElement.Clone(), JsonSerializer.Deserialize<Dictionary<string, ChatSecretReference>>(row.SecretReferencesJson)!, grants);
+            settings.RootElement.Clone(), JsonSerializer.Deserialize<Dictionary<string, ChatSecretReference>>(row.SecretReferencesJson)!, grants, row.AllProducts);
     }
 
     public async Task<ChatConnectionView> PutConnectionAsync(ForgeActor? actor, string id, ChatConnectionWrite write, CancellationToken ct = default)
@@ -62,22 +62,34 @@ public sealed partial class ChatConfigurationService(
         if (row is not null && (row.ProviderId != write.ProviderId || row.InstallationId != write.InstallationId))
             throw new ChatConfigurationException("connection-identity-immutable", 409);
         if (write.SecretReferences is null || write.ProductIds is null) throw new ChatConfigurationException("invalid-connection-settings");
+        // References imported from the legacy bridge (store "legacy-host", key = a file path) do not
+        // fit the format new references must follow. Re-saving an UNCHANGED reference is allowed so a
+        // migrated connection stays editable (product access, name, enable); a changed one is validated.
+        var storedReferences = row is null ? new Dictionary<string, ChatSecretReference>()
+            : JsonSerializer.Deserialize<Dictionary<string, ChatSecretReference>>(row.SecretReferencesJson) ?? new();
         foreach (var (name, reference) in write.SecretReferences)
         {
             if (reference is null || provider is not null && !provider.Descriptor.Credentials.Any(c => c.Id == name))
                 throw new ChatConfigurationException("invalid-credential-reference");
+            if (storedReferences.TryGetValue(name, out var stored) && stored is not null
+                && string.Equals(stored.Store, reference.Store, StringComparison.Ordinal)
+                && string.Equals(stored.Key, reference.Key, StringComparison.Ordinal)) continue;
             RequireReference(reference!.Store); RequireReference(reference.Key);
         }
         var grantedIds = write.ProductIds.Distinct(StringComparer.Ordinal).ToList();
         if (grantedIds.Count != write.ProductIds.Count || grantedIds.Count > 256
             || await control.Products.CountAsync(p => grantedIds.Contains(p.Id), ct) != grantedIds.Count)
             throw new ChatConfigurationException("invalid-product-grants");
+        // "All products": grant every current product (new products are granted on creation).
+        // Clearing the flag keeps the listed grants; the operator unticks products to revoke.
+        if (write.AllProducts)
+            grantedIds = grantedIds.Union(await control.Products.AsNoTracking().Select(p => p.Id).ToListAsync(ct), StringComparer.Ordinal).ToList();
 
         await using var transaction = await control.Database.BeginTransactionAsync(ct);
         row ??= new ChatConnectionRow { Id = id, Revision = 0 };
         if (row.Revision == 0) control.ChatConnections.Add(row);
         row.ProviderId = write.ProviderId; row.InstallationId = write.InstallationId;
-        row.DisplayName = write.DisplayName; row.Enabled = write.Enabled;
+        row.DisplayName = write.DisplayName; row.Enabled = write.Enabled; row.AllProducts = write.AllProducts;
         row.SettingsVersion = write.SettingsVersion; row.SettingsJson = write.Settings.GetRawText();
         row.SecretReferencesJson = JsonSerializer.Serialize(write.SecretReferences); row.Revision++;
         var grants = await control.ChatConnectionProducts.Where(g => g.ConnectionId == id).ToListAsync(ct);
@@ -92,6 +104,20 @@ public sealed partial class ChatConfigurationService(
         await this.SaveAsync(ct);
         await transaction.CommitAsync(ct);
         return this.ConnectionView(row);
+    }
+
+    /// <summary>
+    /// Stage grants (no save) giving a newly created product every connection marked
+    /// <see cref="ChatConnectionRow.AllProducts"/>. Called from product creation in the
+    /// same save as the product row.
+    /// </summary>
+    public static async Task<int> GrantAllProductsConnectionsAsync(ControlDbContext control, string productId, CancellationToken ct = default)
+    {
+        var ids = await control.ChatConnections.AsNoTracking().Where(c => c.AllProducts && c.DeletedAt == null)
+            .Where(c => !control.ChatConnectionProducts.Any(g => g.ConnectionId == c.Id && g.ProductId == productId))
+            .Select(c => c.Id).ToListAsync(ct);
+        foreach (var id in ids) control.ChatConnectionProducts.Add(new ChatConnectionProductRow { ConnectionId = id, ProductId = productId });
+        return ids.Count;
     }
 
     public async Task DeleteConnectionAsync(ForgeActor? actor, string id, long revision, CancellationToken ct = default)
@@ -157,7 +183,7 @@ public sealed partial class ChatConfigurationService(
     {
         var reason = this.ConnectionReason(row);
         return new(row.Id, row.ProviderId, row.DisplayName, row.Enabled, row.Revision, row.SettingsVersion,
-            !row.Enabled ? "off" : reason is not null ? "paused" : "configured", reason, row.InstallationId);
+            !row.Enabled ? "off" : reason is not null ? "paused" : "configured", reason, row.InstallationId, row.AllProducts);
     }
 
     private string? ConnectionReason(ChatConnectionRow row)

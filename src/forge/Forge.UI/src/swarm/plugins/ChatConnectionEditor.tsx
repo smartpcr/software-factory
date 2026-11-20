@@ -22,6 +22,8 @@ function ManualConnectionEditor({ id, providerId, productId, management, onSaved
   const [privateChannels, setPrivateChannels] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [products, setProducts] = useState<string[]>(productId ? [productId] : []);
+  // New connections default to every product, including products created later.
+  const [allProducts, setAllProducts] = useState(true);
   const [values, setValues] = useState<Record<string, string>>({});
   const [references, setReferences] = useState<ChatConnectionDetails['secretReferences']>({});
   const [busy, setBusy] = useState(false);
@@ -33,7 +35,7 @@ function ManualConnectionEditor({ id, providerId, productId, management, onSaved
     if (id) void chatApi.details(id).then(c => {
       if (!active) return;
       setConnection(c); setName(c.displayName); setInstallation(c.installationId); setAppId(String(c.settings.appId ?? ''));
-      setPrivateChannels(c.settings.includePrivateChannels === true); setEnabled(c.enabled); setProducts(c.productIds); setReferences(c.secretReferences);
+      setPrivateChannels(c.settings.includePrivateChannels === true); setEnabled(c.enabled); setProducts(c.productIds); setAllProducts(c.allProducts === true); setReferences(c.secretReferences);
     }).catch(e => { if (active) setError(e.message); });
     return () => { active = false; };
   }, [id]);
@@ -44,7 +46,7 @@ function ManualConnectionEditor({ id, providerId, productId, management, onSaved
       const settings = providerId === 'slack' ? { appId, includePrivateChannels: privateChannels } : {};
       let c = await chatRequest<{ revision: number }>(connectionPath(connectionId), 'PUT', {
         expectedRevision: connection?.revision ?? 0, providerId, installationId: installation, displayName: name,
-        enabled: false, settingsVersion: 1, settings, secretReferences: references, productIds: products,
+        enabled: false, settingsVersion: 1, settings, secretReferences: references, productIds: products, allProducts,
       });
       for (const credential of credentialNames) {
         if (values[credential]) c = await chatRequest<{ revision: number }>(connectionPath(connectionId) + `/credentials/${credential}`, 'PUT', { expectedRevision: c.revision, value: values[credential] });
@@ -62,7 +64,7 @@ function ManualConnectionEditor({ id, providerId, productId, management, onSaved
     try {
       const saved = await chatApi.details(connectionId); setConnection(saved); setReferences(saved.secretReferences); setValues({});
       setName(saved.displayName); setInstallation(saved.installationId); setAppId(String(saved.settings.appId ?? ''));
-      setPrivateChannels(saved.settings.includePrivateChannels === true); setEnabled(saved.enabled); setProducts(saved.productIds); setError('');
+      setPrivateChannels(saved.settings.includePrivateChannels === true); setEnabled(saved.enabled); setProducts(saved.productIds); setAllProducts(saved.allProducts === true); setError('');
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   const actions = <div className="chat-actions chat-editor-actions"><button type="button" disabled={busy} onClick={onCancel}>Cancel connection setup</button>
@@ -99,11 +101,14 @@ function ManualConnectionEditor({ id, providerId, productId, management, onSaved
           </details>
         </div>)}
       </div></details>
-      <details className="chat-section"><summary>Products allowed to use this connection · {products.length} selected</summary><div className="chat-section-content">
+      <label className="chat-checkline"><input type="checkbox" checked={allProducts} onChange={e => setAllProducts(e.target.checked)} />All products, including products created later</label>
+      {allProducts
+        ? <p className="chat-help">Every product's stories can use this connection. Clearing this keeps the current product list; untick products below to remove them.</p>
+        : <details className="chat-section"><summary>Products allowed to use this connection · {products.length} selected</summary><div className="chat-section-content">
         <p className="chat-help">Select the products whose owners may choose this connection for their stories.</p>
         {management.products.map(p => <label className="chat-checkline" key={p.id}>
           <input type="checkbox" checked={products.includes(p.id)} onChange={e => setProducts(ids => e.target.checked ? [...ids, p.id] : ids.filter(id => id !== p.id))} />{p.name}</label>)}
-      </div></details>
+      </div></details>}
       <label className="chat-checkline"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />Enable connection</label>
       <p className="chat-help">Keep this unchecked to save an incomplete connection and finish later. After saving, choose a channel for your story.</p>
     </fieldset>

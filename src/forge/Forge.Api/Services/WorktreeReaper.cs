@@ -44,6 +44,11 @@ using Microsoft.Extensions.Configuration;
 /// unregistered, the git-based loops and <c>git worktree prune</c> can never
 /// see it again. Mirrors <c>POST /api/admin/worktrees/prune</c>.</para>
 ///
+/// <para><b>Merged branches:</b> after the worktree pass it also closes the
+/// local and origin branch of each <c>complete</c> workstream whose PR merged
+/// (see <see cref="PruneMergedBranchesAsync"/>), so <c>ws/*</c> branches do not
+/// outlive their merge whichever code path completed the workstream.</para>
+///
 /// <para><b>Grace period:</b> a worktree whose directory was modified within
 /// <c>Forge:WorktreeReaper:GraceMinutes</c> is skipped, so a freshly-spawned
 /// agent whose in-process liveness has not yet been reflected in its
@@ -140,7 +145,7 @@ public sealed class WorktreeReaper : BackgroundService
     {
         var workstreams = await db.Workstreams.AsNoTracking()
             .Where(w => !string.IsNullOrEmpty(w.RepoId))
-            .Select(w => new { w.Id, w.Status, w.Branch, w.RepoId })
+            .Select(w => new WsRef(w.Id, w.Status, w.Branch, w.RepoId))
             .ToListAsync(ct);
         if (workstreams.Count == 0) return 0;
 
@@ -178,6 +183,7 @@ public sealed class WorktreeReaper : BackgroundService
             }
 
             // (1) Status-based prune — workstreams whose worktree is stale.
+            var stillCheckedOut = new HashSet<string>(pathByBranch.Keys, StringComparer.Ordinal);
             foreach (var ws in group.Where(w => ShouldPrune(w.Status ?? string.Empty)))
             {
                 if (string.IsNullOrEmpty(ws.Branch)) continue;
@@ -189,8 +195,18 @@ public sealed class WorktreeReaper : BackgroundService
                 if (await this.TryRemoveAsync(repo, ws.Branch, ws.Status, slug, ct))
                 {
                     removed++;
+                    stillCheckedOut.Remove(ws.Branch);
                 }
             }
+
+            // (1b) Merged-branch prune — close the branch (local + origin) of
+            // every complete workstream whose PR merged. Several paths mark a
+            // workstream complete (merge heal, PrSyncJob / AutoMergeWatcher via
+            // WorkstreamMergeAdvancer, stalled-merged recovery, operator
+            // Retry) and only some close the branch, so ws/* branches piled
+            // up on origin after their PRs merged. This pass makes the
+            // finished-workstream contract hold whichever path completed it.
+            await this.PruneMergedBranchesAsync(db, repo, group.ToList(), stillCheckedOut, slug, ct);
 
             // (2) Orphan prune — registered per-workstream worktrees whose
             // branch matches no live workstream row at all.
@@ -296,6 +312,106 @@ public sealed class WorktreeReaper : BackgroundService
     }
 
     /// <summary>
+    /// Pass (1b): delete the local and origin branch of each <c>complete</c>
+    /// workstream whose work is merged. A branch is closed only when ALL hold:
+    /// <list type="bullet">
+    /// <item>at least one PR from that branch is merged and none is still open
+    /// (the work is on the target branch, nothing is pending review);</item>
+    /// <item>no other workstream row on the same branch is still live
+    /// (anything but complete / cancelled / historic);</item>
+    /// <item>it is not the repo default, <c>main</c>/<c>master</c>, or any
+    /// spawn's base / plan / QA branch;</item>
+    /// <item>it is not still checked out in a worktree (one inside the grace
+    /// window survives pass (1); the next tick closes it);</item>
+    /// <item>a local or origin-tracking ref still exists, so already-clean rows
+    /// cost no git call (one <c>for-each-ref</c> per repo per tick).</item>
+    /// </list>
+    /// The delete itself is <see cref="IStoryGitOps.DeleteBranchAsync"/>, which
+    /// is best-effort (logs and continues) and refuses base branches again.
+    /// Returns the number of branches it asked to close.
+    /// </summary>
+    internal async Task<int> PruneMergedBranchesAsync(
+        ProductDbContext db,
+        RepoRow repo,
+        IReadOnlyList<WsRef> repoWorkstreams,
+        IReadOnlySet<string> stillCheckedOut,
+        string slug,
+        CancellationToken ct)
+    {
+        var completeBranches = repoWorkstreams
+            .Where(w => w.Status == "complete" && !string.IsNullOrEmpty(w.Branch))
+            .Select(w => w.Branch!)
+            .ToHashSet(StringComparer.Ordinal);
+        if (completeBranches.Count == 0) return 0;
+
+        // A branch shared with a live row (re-planned workstream reusing the
+        // name, retry in flight) must survive.
+        foreach (var w in repoWorkstreams)
+        {
+            if (string.IsNullOrEmpty(w.Branch)) continue;
+            if (w.Status is "complete" or "cancelled" or WorkstreamStatuses.Historic) continue;
+            completeBranches.Remove(w.Branch);
+        }
+
+        var protectedBranches = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "main", "master" };
+        if (!string.IsNullOrEmpty(repo.DefaultBranch)) protectedBranches.Add(repo.DefaultBranch);
+        var spawnBranches = await db.StorySpawns.AsNoTracking()
+            .Where(s => s.RepoId == repo.Id || s.RepoId == null)
+            .Select(s => new { s.BaseBranch, s.PlanBranch, s.QaBranch })
+            .ToListAsync(ct);
+        foreach (var s in spawnBranches)
+        {
+            if (!string.IsNullOrEmpty(s.BaseBranch)) protectedBranches.Add(s.BaseBranch);
+            if (!string.IsNullOrEmpty(s.PlanBranch)) protectedBranches.Add(s.PlanBranch);
+            if (!string.IsNullOrEmpty(s.QaBranch)) protectedBranches.Add(s.QaBranch);
+        }
+
+        completeBranches.RemoveWhere(b => protectedBranches.Contains(b) || stillCheckedOut.Contains(b));
+        if (completeBranches.Count == 0) return 0;
+
+        var candidates = completeBranches.ToList();
+        var prs = await db.Prs.AsNoTracking()
+            .Where(p => p.Branch != null && candidates.Contains(p.Branch)
+                && (p.RepoId == repo.Id || p.RepoId == null))
+            .Select(p => new { p.Branch, p.Col, p.IsActive })
+            .ToListAsync(ct);
+        var merged = prs
+            .GroupBy(p => p.Branch!, StringComparer.Ordinal)
+            .Where(g => g.Any(p => string.Equals(p.Col, "merged", StringComparison.OrdinalIgnoreCase))
+                && !g.Any(p => p.IsActive))
+            .Select(g => g.Key)
+            .ToList();
+        if (merged.Count == 0) return 0;
+
+        IReadOnlySet<string> refs;
+        try
+        {
+            refs = await EnumerateBranchRefsAsync(repo.CloneRoot!, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger.LogWarning(ex,
+                "WorktreeReaper: failed to list branch refs for repo {Repo} (product {Slug}); skipping merged-branch prune.",
+                repo.Id, slug);
+            return 0;
+        }
+
+        var closed = 0;
+        foreach (var branch in merged)
+        {
+            if (!refs.Contains($"refs/heads/{branch}") && !refs.Contains($"refs/remotes/origin/{branch}")) continue;
+
+            await this.git.DeleteBranchAsync(repo, branch, deleteRemote: true, ct);
+            closed++;
+            this.logger.LogInformation(
+                "WorktreeReaper: closed merged workstream branch {Branch} (local + origin, product={Slug}).",
+                branch, slug);
+        }
+
+        return closed;
+    }
+
+    /// <summary>
     /// Worktrees safe to remove. KEEPS active / review / merging / blocked /
     /// stalled — see class remarks for the review-fix correctness hazard.
     /// </summary>
@@ -383,6 +499,43 @@ public sealed class WorktreeReaper : BackgroundService
         return results;
     }
 
+    /// <summary>
+    /// Full ref names under <c>refs/heads</c> and <c>refs/remotes/origin</c>,
+    /// from one local <c>git for-each-ref</c> (no network).
+    /// </summary>
+    private static async Task<IReadOnlySet<string>> EnumerateBranchRefsAsync(string cloneRoot, CancellationToken ct)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = cloneRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        Forge.Api.Services.Git.GitProcessEnv.ApplyFailFast(psi);
+        psi.ArgumentList.Add("for-each-ref");
+        psi.ArgumentList.Add("--format=%(refname)");
+        psi.ArgumentList.Add("refs/heads");
+        psi.ArgumentList.Add("refs/remotes/origin");
+        using var proc = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("git could not be started — is it on PATH?");
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+        var stdout = await stdoutTask;
+        await stderrTask;
+        if (proc.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git for-each-ref exited {proc.ExitCode}");
+        }
+
+        return stdout.Split('\n')
+            .Select(l => l.TrimEnd('\r').Trim())
+            .Where(l => l.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
     private TimeSpan GetTickInterval()
     {
         var raw = this.config["Forge:WorktreeReaper:TickInterval"];
@@ -402,4 +555,7 @@ public sealed class WorktreeReaper : BackgroundService
         var raw = this.config["Forge:WorktreeReaper:Enabled"];
         return string.IsNullOrEmpty(raw) || !string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>The workstream fields the reaper reads.</summary>
+    internal sealed record WsRef(string Id, string? Status, string? Branch, string? RepoId);
 }

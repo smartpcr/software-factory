@@ -53,6 +53,12 @@ public sealed class PhaseMigrationRunner
     /// </summary>
     public static readonly IReadOnlyList<int> ExecutionOrder = new[]
     {
+        // Phase 107 — chat per-workstream conversations. Runs FIRST: Phases 98/100
+        // regenerate the chat model including a unique index on the new
+        // chat_conversation_bindings.ChildKey column, so on an upgraded DB the
+        // column must be added before they run. Table-existence guarded, so it is
+        // a no-op on a fresh DB (Phase 98 creates the tables from the model).
+        107,
         // Phase 92 — workstreams.LastBuildGate / LastTestGate. Runs FIRST: the
         // columns are now in the WorkstreamRow EF model, so any later migration
         // that materializes WorkstreamRow (e.g. Phase38's full-entity query)

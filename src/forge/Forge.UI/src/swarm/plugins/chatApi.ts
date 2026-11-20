@@ -5,16 +5,22 @@ export interface ChatSummary {
   unroutedCount: number; unroutedReasons: Record<string, number>; pendingCount: number; failedCount: number; sentCount: number;
 }
 export interface ChatSummaryItem { spawnId: string; title: string; summary: ChatSummary }
-export interface ChatConnection { id: string; providerId: string; displayName: string; enabled: boolean; revision: number; state: string; reason: string | null; installationId?: string }
+export interface ChatConnection { id: string; providerId: string; displayName: string; enabled: boolean; revision: number; state: string; reason: string | null; installationId?: string; allProducts?: boolean }
 export interface ChatConnectionDetails extends ChatConnection {
   installationId: string; settingsVersion: number; settings: Record<string, unknown>;
-  secretReferences: Record<string, { store: string; key: string }>; productIds: string[];
+  secretReferences: Record<string, { store: string; key: string }>; productIds: string[]; allProducts: boolean;
 }
 export interface ChatDestination { id: string; displayName: string; connectionId: string; kind: string; channelId: string; externalTenantId: string; revision: number; accessState: string }
-export interface ChatSubscription { id: string; revision: number; destinationId: string; conversationPolicy: string; interactive: boolean; contentMode: string; paused: boolean; eventKindsJson: string }
-export interface ChatPlugin { productId: string; spawnId: string; enabled: boolean; revision: number; reason: string | null; subscriptions: ChatSubscription[] }
+export interface ChatSubscription { id: string; revision: number; destinationId: string; conversationPolicy: string; interactive: boolean; contentMode: string; paused: boolean; eventKindsJson: string; conversationScope?: string }
+export interface ChatPlugin { productId: string; spawnId: string; enabled: boolean; revision: number; reason: string | null; subscriptions: ChatSubscription[]; copyOrigin?: string | null }
 export interface ChatSetup { plugin: ChatPlugin; canManage: boolean; canManageConnections: boolean; interactiveAvailable: boolean; redactedContentAllowed: boolean; hostReason: string | null; notificationOnlySlice?: boolean }
-export interface ChatRoute { destinationId: string; conversationPolicy: string; interactive: boolean; contentMode: string; eventKinds?: string[]; paused?: boolean }
+export interface ChatRoute { destinationId: string; conversationPolicy: string; interactive: boolean; contentMode: string; eventKinds?: string[]; paused?: boolean;
+  /** 'workstream': each workstream gets its own topic/thread; 'story': one conversation for the whole story. */
+  conversationScope?: 'story' | 'workstream' }
+/** Host-wide default destinations; stories without their own chat settings are enabled from these. */
+export interface ChatHostDefault { hostId: string; enabled: boolean; revision: number; routes: ChatRoute[]; activatedAt: string | null; updatedAt: string | null; updatedBy: string | null }
+/** Settings copied from the host default carry this copyOrigin. */
+export const HOST_DEFAULT_ORIGIN = 'host-default';
 export interface ChatDraft { expectedRevision: number; enabled: boolean; destinations: ChatRoute[]; activateNewRun: boolean }
 export interface ChatManagement {
   slackLinkConfirmationAvailable?: boolean;
@@ -69,7 +75,16 @@ export const chatApi = {
   health: (c: string) => chatRequest<ChatHealth>(connectionPath(c) + '/health'),
   discover: (c: string, cursor?: string) => providerRequest<ChatDiscovery>(connectionPath(c) + '/discovery' + (cursor ? `?cursor=${enc(cursor)}` : '')),
   validate: (c: string, d: string) => providerRequest<unknown>(connectionPath(c) + `/destinations/${enc(d)}/validate`, 'POST'),
+  hostDefault: () => chatRequest<ChatHostDefault>('/api/chat/host-defaults'),
+  saveHostDefault: (body: { expectedRevision: number; enabled: boolean; routes: ChatRoute[] }) => chatRequest<ChatHostDefault>('/api/chat/host-defaults', 'PUT', body),
+  applyHostDefault: () => chatRequest<{ applied: number }>('/api/chat/host-defaults/apply', 'POST'),
 };
+
+/** Wire form of a route: a per-workstream conversation needs a topic/thread, so flat routes are story-scoped. */
+export function routeForSave<T extends ChatRoute>(r: T): ChatRoute {
+  return { destinationId: r.destinationId, conversationPolicy: r.conversationPolicy, interactive: r.interactive, contentMode: r.contentMode,
+    eventKinds: r.eventKinds, paused: r.paused, conversationScope: r.conversationPolicy === 'flat' ? 'story' : (r.conversationScope ?? 'workstream') };
+}
 
 export function chatReason(code: string | null): string {
   const reasons: Record<string, string> = {

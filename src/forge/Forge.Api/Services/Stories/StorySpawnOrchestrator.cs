@@ -2180,6 +2180,19 @@ public sealed class StorySpawnOrchestrator
                     w.Id, priorStatus, priorPrsJson, string.Join(",", mergedPrIds));
                 await EmitChange(hub, "ws-complete", spawn, ct);
 
+                // Finished-workstream contract, same as DriveReviewAsync's
+                // merging→complete and external-merge paths: the PR is merged,
+                // so free the worktree and close the branch local + remote.
+                // Without this, every workstream completed by this heal (the
+                // common path when PrSyncJob sees the merge before the review
+                // drive does) left ws/* branches behind on origin.
+                // Observed harness:DSH stage 1.1 PRs #6 / #7, 2026-11-19.
+                if (repo is not null)
+                {
+                    await this.git.RemoveWorktreeAsync(repo, w.Branch, ct);
+                    await this.git.DeleteBranchAsync(repo, w.Branch, deleteRemote: true, ct);
+                }
+
                 // docs/forge/e2e.md Stage 5.2 — done-gate: if this was the
                 // last outstanding workstream, advance the spawn directly
                 // to done. Mirrors DriveReviewAsync's external-merge fast

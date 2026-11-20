@@ -36,12 +36,12 @@ public sealed record ChatConfigurationScope
 
 public sealed record ChatConnectionWrite(long ExpectedRevision, string ProviderId, string InstallationId, string DisplayName,
     bool Enabled, int SettingsVersion, JsonElement Settings,
-    IReadOnlyDictionary<string, ChatSecretReference> SecretReferences, IReadOnlyList<string> ProductIds);
+    IReadOnlyDictionary<string, ChatSecretReference> SecretReferences, IReadOnlyList<string> ProductIds, bool AllProducts = false);
 public sealed record ChatConnectionView(string Id, string ProviderId, string DisplayName, bool Enabled,
-    long Revision, int SettingsVersion, string State, string? Reason, string? InstallationId = null);
+    long Revision, int SettingsVersion, string State, string? Reason, string? InstallationId = null, bool AllProducts = false);
 public sealed record ChatConnectionDetails(string Id, string ProviderId, string InstallationId, string DisplayName, bool Enabled,
     long Revision, int SettingsVersion, JsonElement Settings, IReadOnlyDictionary<string, ChatSecretReference> SecretReferences,
-    IReadOnlyList<string> ProductIds);
+    IReadOnlyList<string> ProductIds, bool AllProducts = false);
 public sealed record ChatDestinationWrite(long ExpectedRevision, string ExternalTenantId, string ChannelId, string DisplayName, string Kind);
 public sealed record ChatPluginWrite(long ExpectedRevision, bool Enabled, int SettingsVersion, JsonElement Settings,
     bool ActivateNewRun = false, string? CopyFromSpawnId = null);

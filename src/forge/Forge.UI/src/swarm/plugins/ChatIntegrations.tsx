@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { chatApi, chatReason, chatRequest, type ChatConnection, type ChatDestination, type ChatHostStatus, type ChatManagement, type ChatSubscription } from './chatApi';
+import { chatApi, chatReason, chatRequest, routeForSave, type ChatConnection, type ChatDestination, type ChatHostDefault, type ChatHostStatus, type ChatManagement, type ChatSubscription } from './chatApi';
+import { changeChatProvider, ChatRouteFields, emptyChatRoute, type ChatRouteDraft } from './ChatRowControl';
 import { ChatConnectionEditor } from './ChatConnectionEditor';
 import { ChatDestinationSetup } from './ChatDestinationSetup';
 import { ChatIdentityLink } from './ChatIdentityLink';
@@ -98,6 +99,7 @@ export function ChatIntegrations() {
               <p>Select one from the saved list to view channels and check delivery.</p></div></div>}
         </section>}
       </div>
+      {management.canManageConnections && <StoryDefault connections={connections} management={management} />}
       <div className="chat-settings-grid"><ChatIdentityLink connections={connections} management={management} onRefresh={refresh} />
         <HostAlerts connections={connections} management={management} /></div>
     </>}
@@ -110,6 +112,82 @@ function ProviderIcon({ providerId }: { providerId: string }) {
       : providerId === 'slack' ? <svg viewBox="0 0 24 24" fill="none" strokeWidth="3" strokeLinecap="round"><path d="M9 3v7M3 9h7" stroke="#36c5f0" /><path d="M14 3v7M14 9h7" stroke="#2eb67d" /><path d="M3 14h7M9 14v7" stroke="#e01e5a" /><path d="M14 14h7M14 14v7" stroke="#ecb22e" /></svg>
         : <span>↗</span>}
   </span>;
+}
+
+/**
+ * "Set up once": the destinations every new story gets automatically
+ * (docs/chat/chat-per-workstream-conversations.md D2/D3). Stories keep their own
+ * settings once an operator saves them.
+ */
+function StoryDefault({ connections, management }: { connections: ChatConnection[]; management: ChatManagement }) {
+  const [saved, setSaved] = useState<ChatHostDefault | null>(null);
+  const [enabled, setEnabled] = useState(false);
+  const [routes, setRoutes] = useState<ChatRouteDraft[]>([]);
+  const [destinations, setDestinations] = useState<ChatDestination[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const connectionKey = connections.map(c => c.id).join('|');
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const [value, channels] = await Promise.all([chatApi.hostDefault(), Promise.all(connections.map(c => chatApi.destinations(undefined, c.id))).then(d => d.flat())]);
+      if (!active) return;
+      setSaved(value); setEnabled(value.enabled); setDestinations(channels);
+      setRoutes(value.routes.length ? value.routes.map(r => {
+        const d = channels.find(x => x.id === r.destinationId);
+        return { ...emptyChatRoute(), ...r, key: crypto.randomUUID(), connectionId: d?.connectionId ?? '', providerId: connections.find(c => c.id === d?.connectionId)?.providerId ?? '' };
+      }) : startingRoutes(connections));
+    })().catch(e => { if (active) setError((e as Error).message); });
+    return () => { active = false; };
+    // connectionKey tracks the connection list without re-running on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionKey]);
+  const complete = routes.length > 0 && routes.every(r => !!r.destinationId) && new Set(routes.map(r => r.destinationId)).size === routes.length;
+  async function save() {
+    if (!saved) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      const next = await chatApi.saveHostDefault({ expectedRevision: saved.revision, enabled, routes: routes.filter(r => r.destinationId).map(routeForSave) });
+      setSaved(next); setNotice(enabled ? 'Saved. New stories will start with chat on.' : 'Saved. New stories start with chat off.');
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+  async function apply() {
+    setBusy(true); setError(''); setNotice('');
+    try { const { applied } = await chatApi.applyHostDefault(); setNotice(`Applied the default to ${applied} active ${applied === 1 ? 'story' : 'stories'} (stories with their own settings were left alone).`); }
+    catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+  return <section className="chat-host-alerts chat-story-default" aria-label="Story default">
+    <header className="chat-section-heading"><div><span className="chat-eyebrow">SET UP ONCE</span><h3>Story default</h3></div></header>
+    <p className="chat-help">Every new story starts with remote control on, posting to these channels. A story can still change or turn off its own settings.</p>
+    <ol className="chat-help chat-story-default-steps">
+      <li>Pick a channel in each block below. Each block is one channel; to post to both Slack and Telegram keep one block per provider (use <strong>Add provider/channel</strong> for more).</li>
+      <li>Keep <strong>Conversations: one per workstream</strong> so every workstream gets its own thread or topic.</li>
+      <li>Tick <strong>Turn on chat for new stories</strong>, then <strong>Save story default</strong>. Use <strong>Apply to existing stories</strong> for stories already running.</li>
+    </ol>
+    {!saved && !error && <p className="chat-help" role="status">Loading story default…</p>}
+    {saved && <fieldset disabled={busy}>
+      <label className="chat-toggle-line"><span><strong>Turn on chat for new stories</strong><small>Applies to stories created after you save. Existing stories are only changed by the button below.</small></span>
+        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /></label>
+      {routes.map(route => <ChatRouteFields key={route.key} route={route} connections={connections} destinations={destinations} canManageConnections={false}
+        onChange={r => setRoutes(old => old.map(x => x.key === r.key ? r : x))} onSetup={() => undefined} onChannelSetup={() => undefined}
+        onRemove={() => setRoutes(old => old.filter(x => x.key !== route.key))} />)}
+      <button type="button" onClick={() => setRoutes(old => [...old, emptyChatRoute(management.interactiveAvailable)])}>Add provider/channel</button>
+      <p className="chat-help">Add channels in the connection list above first. Telegram needs a group with Topics on and the bot as admin with Manage topics.</p>
+      <div className="chat-actions">
+        <button type="button" className="primary" disabled={enabled && !complete} onClick={() => void save()}>{busy ? 'Saving…' : 'Save story default'}</button>
+        <button type="button" disabled={!saved.enabled || saved.revision === 0} title="Turn chat on for active stories that have no chat settings yet" onClick={() => void apply()}>Apply to existing stories</button>
+      </div>
+    </fieldset>}
+    {notice && <p className="chat-help" role="status">{notice}</p>}
+    {error && <p className="chat-error" role="alert">{error}</p>}
+  </section>;
+}
+
+/** One block per connected provider (Telegram, Slack) so "both" is the obvious starting point. */
+function startingRoutes(connections: ChatConnection[]): ChatRouteDraft[] {
+  const providers = [...new Set(connections.filter(c => c.enabled).map(c => c.providerId))].filter(p => p === 'telegram' || p === 'slack');
+  return providers.length ? providers.map(p => changeChatProvider(emptyChatRoute(), p, connections)) : [emptyChatRoute()];
 }
 
 function HostAlerts({ connections, management }: { connections: ChatConnection[]; management: ChatManagement }) {

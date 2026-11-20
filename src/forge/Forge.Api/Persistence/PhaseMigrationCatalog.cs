@@ -365,6 +365,9 @@ public static class PhaseMigrationCatalog
             ControlTables: new[] { "chat_receiver_state", "chat_conversation_bindings" }, ProductTables: Array.Empty<string>()),
         new PhaseMigrationSpec(106, PhaseMigrationKind.Control,
             ControlTables: new[] { "chat_migration_state", "chat_migration_items" }, ProductTables: Array.Empty<string>()),
+        // Phase 107 — per-workstream chat conversations + All-products connections.
+        new PhaseMigrationSpec(107, PhaseMigrationKind.Control,
+            ControlTables: new[] { "chat_connections", "chat_subscriptions", "chat_conversation_bindings" }, ProductTables: Array.Empty<string>()),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

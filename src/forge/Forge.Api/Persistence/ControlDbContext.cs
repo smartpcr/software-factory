@@ -106,6 +106,7 @@ public class ControlDbContext : DbContext
     public DbSet<ChatDestinationRow> ChatDestinations => this.Set<ChatDestinationRow>();
     public DbSet<ChatSubscriptionRow> ChatSubscriptions => this.Set<ChatSubscriptionRow>();
     public DbSet<ChatConversationBindingRow> ChatConversationBindings => this.Set<ChatConversationBindingRow>();
+    public DbSet<ChatHostDefaultRow> ChatHostDefaults => this.Set<ChatHostDefaultRow>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {

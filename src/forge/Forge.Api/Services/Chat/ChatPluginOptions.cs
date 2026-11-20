@@ -95,6 +95,7 @@ public static class ChatPluginRegistration
         services.AddScoped<ChatResultReconciler>();
         services.AddScoped<ChatScopeLifecycleService>();
         services.AddScoped<ChatScopeReconciler>();
+        services.AddScoped<ChatHostDefaultService>();
         services.AddScoped<ChatRetentionService>();
         services.AddScoped<ChatStatusService>();
         services.AddScoped<ChatLinkService>();

@@ -183,6 +183,14 @@ public static class ChatPluginEndpoints
             return Results.NoContent();
         }).WithMetadata(write);
 
+        // "Set up once": host-default story destinations (docs/chat/chat-per-workstream-conversations.md D2/D3).
+        api.MapGet("/chat/host-defaults", async (ForgeActionContext action, ChatHostDefaultService service, CancellationToken ct)
+            => await service.GetAsync(await action.ActorAsync(ct), ct)).WithMetadata(host);
+        api.MapPut("/chat/host-defaults", async (ChatHostDefaultWrite request, ForgeActionContext action, ChatHostDefaultService service, CancellationToken ct)
+            => await service.PutAsync(await action.ActorAsync(ct), request, ct)).WithMetadata(host);
+        api.MapPost("/chat/host-defaults/apply", async (ForgeActionContext action, ChatHostDefaultService service, CancellationToken ct)
+            => new { applied = await service.ApplyToExistingAsync(await action.ActorAsync(ct), ct) }).WithMetadata(host);
+
         api.MapGet("/chat/host/subscriptions", async (ForgeActionContext action, ChatConfigurationService service, CancellationToken ct)
             => await service.GetHostSetupAsync(await action.ActorAsync(ct), ct)).WithMetadata(hostAlerts);
         api.MapPut("/chat/host/subscriptions/{id}", async (string id, ChatSubscriptionWrite request, IOptions<ChatPluginOptions> options,

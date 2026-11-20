@@ -57,7 +57,9 @@
 .chat-panel-header h2 { padding-right: 20px; font-size: 21px; }
 .chat-panel-body fieldset, .chat-integrations fieldset { display: grid; gap: 12px; margin: 16px 0; padding: 0; border: 0; }
 .chat-panel label, .chat-integrations label { display: grid; gap: 7px; color: var(--sc-text-dim); font-size: 12px; }
-.chat-panel .chat-toggle-line { display: flex; margin-bottom: 10px; }
+.chat-panel .chat-toggle-line, .chat-integrations .chat-toggle-line { display: flex; margin-bottom: 10px; }
+.chat-integrations .chat-story-default { margin: 24px 0; padding: 22px; border: 1px solid var(--sc-border); border-radius: 8px; background: var(--sc-bg-2); }
+.chat-story-default .chat-route + .chat-route { margin-top: 4px; }
 .chat-panel input:not([type=checkbox]), .chat-panel textarea, .chat-integrations input:not([type=checkbox]), .chat-integrations textarea, .chat-integrations select { box-sizing: border-box; width: 100%; padding: 9px 10px; background: var(--sc-bg); color: var(--sc-text); border: 1px solid var(--sc-border-2); border-radius: 3px; font: inherit; }
 .chat-panel button:not(.chat-close), .chat-integrations button { padding: 8px 11px; border: 1px solid var(--sc-border-2); border-radius: 3px; background: var(--sc-surface); color: var(--sc-text); font: inherit; font-size: 12px; cursor: pointer; }
 .chat-panel button:hover:enabled, .chat-integrations button:hover:enabled { border-color: var(--sc-cyan); }

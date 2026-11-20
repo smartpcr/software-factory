@@ -13,7 +13,8 @@ using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 public sealed record ChatRouteDraft(string DestinationId, string ConversationPolicy, bool Interactive = true,
-    string ContentMode = "metadata", IReadOnlyList<string>? EventKinds = null, bool Paused = false);
+    string ContentMode = "metadata", IReadOnlyList<string>? EventKinds = null, bool Paused = false,
+    string ConversationScope = ChatConversationScopes.Story);
 public sealed record ChatSetupWrite(long ExpectedRevision, bool Enabled, IReadOnlyList<ChatRouteDraft> Destinations, bool ActivateNewRun = false);
 public sealed record ChatSetupView(ChatPluginView Plugin, bool CanManage, bool CanManageConnections, bool InteractiveAvailable,
     bool RedactedContentAllowed, string? HostReason, bool NotificationOnlySlice);
@@ -41,6 +42,18 @@ public sealed partial class ChatConfigurationService
                 write.Destinations.FirstOrDefault()?.DestinationId, write.ActivateNewRun), ct);
             return await this.SetupAsync(actor, product.Id, spawnId, ct);
         }
+        // An operator save makes these the story's own settings: the host default never overwrites them.
+        await this.SaveSetupCoreAsync(product, spawnId, write, copyOrigin: null, ct);
+        return await this.SetupAsync(actor, product.Id, spawnId, ct);
+    }
+
+    /// <summary>
+    /// The drawer save without the actor checks. <paramref name="copyOrigin"/> records where the
+    /// settings came from: null for an operator's own save, <see cref="ChatHostDefaultService.Origin"/>
+    /// when materialised from the host default.
+    /// </summary>
+    internal async Task SaveSetupCoreAsync(ProductRow product, string spawnId, ChatSetupWrite write, string? copyOrigin, CancellationToken ct)
+    {
         if (write.Destinations is null || write.Destinations.Count > 32 || write.Destinations.Any(d => d is null || string.IsNullOrWhiteSpace(d.DestinationId)) || write.Enabled && write.Destinations.Count == 0
             || write.Destinations.Select(d => d.DestinationId).Distinct(StringComparer.Ordinal).Count() != write.Destinations.Count)
             throw new ChatConfigurationException("invalid-destinations");
@@ -56,17 +69,7 @@ public sealed partial class ChatConfigurationService
             var destination = await control.ChatDestinations.AsNoTracking().SingleOrDefaultAsync(d => d.Id == draft.DestinationId && d.DeletedAt == null, ct)
                 ?? throw new ChatConfigurationException("destination-not-found", 404);
             await this.RequireConnectionGrantAsync(destination.ConnectionId, product.Id, ct);
-            var connection = await this.ConnectionAsync(destination.ConnectionId, ct);
-            var provider = providers.Resolve(connection.ProviderId) ?? throw new ChatConfigurationException("provider-unavailable", 409);
-            if (draft.ConversationPolicy is not ("flat" or "topic" or "thread")
-                || draft.ConversationPolicy == "topic" && !provider.Descriptor.Capabilities.Topics
-                || draft.ConversationPolicy == "thread" && !provider.Descriptor.Capabilities.Threads)
-                throw new ChatConfigurationException("unsupported-conversation-policy");
-            if (draft.Interactive && (!ChatPluginInteractiveGate.IsAvailable || !provider.Descriptor.Capabilities.Buttons
-                || provider.Descriptor.Capabilities.Reception == ChatReceptionMode.None)) throw new ChatConfigurationException("interactive-mode-unavailable", 409);
-            if (draft.ContentMode is not ("metadata" or "redacted")) throw new ChatConfigurationException("unsupported-content-mode");
-            if (draft.EventKinds is { } kinds && (kinds.Distinct().Count() != kinds.Count || kinds.Any(k => !SpawnKinds.Contains(k))))
-                throw new ChatConfigurationException("invalid-event-kinds");
+            await this.ValidateRouteAsync(draft, destination, ct);
         }
         var key = ChatConfigurationScope.Spawn(product.Id, spawnId).Key;
         await using var tx = await control.Database.BeginTransactionAsync(ct);
@@ -79,6 +82,7 @@ public sealed partial class ChatConfigurationService
         if (!write.Enabled || newRun || !parent.Enabled) await this.RetireBindingsAsync(key, ct);
         parent.Enabled = write.Enabled; parent.RunIdentity = run; parent.Revision++;
         parent.RetiredAt = write.Enabled ? null : DateTimeOffset.UtcNow;
+        parent.CopyOrigin = copyOrigin;
         // Retire conflicting routes before inserting replacements (SQLite's partial unique index is immediate).
         await this.SaveAsync(ct);
         foreach (var draft in write.Destinations)
@@ -92,11 +96,13 @@ public sealed partial class ChatConfigurationService
             }
             var eventKinds = JsonSerializer.Serialize(draft.EventKinds ?? SpawnKinds);
             var changed = subscription.Revision == 0 || subscription.ActivationGeneration != parent.ActivationGeneration || subscription.Interactive != draft.Interactive
-                || subscription.ContentMode != draft.ContentMode || subscription.Paused != draft.Paused || subscription.EventKindsJson != eventKinds;
+                || subscription.ContentMode != draft.ContentMode || subscription.Paused != draft.Paused || subscription.EventKindsJson != eventKinds
+                || subscription.ConversationScope != draft.ConversationScope;
             if (changed)
             {
                 subscription.ActivationGeneration = parent.ActivationGeneration;
                 subscription.Interactive = draft.Interactive; subscription.ContentMode = draft.ContentMode; subscription.Paused = draft.Paused;
+                subscription.ConversationScope = draft.ConversationScope;
                 subscription.EventKindsJson = eventKinds; subscription.Revision++;
                 foreach (var binding in await control.ChatConversationBindings.Where(b => b.SubscriptionId == subscription.Id && b.RetiredAt == null).ToListAsync(ct))
                 { binding.SubscriptionRevision = subscription.Revision; binding.Revision++; }
@@ -110,7 +116,26 @@ public sealed partial class ChatConfigurationService
             await control.SaveChangesAsync(ct);
         }
         await tx.CommitAsync(ct);
-        return await this.SetupAsync(actor, product.Id, spawnId, ct);
+    }
+
+    /// <summary>Per-route checks shared by the story drawer and the host default.</summary>
+    internal async Task ValidateRouteAsync(ChatRouteDraft draft, ChatDestinationRow destination, CancellationToken ct)
+    {
+        var connection = await this.ConnectionAsync(destination.ConnectionId, ct);
+        var provider = providers.Resolve(connection.ProviderId) ?? throw new ChatConfigurationException("provider-unavailable", 409);
+        if (draft.ConversationPolicy is not ("flat" or "topic" or "thread")
+            || draft.ConversationPolicy == "topic" && !provider.Descriptor.Capabilities.Topics
+            || draft.ConversationPolicy == "thread" && !provider.Descriptor.Capabilities.Threads)
+            throw new ChatConfigurationException("unsupported-conversation-policy");
+        // A per-workstream conversation is a topic or thread; flat channel messages have none.
+        if (!ChatConversationScopes.IsValid(draft.ConversationScope)
+            || draft.ConversationScope == ChatConversationScopes.Workstream && draft.ConversationPolicy == "flat")
+            throw new ChatConfigurationException("unsupported-conversation-scope");
+        if (draft.Interactive && (!ChatPluginInteractiveGate.IsAvailable || !provider.Descriptor.Capabilities.Buttons
+            || provider.Descriptor.Capabilities.Reception == ChatReceptionMode.None)) throw new ChatConfigurationException("interactive-mode-unavailable", 409);
+        if (draft.ContentMode is not ("metadata" or "redacted")) throw new ChatConfigurationException("unsupported-content-mode");
+        if (draft.EventKinds is { } kinds && (kinds.Distinct().Count() != kinds.Count || kinds.Any(k => !SpawnKinds.Contains(k))))
+            throw new ChatConfigurationException("invalid-event-kinds");
     }
 
     private async Task QueueIntroductionAsync(SpawnPluginRow parent, ChatSubscriptionRow subscription, StorySpawnRow spawn, CancellationToken ct)
@@ -118,13 +143,14 @@ public sealed partial class ChatConfigurationService
         if (subscription.Paused) return;
         var destination = await control.ChatDestinations.AsNoTracking().SingleAsync(d => d.Id == subscription.DestinationId, ct);
         var connection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == destination.ConnectionId, ct);
-        var binding = await control.ChatConversationBindings.SingleOrDefaultAsync(b => b.SubscriptionId == subscription.Id && b.RetiredAt == null, ct);
+        // The introduction goes to the story conversation (ChildKey empty), never to a workstream's.
+        var binding = await control.ChatConversationBindings.SingleOrDefaultAsync(b => b.SubscriptionId == subscription.Id && b.ChildKey == "" && b.RetiredAt == null, ct);
         if (binding is not null && binding.ProvisioningState != "pending") return;
         if (binding is null)
         {
             binding = new() { Id = Guid.NewGuid().ToString("N"), SubscriptionId = subscription.Id, SubscriptionRevision = subscription.Revision,
                 ActivationGeneration = parent.ActivationGeneration, ConnectionId = connection.Id, ExternalTenantId = destination.ExternalTenantId, ChannelId = destination.ChannelId,
-                RootDesiredState = spawn.Phase == "done" ? "completed" : "active" };
+                RootDesiredState = spawn.Phase == "done" ? "completed" : "active", Title = spawn.StoryId };
             control.ChatConversationBindings.Add(binding);
         }
         var dedupe = $"setup:{binding.Id}:{subscription.Revision}:{connection.Revision}:{destination.Revision}";
