@@ -16,7 +16,7 @@ using Microsoft.Extensions.Options;
 public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
 {
     public bool AllowsQuestions(string? productId, string subscriptionMode = "redacted") => subscriptionMode == "redacted"
-        && (productId is null ? options.Value.HostContentMode : options.Value.ProductContentModes.GetValueOrDefault(productId)) == "redacted";
+        && (productId is null ? options.Value.HostContentMode : options.Value.ProductContentMode(productId)) == "redacted";
 
     public ChatSemanticNotification Render(ChatNotificationRow row, ChatDeliveryMessageRow part, string subscriptionMode,
         IEnumerable<string> credentials, IReadOnlyList<ChatSemanticAction> actions)
@@ -25,23 +25,36 @@ public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
         {
             "open-questions" => "Forge · Open questions", "workstream-stalled" => "Forge · Workstream needs attention",
             "queue-strain" => "Forge · Queue pressure", "human-interaction" => "Forge · Host action needed",
-            "setup" => "Forge · Chat enabled", _ => "Forge notification",
+            "setup" => "Forge · Chat enabled", ChatEventCatalog.SpawnHalted => "Forge · Story halted", _ => "Forge notification",
         };
         var body = part.ControlsRetired ? "This request is closed. Open Forge for the current status." : "Open Forge to review the current status.";
-        if (row.Kind == "setup" && !part.ControlsRetired) body = "Chat is enabled for this parent. Every current and future child shares this conversation. Link your Forge operator account before using work actions.";
-        if (part.ConfirmationActorId is not null && !part.ControlsRetired) body = part.ActionKind == "question.prompt"
-            ? "Reply to this message with your answer. Only the operator who requested this prompt can answer it. Expires in 10 minutes."
-            : "Confirm restart of this target. This resets its worktree and run. Confirmation expires in 30 seconds.";
-        if (row.SpawnId is not null) body += $"\nTarget: {row.SpawnId} / {row.WorkstreamId ?? row.ArtifactKey ?? "parent"}";
-        var question = ChatPayloadConverter.Read(row)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision);
+        var payload = ChatPayloadConverter.Read(row);
+        if (row.Kind == "setup" && !part.ControlsRetired) body = !string.IsNullOrEmpty(payload?.Body) && payload.Body != "Chat is enabled for this parent and every current and future child."
+            ? payload.Body
+            : "Chat is enabled for this parent. Every current and future child shares this conversation. Link your Forge operator account before using work actions.";
+        if (part.ConfirmationActorId is not null && !part.ControlsRetired) body = part.ActionKind switch
+        {
+            "question.prompt" => "Reply to this message with your answer. Only the operator who requested this prompt can answer it. Expires in 10 minutes.",
+            ChatInboxService.PinPrompt => "Reply to this message with the decision to pin. It is added to every future iteration prompt for this document. Only the operator who requested this prompt can answer it. Expires in 10 minutes.",
+            "artifact.restart" => "Confirm restart of this document. Its iterations are cleared and it starts again at iteration 1. Confirmation expires in 30 seconds.",
+            _ => "Confirm restart of this target. This resets its worktree and run. Confirmation expires in 30 seconds.",
+        };
+        // Name the story and stage the way operators see them, not internal ids.
+        if (row.SpawnId is not null) body += payload?.StoryId is { Length: > 0 } story
+            ? $"\nStory {story}" + (payload.TargetLabel is { Length: > 0 } label ? $" · {label}" : "")
+            : $"\nTarget: {row.SpawnId} / {row.WorkstreamId ?? row.ArtifactKey ?? "parent"}";
+        var question = payload?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision);
         var allow = !part.ControlsRetired && this.AllowsQuestions(row.ScopeKind == "host" ? null : row.ProductId, subscriptionMode)
             && (part.QuestionId is null || question?.Text is not null);
         if (allow && question?.Text is { } questionText) body = questionText + "\n\n" + body;
+        // A halted story's reason (redacted at enqueue) leads the message where content is allowed.
+        if (allow && row.Kind == ChatEventCatalog.SpawnHalted && part.ConfirmationActorId is null && payload?.Body is { Length: > 0 } reason
+            && reason != row.Body) body = reason + "\n\n" + body;
         var link = this.Create(row.Id, row.Kind, ChatPayloadConverter.Read(row)?.StoryId ?? "", []).Body;
         var linkStart = link.IndexOf("\n\n", StringComparison.Ordinal);
         if (linkStart >= 0) body += link[linkStart..];
         return new(row.Id, row.Kind, Redact(title, credentials), Redact(body, credentials), part.DesiredRevision,
-            allow ? actions : [], part.QuestionId, ForceReply: allow && part.ActionKind == "question.prompt");
+            allow ? actions : [], part.QuestionId, ForceReply: allow && part.ActionKind is "question.prompt" or ChatInboxService.PinPrompt);
     }
 
     public static IReadOnlyList<string> Choices(string? json, IEnumerable<string> credentials)

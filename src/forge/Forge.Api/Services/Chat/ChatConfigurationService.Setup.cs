@@ -26,7 +26,7 @@ public sealed partial class ChatConfigurationService
         var plugin = await this.GetPluginAsync(actor, productId, spawnId, ct);
         return new(plugin, await authorizer.IsAllowedAsync(actor, ForgeCapabilities.SubscriptionManage, new(plugin.ProductId, spawnId), ct),
             await authorizer.IsAllowedAsync(actor, ForgeCapabilities.ConnectionManage, new(), ct),
-            ChatPluginInteractiveGate.AvailableFor(options.Value), options.Value.ProductContentModes.GetValueOrDefault(plugin.ProductId) == "redacted",
+            ChatPluginInteractiveGate.AvailableFor(options.Value), options.Value.ProductContentMode(plugin.ProductId) == "redacted",
             options.Value.UnavailableReason ?? (!options.Value.PluginsEnabled ? options.Value.Engine == "legacy" ? "legacy-engine-active" : "host-chat-disabled" : null), options.Value.TelegramSlice.Enabled);
     }
 
@@ -158,7 +158,11 @@ public sealed partial class ChatConfigurationService
         var now = clock.GetUtcNow();
         var notification = new ChatNotificationRow { Id = Guid.NewGuid().ToString("N"), Platform = "plugins", Kind = "setup", ScopeKind = "spawn",
             ProductId = parent.ProductId, SpawnId = parent.SpawnId, RepoId = spawn.RepoId, DedupeKey = dedupe, CatalogVersion = 1, PayloadVersion = 1,
-            PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, "Forge · Chat enabled", "Chat is enabled for this parent and every current and future child.", [], [], spawn.StoryId)),
+            PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, "Forge · Chat enabled",
+                subscription.ConversationScope == ChatConversationScopes.Workstream && subscription.ConversationPolicy != "flat"
+                    ? $"Chat is enabled for story {spawn.StoryId}. Story and plan messages appear here; each stage gets its own {(subscription.ConversationPolicy == "thread" ? "thread" : "topic")} when it first needs attention, closed when the stage finishes. Link your Forge operator account before using work actions."
+                    : "Chat is enabled for this parent and every current and future child.",
+                [], [], spawn.StoryId)),
             CreatedAt = now, ExpiresAt = now.AddDays(7), Status = "pending", RouteState = "routed" };
         control.ChatNotifications.Add(notification);
         var target = new ChatDeliveryTarget(1, "spawn", parent.ProductId, parent.SpawnId, null, parent.RunIdentity, parent.ActivationGeneration,

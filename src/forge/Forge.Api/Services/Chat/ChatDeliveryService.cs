@@ -9,6 +9,7 @@ namespace Forge.Api.Services.Chat;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Common.Chat;
+using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -135,11 +136,21 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                     ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
                 actions.Add(new(custom ? "Custom answer" : choices[index], token, "question.answer"));
             }
+            // Dismiss without answering, and (plan documents) pin a binding decision.
+            foreach (var extra in notification.ArtifactKey is null ? new[] { "question.dismiss" } : new[] { "question.dismiss", ForgeCapabilities.ArtifactPin })
+            {
+                var token = NewActionToken();
+                control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id, Action = extra, QuestionId = part.QuestionId,
+                    ExpectedRevision = part.ExpectedRevision, ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
+                actions.Add(new(ActionLabel(extra), token, extra));
+            }
         }
-        else if (target.Interactive && capabilities.Buttons && part.ActionKind != "question.prompt" && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
+        else if (target.Interactive && capabilities.Buttons && part.ActionKind is not ("question.prompt" or ChatInboxService.PinPrompt) && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
         {
             var kinds = part.ActionKind is not null ? new[] { part.ActionKind }
                 : notification.Kind == "workstream-stalled" && notification.WorkstreamId is not null ? new[] { "workstream.retry", "workstream.accept", "workstream.cancel", "workstream.restart" }
+                : notification.Kind == ChatEventCatalog.SpawnHalted
+                    ? notification.ArtifactKey is not null ? new[] { ForgeCapabilities.SpawnRetry, "artifact.restart", ForgeCapabilities.ArtifactPin } : new[] { ForgeCapabilities.SpawnRetry }
                 : Array.Empty<string>();
             foreach (var kind in kinds)
             {
@@ -147,7 +158,7 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id, Action = kind,
                     ActorId = part.ConfirmationActorId, ExpectedRevision = part.ExpectedRevision,
                     ExpiresAt = part.ExpiresAt ?? Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
-                actions.Add(new(part.ConfirmationActorId is null ? kind.Split('.').Last() : "Confirm restart", token, kind));
+                actions.Add(new(part.ConfirmationActorId is null ? ActionLabel(kind) : "Confirm restart", token, kind));
             }
         }
         var rendered = policy.Render(notification, part, subscription.ContentMode, await secrets.ValuesAsync(connection, ct), actions);
@@ -314,4 +325,17 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
             }
         }
     }
+
+    /// <summary>Button text for an action kind.</summary>
+    internal static string ActionLabel(string kind) => kind switch
+    {
+        "workstream.retry" or "spawn.retry" or "artifact.retry" => "🔁 Retry",
+        "workstream.accept" or "artifact.accept" => "✅ Accept",
+        "workstream.cancel" or "artifact.cancel" => "🚫 Cancel",
+        "workstream.restart" => "⚠ Restart",
+        "artifact.restart" => "⚠ Restart doc",
+        "artifact.pin" => "📌 Pin decision",
+        "question.dismiss" => "Dismiss",
+        _ => kind.Split('.').Last(),
+    };
 }

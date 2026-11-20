@@ -82,7 +82,7 @@ public sealed partial class ChatInboxService
         {
             var candidates = await control.ChatDeliveryMessages.AsNoTracking().Where(m => m.MessageId == envelope.ReplyToMessageId && !m.ControlsRetired).ToListAsync(ct);
             var exact = candidates.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address
-                && (m.QuestionId is not null || m.PartKey.StartsWith("legacy:", StringComparison.Ordinal))).ToArray();
+                && (m.QuestionId is not null || m.ActionKind == PinPrompt || m.PartKey.StartsWith("legacy:", StringComparison.Ordinal))).ToArray();
             if (exact.Length != 1) return "select-one-question";
             message = exact[0];
         }
@@ -126,12 +126,15 @@ public sealed partial class ChatInboxService
         using var validation = scopes.CreateScope();
         if (await validation.ServiceProvider.GetRequiredService<ChatScopeResolver>().ValidateAsync(target, notification, ct, action: true) is { } reason) return reason;
         var actor = await validation.ServiceProvider.GetRequiredService<ChatLinkService>().ResolveAsync(envelope.ProviderId, envelope.Address.ExternalTenantId, envelope.SenderId, ct);
-        var action = token?.Action ?? "question.answer";
+        // A reply to a Pin prompt carries no token: the prompt message itself names the action.
+        var action = token?.Action ?? (message.ActionKind == PinPrompt ? ForgeCapabilities.ArtifactPin : "question.answer");
         var actionTarget = new ForgeActionTarget(target.ProductId, target.SpawnId,
             WorkstreamId: action.StartsWith("workstream.", StringComparison.Ordinal) ? notification.WorkstreamId : null,
-            WorkItemId: action == "question.answer" ? notification.WorkItemId : null,
+            WorkItemId: action.StartsWith("question.", StringComparison.Ordinal) ? notification.WorkItemId : null,
             ArtifactKey: action.StartsWith("artifact.", StringComparison.Ordinal) ? notification.ArtifactKey : null);
-        await validation.ServiceProvider.GetRequiredService<ForgeCapabilityAuthorizer>().RequireAsync(actor, action, actionTarget, ct);
+        // Dismissing is part of answering, as in Forge's Questions tab.
+        var capability = action == "question.dismiss" ? ForgeCapabilities.QuestionAnswer : action;
+        await validation.ServiceProvider.GetRequiredService<ForgeCapabilityAuthorizer>().RequireAsync(actor, capability, actionTarget, ct);
         if ((token?.ActorId ?? message.ConfirmationActorId) is { } boundActor && actor!.UserId != boundActor) return "confirmation-actor-mismatch";
         if (message.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds()) return "stale-action";
         if (action.EndsWith(".restart", StringComparison.Ordinal) && token?.ActorId is null)
@@ -154,6 +157,39 @@ public sealed partial class ChatInboxService
         var db = domain.ServiceProvider.GetRequiredService<ProductDbContext>();
         var revision = token?.ExpectedRevision ?? message.ExpectedRevision;
         using var intent = ChatActionIntent.Push(revision);
+        if (action == "question.dismiss")
+        {
+            var dismissed = await domain.ServiceProvider.GetRequiredService<IOpenQuestionService>().DismissAsync(notification.WorkItemId!,
+                [(token?.QuestionId ?? message.QuestionId)!], actor!.UserId, ct);
+            if (token is not null) token.State = "consumed";
+            return dismissed.AcceptedCount == 0 ? "already-resolved" : "dismissed";
+        }
+        if (action == ForgeCapabilities.ArtifactPin)
+        {
+            if (notification.ArtifactKey is null) return "stale-action";
+            if (string.IsNullOrWhiteSpace(envelope.Text))
+            {
+                // Button tap: ask for the decision text in a reply only this operator can answer.
+                var promptKey = "pin:" + row.Id;
+                if (!await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.PartKey == promptKey, ct))
+                {
+                    control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, PartKey = promptKey, ActionKind = PinPrompt,
+                        ExpectedRevision = revision, ConfirmationActorId = actor!.UserId, ExpiresAt = clock.GetUtcNow().AddMinutes(10).ToUnixTimeMilliseconds() });
+                    var queued = await control.ChatDeliveries.SingleAsync(d => d.Id == delivery.Id, ct);
+                    queued.State = "pending"; queued.NextAttemptAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
+                    await budget.SaveAsync(control, ct); runtime.Signal();
+                }
+                return "pin-prompt-queued";
+            }
+            var pinConnection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == delivery.ConnectionId, ct);
+            if (!policy.AcceptsAnswer(envelope.Text, await secrets.ValuesAsync(pinConnection, ct))) return "safe-replacement-required";
+            var pinSpawn = await db.StorySpawns.AsNoTracking().SingleAsync(s => s.Id == target.SpawnId, ct);
+            var pinned = await domain.ServiceProvider.GetRequiredService<StoryOperatorActionService>()
+                .AddDecisionPinAsync(pinSpawn.StoryId, notification.ArtifactKey, envelope.Text, $"plan-doc:{target.SpawnId}:{notification.ArtifactKey}.md", actor!.UserId, ct);
+            var promptPart = await control.ChatDeliveryMessages.SingleOrDefaultAsync(m => m.Id == message.Id, ct);
+            if (promptPart is not null) { promptPart.ControlsRetired = true; promptPart.DesiredRevision++; promptPart.EditState = "pending"; }
+            return pinned is IStatusCodeHttpResult { StatusCode: >= 400 } ? "action-conflict" : "pinned";
+        }
         if (action == "question.answer")
         {
             var subscription = await control.ChatSubscriptions.AsNoTracking().SingleAsync(s => s.Id == delivery.SubscriptionId, ct);
@@ -210,6 +246,7 @@ public sealed partial class ChatInboxService
         var resultValue = action switch
         {
             "spawn.pause" => await stories.PauseSpawnAsync(spawn.StoryId, ct), "spawn.resume" => await stories.ResumeSpawnAsync(spawn.StoryId, ct),
+            ForgeCapabilities.SpawnRetry => await stories.RetrySpawnAsync(spawn.StoryId, ct),
             "artifact.retry" => await stories.RetryArtifactAsync(spawn.StoryId, notification.ArtifactKey!, ct),
             "artifact.accept" => await stories.AcceptArtifactAsync(spawn.StoryId, notification.ArtifactKey!, ct),
             "artifact.cancel" => await stories.CancelArtifactAsync(spawn.StoryId, notification.ArtifactKey!, ct),

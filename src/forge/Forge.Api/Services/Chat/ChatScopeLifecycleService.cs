@@ -28,6 +28,9 @@ public sealed class ChatScopeLifecycleService(ControlDbContext control)
         var subIds = subscriptions.Select(s => s.Id).ToList();
         foreach (var binding in await control.ChatConversationBindings.Where(b => subIds.Contains(b.SubscriptionId) && b.RetiredAt == null).ToListAsync(ct))
         { binding.RetiredAt = DateTimeOffset.UtcNow; binding.ProvisioningState = "orphaned"; binding.Revision++; }
+        // A deleted product keeps no connection access (stage-5 E2E found its grants left behind).
+        if (ids is null)
+            control.ChatConnectionProducts.RemoveRange(await control.ChatConnectionProducts.Where(g => g.ProductId == productId).ToListAsync(ct));
         if (control.ChangeTracker.HasChanges()) await control.SaveChangesAsync(ct);
     }
 
@@ -71,7 +74,7 @@ public sealed class ChatScopeLifecycleService(ControlDbContext control)
 }
 
 public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbContextFactory products, ChatScopeResolver resolver,
-    ChatHostDefaultService? hostDefaults = null)
+    ChatHostDefaultService? hostDefaults = null, ChatEventService? events = null)
 {
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
@@ -116,6 +119,10 @@ public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbCont
                 foreach (var binding in await control.ChatConversationBindings.Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.ProvisioningState == "degraded" && b.RetiredAt == null).ToListAsync(ct))
                     binding.ProvisioningState = binding.ConversationId is not null ? "ready" : "pending";
                 await RetireFinishedWorkstreamBindingsAsync(control, db!, liveSubscriptions, ct);
+                if (events is not null)
+                {
+                    foreach (var spawn in liveIds.Select(id => spawns[id])) await this.SyncHaltedAlertAsync(product.Id, spawn, ct);
+                }
                 var slackBindings = await control.ChatConversationBindings.Where(b => liveSubscriptions.Contains(b.SubscriptionId) && b.RetiredAt == null
                     && control.ChatConnections.Any(c => c.Id == b.ConnectionId && c.ProviderId == "slack")).ToListAsync(ct);
                 if (slackBindings.Count > 0)
@@ -140,6 +147,31 @@ public sealed class ChatScopeReconciler(ControlDbContext control, IProductDbCont
     /// siblings are untouched. A workstream restarted later gets a new conversation on
     /// its next message.
     /// </summary>
+    /// <summary>
+    /// A story with a LastError (the HALTED banner) gets one chat alert per distinct error, with
+    /// Retry and — when a plan document halted it — Restart / Pin for that document. When the error
+    /// clears, open halted alerts are resolved and their buttons retired.
+    /// </summary>
+    private async Task SyncHaltedAlertAsync(string productId, StorySpawnRow spawn, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(spawn.LastError) || spawn.Phase is "done" or "paused")
+        {
+            await events!.ResolveSpawnHaltedAsync(productId, spawn.Id, ct);
+            return;
+        }
+
+        var dedupe = "halted:" + ChatEventCatalog.Hash(spawn.LastError + "|" + spawn.LastErrorAt?.ToUnixTimeMilliseconds());
+        await events!.EnqueueAsync(new(ChatEventCatalog.SpawnHalted, dedupe, productId, spawn.Id,
+            ArtifactKey: HaltedArtifactKey(spawn.LastError), Detail: spawn.LastError), ct);
+    }
+
+    /// <summary>Plan-doc halts read "plan doc 'architecture' failed: …" (CrewStoryArtifactStrategy); null otherwise.</summary>
+    internal static string? HaltedArtifactKey(string? lastError)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(lastError ?? "", "^plan doc '([a-z0-9-]+)' failed");
+        return match.Success && Forge.Api.Auth.ForgeCapabilities.ArtifactKeys.Contains(match.Groups[1].Value) ? match.Groups[1].Value : null;
+    }
+
     internal static async Task<int> RetireFinishedWorkstreamBindingsAsync(
         ControlDbContext control, ProductDbContext db, IReadOnlyCollection<string> liveSubscriptions, CancellationToken ct)
     {

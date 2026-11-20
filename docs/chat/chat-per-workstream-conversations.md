@@ -331,6 +331,29 @@ Regression: chat, migration, schema, DbBoundary, split and product test sets —
 passed, 24 failed; clean `3641bc38` fails the same 24 (pre-existing), so no new
 failures. UI: `tsc` clean, vitest 203/203.
 
+## Stage 5 remote acceptance — run 1 (2026-11-20 00:43–01:05 UTC)
+
+Target: the live Forge.Api on this host (build = working tree on `3641bc38` after the
+second restart), real Slack workspace `forge` (`#all-forge`) and the Legacy Telegram
+forum group `-1004373092754`. Controller: Playwright driving the signed-in UI (its own
+`chatApi`/`operatorFetch`), Telegram Web for provider-side observation. Fixture: a
+throwaway product `e2e-chat-11191643` (own DB file) with one PAUSED story
+`e2e-chat-11191643:E2E` (no agents run) and two test workstreams. Run id = the product id.
+
+| Scenario | Result | Evidence |
+|---|---|---|
+| E1 new product sees connections | **pass** | `POST /api/products` 201; `GET /api/chat/connections?productId=…` lists bot, Legacy Telegram, Slack, all `allProducts` |
+| E2 new story auto-enabled | **pass** | sweep wrote `spawn_plugins` (Enabled, `host-default`); intros `sent` to Slack root `1795135698.007739` and Telegram topic `97` |
+| E3 one conversation per workstream | **pass** | liveness monitor raised both stall alerts; Slack roots `1795135993.960639` / `1795135997.936369`, Telegram topics `99` / `101`, each holding only its workstream's alert (seen in Telegram Web) |
+| E4 reply targets its workstream | **blocked** | metadata-only content mode renders no buttons or answer controls (by design, §content policy). Needs redacted content enabled for the product — an operator decision |
+| E5 finished workstream closes its conversation | **pass** | `POST /api/workstreams/{alpha}/cancel` 200; reconciler retired Alpha's bindings; Telegram `closeForumTopic` → `closed`, Slack root → retired; Beta stayed open |
+| Cleanup | **pass with findings** | `DELETE /api/products/…` 204; topics 97/101 `closed`, Slack roots retired. Left behind: 3 grant rows (fixed in code, not yet deployed) and the product's DB file (product deletion never removes files; not changed) |
+
+Follow-ups from the run: topic/thread titles and message bodies now name the story
+and stage ("harness:DSH · Stage 1.2 — Gate Runner Core", "Story harness:DSH · Stage
+…") instead of internal ids; the setup intro describes per-workstream conversations.
+Built and unit-tested, deployment pending a restart.
+
 ## Current live state (observed 2026-11-19, read-only)
 
 - Engine: plugins. One story uses remote control (code-intelligence ENABLE-MCP → Slack `#all-forge`, thread per story).

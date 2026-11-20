@@ -1416,6 +1416,32 @@
 }
 .swarm-ctrl .attention-hd::before { content: '⚠ '; color: var(--sc-red); }
 .swarm-ctrl .attention-bd { padding: 6px 8px; display: grid; gap: 4px; }
+/* Dismiss controls: header "Clear all" sits beside the collapse toggle; each
+ * item gets a × that does not trigger the row's select-on-click. */
+.swarm-ctrl .attention-bar { display: flex; align-items: stretch; }
+.swarm-ctrl .attention-bar .attention-hd { flex: 1; min-width: 0; }
+.swarm-ctrl .attention-clear {
+  appearance: none; border: 0; border-bottom: 1px solid var(--sc-border); border-left: 1px solid var(--sc-border);
+  background: transparent; color: var(--sc-text-dim); cursor: pointer; padding: 0 10px;
+  font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap;
+}
+.swarm-ctrl .attention-clear:hover { color: var(--sc-text); background: var(--sc-surface-2); }
+.swarm-ctrl .att-dismiss {
+  appearance: none; border: 0; background: transparent; color: var(--sc-muted); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 2px;
+}
+.swarm-ctrl .att-dismiss:hover, .swarm-ctrl .att-dismiss:focus-visible { color: var(--sc-red); }
+.swarm-ctrl .att-dismissed { color: var(--sc-muted); font-size: 9px; letter-spacing: 0.08em; }
+/* Two lines per item so the stage name and the reason both stay readable in the
+ * narrow master panel: "1.4 · CI and Release Rehearsal" over "blocked on 3 upstream". */
+.swarm-ctrl .att-item { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "id x" "reason x"; row-gap: 2px; }
+.swarm-ctrl .att-item .id { grid-area: id; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.04em; }
+.swarm-ctrl .att-item .reason { grid-area: reason; text-align: left; }
+.swarm-ctrl .att-item .att-dismiss, .swarm-ctrl .att-item .att-dismissed { grid-area: x; align-self: center; }
+.swarm-ctrl .attention-dismissed-note { color: var(--sc-muted); font-size: 10px; padding: 4px 8px; }
+.swarm-ctrl .attention-link {
+  appearance: none; border: 0; background: transparent; padding: 0; color: var(--sc-cyan); cursor: pointer; font: inherit; text-decoration: underline;
+}
 .swarm-ctrl .att-item {
   display: grid;
   grid-template-columns: auto 1fr auto;

@@ -14,6 +14,9 @@ using Microsoft.EntityFrameworkCore;
 public sealed partial class ChatInboxService(ControlDbContext control, ChatRuntimeState runtime, ChatDbBudget budget,
     ChatSecretResolver secrets, ChatContentPolicy policy, TimeProvider clock, IServiceScopeFactory scopes, ChatEngineCoordinator engine)
 {
+    /// <summary>Delivery-message kind of the "reply with the decision to pin" prompt.</summary>
+    public const string PinPrompt = "artifact.pin.prompt";
+
     public async ValueTask<ChatInboundAcceptance> AcceptBatchAsync(IReadOnlyList<ChatInboundEnvelope> envelopes,
         IReadOnlyList<ChatAcceptedCursor> cursors, IReadOnlyDictionary<string, long> revisions, CancellationToken ct = default)
     {

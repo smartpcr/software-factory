@@ -34,7 +34,10 @@ public static class ChatDomainRevision
         {
             var row = target.SpawnId is not null ? await db.StorySpawns.AsNoTracking().SingleOrDefaultAsync(s => s.Id == target.SpawnId, ct)
                 : await db.StorySpawns.AsNoTracking().SingleOrDefaultAsync(s => s.StoryId == target.StoryId, ct);
-            value = row is null ? null : new { row.Id, row.Phase, row.UpdatedAt, row.PlanDocPrsJson, target.ArtifactKey };
+            // The story's state, shared by story- and document-level actions: one halted alert offers both
+            // Retry (story) and Restart doc / Pin (document) against the same revision. The receipt key
+            // still distinguishes targets (it includes the artifact key).
+            value = row is null ? null : new { row.Id, row.Phase, row.UpdatedAt, row.PlanDocPrsJson };
         }
         return value is null ? 0 : Convert.ToInt64(ChatEventCatalog.Hash(JsonSerializer.Serialize(value))[..15], 16);
     }

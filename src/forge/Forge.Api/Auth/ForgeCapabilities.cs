@@ -22,13 +22,17 @@ public static class ForgeCapabilities
     public const string QuestionAnswer = "question.answer";
     public const string SpawnPause = "spawn.pause";
     public const string SpawnResume = "spawn.resume";
+    /// <summary>Re-drive a halted story (the banner's Retry).</summary>
+    public const string SpawnRetry = "spawn.retry";
+    /// <summary>Pin a binding decision for a plan document.</summary>
+    public const string ArtifactPin = "artifact.pin";
     public const string IdentityManage = "identity.manage";
     public static readonly IReadOnlySet<string> All = new[]
     {
         ConnectionManage, HostAlertManage, SubscriptionManage, LinkSelf, SpawnRead, QuestionAnswer,
-        SpawnPause, SpawnResume, IdentityManage,
+        SpawnPause, SpawnResume, SpawnRetry, IdentityManage,
         "workstream.retry", "workstream.accept", "workstream.cancel", "workstream.restart",
-        "artifact.retry", "artifact.accept", "artifact.cancel", "artifact.restart",
+        "artifact.retry", "artifact.accept", "artifact.cancel", "artifact.restart", ArtifactPin,
     }.ToFrozenSet(StringComparer.Ordinal);
     public static readonly IReadOnlySet<string> ArtifactKeys = PlanDocStateHelpers.PlanDocOrder.Append("qa-e2e").ToFrozenSet(StringComparer.Ordinal);
     public static readonly IReadOnlySet<string> Roles = new[]
@@ -137,7 +141,7 @@ public sealed class ForgeCapabilityAuthorizer(
         return capability switch
         {
             ForgeCapabilities.SpawnRead => true,
-            ForgeCapabilities.SubscriptionManage or ForgeCapabilities.SpawnPause or ForgeCapabilities.SpawnResume => spawn is not null,
+            ForgeCapabilities.SubscriptionManage or ForgeCapabilities.SpawnPause or ForgeCapabilities.SpawnResume or ForgeCapabilities.SpawnRetry => spawn is not null,
             ForgeCapabilities.QuestionAnswer => target.WorkItemId is not null,
             _ when capability.StartsWith("workstream.", StringComparison.Ordinal) => target.WorkstreamId is not null,
             _ when capability.StartsWith("artifact.", StringComparison.Ordinal) => spawn is not null && target.ArtifactKey is not null,

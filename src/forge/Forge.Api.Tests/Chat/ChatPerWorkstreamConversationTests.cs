@@ -50,6 +50,11 @@ public sealed class ChatPerWorkstreamConversationTests
         Assert.DoesNotContain("later", await Grants(control, "only-p"));
         // Idempotent: a second call stages nothing.
         Assert.Equal(0, await ChatConfigurationService.GrantAllProductsConnectionsAsync(control, "later"));
+
+        // Deleting the product removes its grants (stage-5 E2E found them left behind).
+        await ChatScopeLifecycleService.RetireAsync(control, "later", null);
+        Assert.DoesNotContain("later", await Grants(control, "everyone"));
+        Assert.Contains("p", await Grants(control, "everyone"));
     }
 
     [Fact]
@@ -243,8 +248,8 @@ public sealed class ChatPerWorkstreamConversationTests
         Assert.Equal(2, alpha.Select(b => b.ConversationId).Distinct().Count());
         // Topic names identify the story and the workstream (name when known, else id).
         var gate = alpha.Single(b => b.ChildKey == "child-0");
-        Assert.Equal("story · Gate runner", f.Alpha.Titles[gate.Id]);
-        Assert.Equal("story · child-1", f.Alpha.Titles[alpha.Single(b => b.ChildKey == "child-1").Id]);
+        Assert.Equal("story · Stage 1.1 — Gate runner", f.Alpha.Titles[gate.Id]);
+        Assert.StartsWith("story · Stage ", f.Alpha.Titles[alpha.Single(b => b.ChildKey == "child-1").Id]);
         // Each stall landed only in its own workstream's topic (D6: replies there are address-scoped to it).
         var alphaSent = f.Alpha.Sent.Where(s => s.Address.ConnectionId == "alpha-one").ToList();
         Assert.Equal(2, alphaSent.Count);
@@ -313,6 +318,32 @@ public sealed class ChatPerWorkstreamConversationTests
         Assert.Equal("ready", alpha.Single(b => b.ChildKey == "child-1").ProvisioningState);
         var child1 = alpha.Single(b => b.ChildKey == "child-1");
         Assert.Contains(f.Alpha.Sent, s => s.Address.ConnectionId == "alpha-one" && s.Address.ConversationId == child1.ConversationId);
+    }
+
+    [Fact]
+    public void Conversation_Titles_Name_The_Story_And_Stage_Not_Internal_Ids()
+    {
+        var spawn = new StorySpawnRow { Id = "spawn-harness-DSH", StoryId = "harness:DSH" };
+        var staged = new ChatOwnedScope(null, spawn, "ws-1", "ws-1", null, null, false, "Gate Runner Core", "1.2");
+        Assert.Equal("Stage 1.2 — Gate Runner Core", staged.TargetLabel);
+        Assert.Equal("harness:DSH · Stage 1.2 — Gate Runner Core", ChatEventService.ConversationTitle(staged, "ws-1"));
+        Assert.Equal("harness:DSH", ChatEventService.ConversationTitle(staged, ""));
+        // No stage number yet (no plan anchor): the name; nothing at all: the id.
+        Assert.Equal("Gate Runner Core", (staged with { StageNumber = null }).TargetLabel);
+        Assert.Equal("ws-1", (staged with { StageNumber = null, WorkstreamName = null }).TargetLabel);
+        // Plan-doc questions name the artifact; story-level events have no target label.
+        Assert.Equal("Plan · architecture", new ChatOwnedScope(null, spawn, "plan-doc:x:architecture.md", null, "architecture", null).TargetLabel);
+        Assert.Null(new ChatOwnedScope(null, spawn, null, null, null, null).TargetLabel);
+    }
+
+    [Fact]
+    public void Default_Product_Content_Mode_Covers_Unlisted_And_Future_Products_While_Explicit_Entries_Win()
+    {
+        var options = new ChatPluginOptions { DefaultProductContentMode = "redacted" };
+        options.ProductContentModes["locked"] = "metadata";
+        Assert.Equal("redacted", options.ProductContentMode("any-new-product"));
+        Assert.Equal("metadata", options.ProductContentMode("locked"));
+        Assert.Equal("metadata", new ChatPluginOptions().ProductContentMode("any")); // unchanged default
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

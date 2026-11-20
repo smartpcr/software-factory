@@ -59,7 +59,10 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                     .Select(q => new ChatQuestionPayload(q.ExternalId, q.Id, includeQuestionText ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], credentials) : null,
                         includeQuestionText ? ChatContentPolicy.Choices(q.ChoicesJson, credentials) : null)));
             }
-            notification.PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, notification.Title, notification.Body, questions, [], owned.Spawn?.StoryId));
+            // Detail (e.g. the halt reason) is free text: it is redacted here and shown only where the content policy allows.
+            var detail = includeQuestionText && !string.IsNullOrWhiteSpace(input.Detail)
+                ? ChatContentPolicy.Redact(input.Detail.Length > 600 ? input.Detail[..600] + "…" : input.Detail, credentials) : notification.Body;
+            notification.PayloadJson = JsonSerializer.Serialize(new ChatEventPayload(1, notification.Title, detail, questions, [], owned.Spawn?.StoryId, owned.TargetLabel));
             var subscriptions = await control.ChatSubscriptions.Where(s => s.ScopeKey == scope.Key && s.RetiredAt == null).ToListAsync(ct);
             var parent = spawnScope ? await control.SpawnPlugins.SingleOrDefaultAsync(p => p.ProductId == scope.ProductId && p.SpawnId == scope.SpawnId && p.PluginId == "chat", ct) : null;
             notification.RouteReason = !ChatEventCatalog.Known(input.Kind) ? "unsupported-kind"
@@ -98,7 +101,7 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                     var delivery = new ChatDeliveryRow { NotificationId = notification.Id, SubscriptionId = sub.Id, BindingId = binding.Id,
                         ConnectionId = connection.Id, ChannelId = destination.ChannelId, TargetJson = JsonSerializer.Serialize(target),
                         CreatedAt = now.ToUnixTimeMilliseconds(), NextAttemptAt = now.ToUnixTimeMilliseconds(), DomainRevision = input.Revision,
-                        Actionable = sub.Interactive && ChatEventCatalog.SpawnDefaults.Contains(input.Kind) };
+                        Actionable = sub.Interactive && ChatEventCatalog.SpawnAlerts.Contains(input.Kind) };
                     control.ChatDeliveries.Add(delivery);
                     if (questions.Count == 0)
                     {
@@ -127,6 +130,30 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
     }
 
     /// <summary>
+    /// The halted story is running again: resolve its open halted alerts and retire their buttons
+    /// (the sent messages are edited to "closed"). Returns the number of alerts resolved.
+    /// </summary>
+    public async Task<int> ResolveSpawnHaltedAsync(string productId, string spawnId, CancellationToken ct = default)
+    {
+        var open = await control.ChatNotifications.Where(n => n.Platform == "plugins" && n.Kind == ChatEventCatalog.SpawnHalted
+            && n.ProductId == productId && n.SpawnId == spawnId && n.Status == "pending").ToListAsync(ct);
+        if (open.Count == 0) return 0;
+        var now = clock.GetUtcNow();
+        foreach (var notification in open) { notification.Status = "resolved"; notification.RespondedAt = now; }
+        var ids = open.Select(n => n.Id).ToList();
+        foreach (var message in await control.ChatDeliveryMessages.Where(m => control.ChatDeliveries.Any(d => d.Id == m.DeliveryId && ids.Contains(d.NotificationId))).ToListAsync(ct))
+        {
+            if (!message.ControlsRetired) { message.ControlsRetired = true; message.DesiredRevision++; }
+            if (message.State == "sent") message.EditState = "pending";
+            else if (message.State == "pending") message.State = "cancelled";
+            foreach (var token in await control.ChatActionTokens.Where(t => t.DeliveryMessageId == message.Id && t.State == "active").ToListAsync(ct)) token.State = "retired";
+        }
+        await control.SaveChangesAsync(ct);
+        runtime.Signal();
+        return open.Count;
+    }
+
+    /// <summary>
     /// The workstream a notification's conversation belongs to: its verified child workstream
     /// when the subscription is per-workstream and threaded, else empty (the story conversation).
     /// Planning artifacts and story status have no child workstream and stay on the story.
@@ -140,6 +167,6 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
     {
         var story = owned.Spawn?.StoryId;
         if (string.IsNullOrEmpty(story)) return null;
-        return childKey.Length == 0 ? story : $"{story} · {(string.IsNullOrWhiteSpace(owned.WorkstreamName) ? childKey : owned.WorkstreamName)}";
+        return childKey.Length == 0 ? story : $"{story} · {owned.TargetLabel ?? childKey}";
     }
 }

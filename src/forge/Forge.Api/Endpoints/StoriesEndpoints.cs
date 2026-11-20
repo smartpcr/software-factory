@@ -3738,7 +3738,21 @@ public static class StoriesEndpoints
         if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
 
         var actor = Forge.Api.Auth.ForgeUser.UserId(ctx) ?? "anonymous";
+        var newPin = AppendDecisionPin(spawn, req.Text, req.WorkItemId, actor);
+        await control.SaveChangesAsync(); await db.SaveChangesAsync();
 
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "decision-pin-added", spawn = ToContract(spawn) });
+
+        return Results.Ok(newPin);
+    }
+
+    /// <summary>
+    /// Append a decision pin to the spawn (no save). Shared by the HTTP endpoint and the
+    /// chat "Pin decision" action so both write the same shape.
+    /// </summary>
+    internal static Dictionary<string, object?> AppendDecisionPin(StorySpawnRow spawn, string text, string? workItemId, string actor)
+    {
         // Load existing pins, append new one, persist. The id is a fresh
         // guid so the UI / DELETE endpoint can address it without race
         // conditions on text equality.
@@ -3757,8 +3771,8 @@ public static class StoriesEndpoints
         var newPin = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["id"] = Guid.NewGuid().ToString("N"),
-            ["text"] = req.Text.Trim(),
-            ["workItemId"] = string.IsNullOrWhiteSpace(req.WorkItemId) ? null : req.WorkItemId.Trim(),
+            ["text"] = text.Trim(),
+            ["workItemId"] = string.IsNullOrWhiteSpace(workItemId) ? null : workItemId.Trim(),
             ["createdAt"] = DateTimeOffset.UtcNow.ToString("O"),
             ["createdBy"] = actor,
         };
@@ -3766,12 +3780,7 @@ public static class StoriesEndpoints
 
         spawn.DecisionPinsJson = JsonSerializer.Serialize(pins, JsonOpts);
         spawn.UpdatedAt = DateTimeOffset.UtcNow;
-        await control.SaveChangesAsync(); await db.SaveChangesAsync();
-
-        await hub.Clients.All.SendAsync("story-spawn.changed",
-            new { kind = "decision-pin-added", spawn = ToContract(spawn) });
-
-        return Results.Ok(newPin);
+        return newPin;
     }
 
     private static async Task<IResult> RemoveDecisionPin(

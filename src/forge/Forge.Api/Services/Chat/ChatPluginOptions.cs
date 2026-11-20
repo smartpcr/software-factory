@@ -23,7 +23,13 @@ public sealed class ChatPluginOptions
     public TelegramSliceOptions TelegramSlice { get; set; } = new();
     public ChatAuthorizationOptions Authorization { get; set; } = new();
     public Dictionary<string, string> ProductContentModes { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>Maximum content mode for products not listed in <see cref="ProductContentModes"/> (including products created later).</summary>
+    public string DefaultProductContentMode { get; set; } = "metadata";
     public string HostContentMode { get; set; } = "metadata";
+
+    /// <summary>The product's maximum content mode: its own entry, else <see cref="DefaultProductContentMode"/>.</summary>
+    public string ProductContentMode(string productId)
+        => this.ProductContentModes.TryGetValue(productId, out var mode) ? mode : this.DefaultProductContentMode;
     public bool LegacyEnabled(bool legacyOptIn) => this.Engine == "legacy" && this.Enabled != false && legacyOptIn;
     public bool PluginsEnabled => this.Engine == "plugins" && this.Enabled == true;
     public string? UnavailableReason => this.Engine is not ("legacy" or "plugins") ? "unsupported-chat-engine"

@@ -142,8 +142,10 @@ public sealed partial class ChatInboxService
     private async Task<QuestionCandidates> ActiveQuestionsAsync(ChatInboundEnvelope envelope, CancellationToken ct)
     {
         var addressJson = JsonSerializer.Serialize(envelope.Address);
-        var candidates = await control.ChatDeliveryMessages.AsNoTracking().Where(m => m.State == "sent" && !m.ControlsRetired && m.QuestionId != null
-            && m.AddressJson == addressJson && (m.ActionKind != "question.prompt" || envelope.ProviderId == "slack")
+        // Slack thread replies name the root, not the prompt; Telegram replies use force-reply instead.
+        var candidates = await control.ChatDeliveryMessages.AsNoTracking().Where(m => m.State == "sent" && !m.ControlsRetired
+            && (m.QuestionId != null && (m.ActionKind != "question.prompt" || envelope.ProviderId == "slack") || m.ActionKind == PinPrompt && envelope.ProviderId == "slack")
+            && m.AddressJson == addressJson
             && control.ChatDeliveries.Any(d => d.Id == m.DeliveryId && d.ConnectionId == envelope.ConnectionId && d.ChannelId == envelope.Address.ChannelId))
             .OrderByDescending(m => m.ActionKind == "question.prompt").ThenBy(m => m.Id).Take(201).ToListAsync(ct);
         if (candidates.Count == 201) return new([], true); // Never infer a unique question from a truncated scan.
@@ -152,21 +154,26 @@ public sealed partial class ChatInboxService
         var result = new List<ChatDeliveryMessageRow>();
         foreach (var message in candidates.Where(m => JsonSerializer.Deserialize<ChatAddress>(m.AddressJson) == envelope.Address))
         {
-            if (message.ActionKind == "question.prompt" && (actor is null || message.ConfirmationActorId != actor.UserId
+            if (message.ActionKind is "question.prompt" or PinPrompt && (actor is null || message.ConfirmationActorId != actor.UserId
                 || message.ExpiresAt <= clock.GetUtcNow().ToUnixTimeMilliseconds())) continue;
             var delivery = await control.ChatDeliveries.AsNoTracking().SingleAsync(d => d.Id == message.DeliveryId, ct);
             var notification = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == delivery.NotificationId, ct);
             var target = JsonSerializer.Deserialize<ChatDeliveryTarget>(delivery.TargetJson)!;
             if (notification.ExpiresAt <= clock.GetUtcNow() || notification.Status is "expired" or "resolved" or "superseded"
                 || await scope.ServiceProvider.GetRequiredService<ChatScopeResolver>().ValidateAsync(target, notification, ct, action: true) is not null) continue;
-            try { await scope.ServiceProvider.GetRequiredService<ForgeCapabilityAuthorizer>().RequireAsync(actor, ForgeCapabilities.QuestionAnswer,
-                new(target.ProductId, target.SpawnId, WorkItemId: notification.WorkItemId), ct); }
+            try
+            {
+                await scope.ServiceProvider.GetRequiredService<ForgeCapabilityAuthorizer>().RequireAsync(actor,
+                    message.ActionKind == PinPrompt ? ForgeCapabilities.ArtifactPin : ForgeCapabilities.QuestionAnswer,
+                    message.ActionKind == PinPrompt ? new(target.ProductId, target.SpawnId, ArtifactKey: notification.ArtifactKey)
+                        : new(target.ProductId, target.SpawnId, WorkItemId: notification.WorkItemId), ct);
+            }
             catch (ForgeAccessDeniedException) { continue; }
             if (!result.Any(m => m.DeliveryId == message.DeliveryId && m.QuestionId == message.QuestionId && m.ExpectedRevision == message.ExpectedRevision)) result.Add(message);
         }
         // Slack thread replies identify the root, not the question message. An actor's explicit custom selection
         // narrows the candidates; several active selections still require a message ID and never select arbitrarily.
-        var selected = result.Where(m => m.ActionKind == "question.prompt").ToList();
+        var selected = result.Where(m => m.ActionKind is "question.prompt" or PinPrompt).ToList();
         return new(selected.Count > 0 ? selected : result);
     }
 
@@ -190,7 +197,7 @@ public sealed partial class ChatInboxService
     {
         var envelope = JsonSerializer.Deserialize<ChatInboundEnvelope>(row.EnvelopeJson ?? "null");
         // Identity approval is private. Settings observes the verified link; never publish a channel reply.
-        if (envelope is null || envelope.Kind is "ignored" or "identity-link" || row.Result is "ignored" or "answer-prompt-queued" || row.ResponseState != "none") return;
+        if (envelope is null || envelope.Kind is "ignored" or "identity-link" || row.Result is "ignored" or "answer-prompt-queued" or "pin-prompt-queued" || row.ResponseState != "none") return;
         if (envelope.Command is not ("start" or "link" or "unlink") && (await this.BindingsAsync(envelope.Address, ct)).Count == 0) return;
         row.ResponseText ??= row.Result switch
         {
@@ -206,6 +213,8 @@ public sealed partial class ChatInboxService
             "parent-paused" => "The parent workstream and its active children are paused. Resume restores their prior state.",
             "parent-resumed" => "The parent workstream is resumed.",
             "accepted" => "Action accepted. Open Forge for current status.",
+            "dismissed" => "Question dismissed.",
+            "pinned" => "Decision pinned. Every future iteration of this document follows it.",
             "confirmation-queued" => "Review the separate restart confirmation before proceeding.",
             "operation-needs-repair" => "A previous operation has an unknown outcome. Open Forge to inspect and repair it before retrying.",
             "safe-replacement-required" => "The answer contains unsupported or sensitive content. Send a safe replacement, or answer in Forge.",

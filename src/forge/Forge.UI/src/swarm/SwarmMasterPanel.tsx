@@ -9,6 +9,7 @@ import {
 } from '@/state/useWorkstreamsStore';
 import { isQaE2e, qaE2eByImplId } from './qaE2eSelector';
 import { computeStageNumbers } from './stageNumbering';
+import { dismiss, isDismissed, loadDismissals, saveDismissals, type Dismissals } from './attentionDismissals';
 
 export type SelectionKind = 'overview' | 'phase' | 'doc' | 'gate';
 export interface Selection {
@@ -166,11 +167,24 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
   const ws = detail.workstreams;
   const stalled = ws.filter((w) => w.status === 'stalled');
   const blocked = ws.filter((w) => w.status === 'blocked');
-  const attention = [...stalled, ...blocked];
+  const allAttention = [...stalled, ...blocked];
 
   // Phase 49 follow-up — collapsible NEEDS ATTENTION block. Persisted per
   // story so the operator's choice survives reloads + product switches.
   const storyId = detail.spawn.storyId;
+
+  // Operator can dismiss items one by one or all at once. A dismissed item
+  // returns when its status / stall reason changes (see attentionDismissals).
+  const [dismissals, setDismissals] = useState<Dismissals>(() => loadDismissals(storyId));
+  useEffect(() => { setDismissals(loadDismissals(storyId)); }, [storyId]);
+  const [showDismissed, setShowDismissed] = useState(false);
+  const attention = showDismissed ? allAttention : allAttention.filter((w) => !isDismissed(w, dismissals));
+  const dismissedCount = allAttention.length - allAttention.filter((w) => !isDismissed(w, dismissals)).length;
+  const dismissItems = (items: typeof allAttention) => {
+    const next = dismiss(items, allAttention, dismissals);
+    setDismissals(next); saveDismissals(storyId, next); setShowDismissed(false);
+  };
+  const restoreDismissed = () => { setDismissals({}); saveDismissals(storyId, {}); setShowDismissed(false); };
   const [attentionCollapsed, setAttentionCollapsed] = useState<boolean>(
     () => loadAttentionCollapsed(storyId),
   );
@@ -299,27 +313,43 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
         })}
       </div>
       <div className="panel-bd">
+        {attention.length === 0 && dismissedCount > 0 && (
+          <div className="attention-dismissed-note">
+            {dismissedCount} attention {dismissedCount === 1 ? 'item' : 'items'} dismissed ·{' '}
+            <button type="button" className="attention-link" onClick={() => setShowDismissed(true)}>show</button>{' '}·{' '}
+            <button type="button" className="attention-link" onClick={restoreDismissed}>restore</button>
+          </div>
+        )}
         {attention.length > 0 && (
           <div className={`attention${attentionCollapsed ? ' is-collapsed' : ''}`}>
-            <button
-              type="button"
-              className="attention-hd"
-              onClick={toggleAttentionCollapsed}
-              aria-expanded={!attentionCollapsed}
-              aria-controls={`attention-bd-${storyId}`}
-              title={attentionCollapsed ? 'Expand needs-attention list' : 'Collapse needs-attention list'}
-            >
-              <span className="attention-hd__left">
-                <span className="attention-chev" aria-hidden="true">{attentionCollapsed ? '▸' : '▾'}</span>
-                <span>NEEDS ATTENTION</span>
-              </span>
-              <span>{attention.length}</span>
-            </button>
+            <div className="attention-bar">
+              <button
+                type="button"
+                className="attention-hd"
+                onClick={toggleAttentionCollapsed}
+                aria-expanded={!attentionCollapsed}
+                aria-controls={`attention-bd-${storyId}`}
+                title={attentionCollapsed ? 'Expand needs-attention list' : 'Collapse needs-attention list'}
+              >
+                <span className="attention-hd__left">
+                  <span className="attention-chev" aria-hidden="true">{attentionCollapsed ? '▸' : '▾'}</span>
+                  <span>NEEDS ATTENTION</span>
+                </span>
+                <span>{attention.length}</span>
+              </button>
+              {showDismissed
+                ? <button type="button" className="attention-clear" onClick={() => setShowDismissed(false)} title="Hide dismissed items again">Hide dismissed</button>
+                : <button type="button" className="attention-clear" onClick={() => dismissItems(attention)}
+                    title="Dismiss every item listed. An item comes back if its status or stall reason changes.">Clear all</button>}
+            </div>
             {!attentionCollapsed && (
               <div className="attention-bd" id={`attention-bd-${storyId}`}>
                 {attention.map((w) => (
                   <div key={w.id} className="att-item" onClick={() => onSelect({ kind: 'phase', id: w.id })}>
-                    <span className="id">{shortId(w.id)}</span>
+                    {/* Stage number + name, as on the phase cards; the full id stays in the tooltip. */}
+                    <span className="id" title={w.id}>
+                      {[stageNumOf.get(w.id), w.name || shortId(w.id)].filter(Boolean).join(' · ')}
+                    </span>
                     <span
                       className="reason"
                       title={w.status === 'stalled' && w.stallReason ? w.stallReason : undefined}
@@ -328,9 +358,24 @@ function ImplMaster({ detail, selection, onSelect, collapsed, onToggleCollapsed 
                         ? `stalled — ${w.stallReason ?? 'escalate to lead'}`
                         : `blocked on ${w.deps.length} upstream`}
                     </span>
-                    <span style={{ color: 'var(--sc-muted)' }}>›</span>
+                    {isDismissed(w, dismissals)
+                      ? <span className="att-dismissed" title="Dismissed">dismissed</span>
+                      : <button
+                          type="button"
+                          className="att-dismiss"
+                          aria-label={`Dismiss ${shortId(w.id)}`}
+                          title="Dismiss. It comes back if its status or stall reason changes."
+                          onClick={(e) => { e.stopPropagation(); dismissItems([w]); }}
+                        >×</button>}
                   </div>
                 ))}
+                {dismissedCount > 0 && !showDismissed && (
+                  <div className="attention-dismissed-note">
+                    {dismissedCount} dismissed ·{' '}
+                    <button type="button" className="attention-link" onClick={() => setShowDismissed(true)}>show</button>{' '}·{' '}
+                    <button type="button" className="attention-link" onClick={restoreDismissed}>restore</button>
+                  </div>
+                )}
               </div>
             )}
           </div>

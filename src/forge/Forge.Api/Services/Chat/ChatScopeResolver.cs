@@ -13,7 +13,19 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 public sealed record ChatOwnedScope(ProductRow? Product, StorySpawnRow? Spawn, string? WorkItemId, string? WorkstreamId,
-    string? ArtifactKey, string? Reason, bool Degraded = false, string? WorkstreamName = null);
+    string? ArtifactKey, string? Reason, bool Degraded = false, string? WorkstreamName = null, string? StageNumber = null)
+{
+    /// <summary>"Stage 1.2 — Gate Runner Core", "Stage 1.2", the workstream name, or a plan artifact; null for the story.</summary>
+    public string? TargetLabel => WorkstreamId is not null
+        ? (StageNumber, WorkstreamName) switch
+        {
+            ({ Length: > 0 } n, { Length: > 0 } s) => $"Stage {n} — {s}",
+            ({ Length: > 0 } n, _) => $"Stage {n}",
+            (_, { Length: > 0 } s) => s,
+            _ => WorkstreamId,
+        }
+        : ArtifactKey is not null ? $"Plan · {ArtifactKey}" : null;
+}
 
 public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContextFactory products, IForgeDbPaths paths,
     IOptions<ChatPluginOptions> options)
@@ -79,6 +91,9 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
             }
             // An explicit parent alone is valid only for a parent status/action event, never proof of child ownership.
             if (childId is null) parentId = input.SpawnId;
+            // A halted story may name the plan document that halted it (target context for Restart / Pin).
+            if (childId is null && input.Kind == ChatEventCatalog.SpawnHalted && input.ArtifactKey is not null
+                && ForgeCapabilities.ArtifactKeys.Contains(input.ArtifactKey)) artifact = input.ArtifactKey;
             if (parentId is null || input.SpawnId is not null && input.SpawnId != parentId
                 || input.ArtifactKey is not null && input.ArtifactKey != artifact)
                 return new(product, null, null, null, null, "unresolved-scope");
@@ -87,7 +102,15 @@ public sealed class ChatScopeResolver(ControlDbContext control, IProductDbContex
                 || child is not null && child.RepoId != spawn.RepoId
                 || !await db.Repos.AnyAsync(r => r.Id == spawn.RepoId && r.ProductId == product.Id, ct))
                 return new(product, null, null, null, null, "unresolved-scope");
-            return new(product, spawn, input.WorkItemId, child?.Id, artifact, null, false, child?.Name);
+            // Same stage numbering the UI and stall alerts use, so chat titles match what operators see.
+            string? stage = null;
+            if (child is not null)
+            {
+                var siblings = await db.Workstreams.AsNoTracking().Where(w => w.StorySpawnId == spawn.Id).OrderBy(w => w.Sort)
+                    .Select(w => new StageNumbering.StageWs(w.Id, w.PhaseAnchor, w.PlanAnchor, w.Category)).ToListAsync(ct);
+                stage = StageNumbering.Compute(siblings).GetValueOrDefault(child.Id);
+            }
+            return new(product, spawn, input.WorkItemId, child?.Id, artifact, null, false, child?.Name, stage);
         }
         catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
         { return new(product, null, null, null, null, "ownership-unverified", true); }
