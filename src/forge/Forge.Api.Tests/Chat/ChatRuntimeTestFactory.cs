@@ -89,7 +89,7 @@ internal sealed class ChatRuntimeTestFactory : ChatPluginTestFactory
     {
         var sent = provider.Sent.Where(s => s.Address.ConnectionId == connection).ElementAt(question);
         return new(provider.Descriptor.Id, connection, deliveryKey, sent.Address, "operator", "action", "incoming-" + deliveryKey,
-            sent.MessageId, "safe answer", sent.Notification.Actions.Single().Token, this.Clock.GetUtcNow());
+            sent.MessageId, "safe answer", sent.Notification.Actions.Single(a => a.Kind == "question.answer").Token, this.Clock.GetUtcNow());
     }
 }
 

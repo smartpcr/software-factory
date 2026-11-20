@@ -151,6 +151,7 @@ public sealed class ChatRuntimeCompletionTests
     public async Task Retention_obeys_content_deadlines_batch_limit_and_hash_expiry()
     {
         await using var f = new ChatRuntimeTestFactory(); await f.SetupAsync(interactive: true); await f.EnqueueAsync(); await f.TickAsync();
+        string expiredHash = ""; var tokensBefore = 0;
         await f.WithAsync(async sp =>
         {
             var db = sp.GetRequiredService<ControlDbContext>(); var now = f.Clock.GetUtcNow();
@@ -161,6 +162,7 @@ public sealed class ChatRuntimeCompletionTests
                     ReceivedAt = now.AddDays(-age).ToUnixTimeMilliseconds(), TerminalAt = state == "pending" ? null : now.AddDays(-age).ToUnixTimeMilliseconds() });
             db.ChatLinkChallenges.Add(new() { Hash = "expired", ExpiresAt = now.AddDays(-2).ToUnixTimeMilliseconds() });
             var token = await db.ChatActionTokens.FirstAsync(); token.ExpiresAt = now.AddDays(-2).ToUnixTimeMilliseconds();
+            expiredHash = token.Hash; tokensBefore = await db.ChatActionTokens.CountAsync();
             await db.SaveChangesAsync(); await sp.GetRequiredService<ChatRetentionService>().RunOnceAsync();
         });
         Assert.Equal(5, await f.ReadAsync(sp => sp.GetRequiredService<ControlDbContext>().ChatNotifications.CountAsync(n => n.Title == "old")));
@@ -168,7 +170,9 @@ public sealed class ChatRuntimeCompletionTests
         Assert.Null(inbox["processed"].EnvelopeJson); Assert.NotNull(inbox["failed-young"].EnvelopeJson); Assert.Null(inbox["failed-old"].EnvelopeJson);
         Assert.Equal("expired", inbox["unprocessed"].State); Assert.Null(inbox["unprocessed"].EnvelopeJson);
         Assert.Equal(0, await f.ReadAsync(sp => sp.GetRequiredService<ControlDbContext>().ChatLinkChallenges.CountAsync()));
-        Assert.Single(await f.ReadAsync(sp => sp.GetRequiredService<ControlDbContext>().ChatActionTokens.ToListAsync()));
+        // Only the expired token is purged (questions also carry a Dismiss token since 2026-11-19).
+        var tokens = await f.ReadAsync(sp => sp.GetRequiredService<ControlDbContext>().ChatActionTokens.ToListAsync());
+        Assert.Equal(tokensBefore - 1, tokens.Count); Assert.DoesNotContain(tokens, t => t.Hash == expiredHash);
     }
 
     [Fact]

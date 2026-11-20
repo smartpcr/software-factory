@@ -822,7 +822,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // the evaluator side is best-effort, not blocking, so a
                 // capacity-saturated pair doesn't wedge the queue.
                 var evalAgentId = await ResolveDiverseEvaluatorAsync(
-                    control, db, crew, evaluatorCrew, picked!, busyAgents, ct);
+                    control, db, crew, evaluatorCrew, picked!, busyAgents, ct, row.WorkItemId);
                 var agents = new List<string> { picked! };
                 if (evalAgentId is not null) agents.Add(evalAgentId);
                 var now = DateTimeOffset.UtcNow;
@@ -3558,7 +3558,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         CrewRow? evaluatorCrew,
         string generatorAgentId,
         HashSet<string> busyAgents,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? workItemId = null)
     {
         // Build the evaluator candidate roster.
         var rosterCrewId = evaluatorCrew?.Id ?? generatorCrew.Id;
@@ -3566,6 +3567,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             .Where(m => m.CrewId == rosterCrewId)
             .Select(m => m.AgentId)
             .ToListAsync(ct);
+
+        // A resumed loop keeps its evaluator (see StickyEvaluator); diversity is for fresh claims.
+        if (!string.IsNullOrEmpty(workItemId))
+        {
+            var allowed = new HashSet<string>(roster, StringComparer.Ordinal);
+            if (generatorCrew.DefaultEvaluatorAgentId is { } d1) allowed.Add(d1);
+            if (evaluatorCrew?.DefaultEvaluatorAgentId is { } d2) allowed.Add(d2);
+            var sticky = await StickyEvaluator.ResolveAsync(control, db, workItemId, generatorAgentId, allowed, ct);
+            if (sticky is not null) return sticky;
+        }
 
         // The evaluator-side roster must NOT include the just-picked
         // generator (Phase 39 gen != eval). PickEvaluator filters on this

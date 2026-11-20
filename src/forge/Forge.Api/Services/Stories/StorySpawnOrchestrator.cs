@@ -2569,6 +2569,12 @@ public sealed class StorySpawnOrchestrator
                         && incumbentPair.Count >= 2
                         && !string.IsNullOrEmpty(incumbentPair[0])
                         && !string.IsNullOrEmpty(incumbentPair[1]);
+                    // The saved pair can lag the evaluator actually used (a queue resume picks its
+                    // own); resume with the evaluator of the latest scored iteration (StickyEvaluator).
+                    if (hasIncumbent && await StickyEvaluator.ResolveAsync(pickControl, pickDb, w.Id, incumbentPair[0], null, ct) is { } sticky)
+                    {
+                        incumbentPair[1] = sticky;
+                    }
                     if (hasIncumbent)
                     {
                         var lastScoredId = await pickDb.TaskTranscriptEvents.AsNoTracking()

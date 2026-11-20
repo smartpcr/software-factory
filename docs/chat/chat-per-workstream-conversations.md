@@ -354,6 +354,40 @@ and stage ("harness:DSH · Stage 1.2 — Gate Runner Core", "Story harness:DSH �
 …") instead of internal ids; the setup intro describes per-workstream conversations.
 Built and unit-tested, deployment pending a restart.
 
+## Stage 5 remote acceptance — run 2 (2026-11-20 01:27–01:45 UTC)
+
+Same setup as run 1, product `e2e-chat-11191727`, after `DefaultProductContentMode =
+redacted` (operator decision 2026-11-19, host `chat-settings.json`) and the stage-name
+titles were deployed.
+
+| Scenario | Result | Evidence |
+|---|---|---|
+| E1 | **pass** | 201 + three connections listed |
+| E2 | **pass** | intros sent: Slack root `1795138300.323749`, Telegram topic `106` |
+| E3 | **pass** | topics `108` "…E2E · Stage 1.1 — E2E check one" and `110` "…Stage 1.2 — E2E check two"; Slack roots `1795138596.122129` / `1795138600.096429` |
+| E4 | **pass** | Playwright (Telegram Web, operator's linked account) pressed **cancel** under Stage 1.1's alert: Forge replied "Action accepted", the alert was edited to "This request is closed", Stage 1.1 → `cancelled`, Stage 1.2 still `stalled` |
+| E5 | **pass** | Stage 1.1 topic `108` → `closed`, Slack root retired; Stage 1.2 open |
+
+## All operator actions in chat (2026-11-19, built, not yet deployed)
+
+Requirement: everything an operator does in Forge in response to an alert can be done
+in the chat app. Before: answer questions, Retry/Accept/Cancel/Restart a stalled stage,
+`pause`/`resume`/`status`/`questions` commands. Added:
+
+| Action | Where | How | Capability |
+|---|---|---|---|
+| Story halted alert | new event `spawn-halted`, raised by the chat reconciler from the spawn's LastError (one per distinct error), routed to every subscription that takes stall alerts; resolved (buttons retired) when the error clears | — | — |
+| 🔁 Retry story | halted alert | same as the banner's Retry (`StoryOperatorActionService.RetrySpawnAsync`) | `spawn.retry` (new) |
+| ⚠ Restart doc | halted alert for a plan-doc halt (`plan doc '<key>' failed…`) | existing artifact restart, behind the existing 30-second confirmation | `artifact.restart` |
+| 📌 Pin decision | halted alert and plan-doc question alerts | tap → "reply with the decision" prompt (Telegram force-reply; Slack thread reply) → pin shared with the web Pin (`StoriesEndpoints.AppendDecisionPin`) | `artifact.pin` (new) |
+| Dismiss question | every question alert | `IOpenQuestionService.DismissAsync` | `question.answer` (as the web Questions tab) |
+
+Buttons and question text appear only in redacted content mode (product maximum and
+subscription), per the base content policy. The chat action revision no longer includes
+the artifact key, so story- and document-level buttons on one alert share a revision.
+Tests: `ChatAllActionsInChatTests` (halted alert + Retry + resolution, Pin via reply,
+Dismiss, halt parsing); existing chat-runtime tests adjusted for the extra Dismiss button.
+
 ## Current live state (observed 2026-11-19, read-only)
 
 - Engine: plugins. One story uses remote control (code-intelligence ENABLE-MCP → Slack `#all-forge`, thread per story).
