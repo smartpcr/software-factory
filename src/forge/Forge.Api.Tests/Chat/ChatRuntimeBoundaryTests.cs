@@ -156,12 +156,14 @@ public sealed class ChatRuntimeBoundaryTests
         await using var f = new ChatRuntimeTestFactory(); await f.SetupAsync(questions: 2);
         using var client = await f.PairedClientAsync("owner-p"); client.DefaultRequestHeaders.Add("X-Forge-ProductId", "p");
         var endpoint = "/api/work-items/child-0/questions/answer?productId=p";
+        // Operator rule: answers are picked, never typed.
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsJsonAsync(endpoint, new { answers = new[] { new { externalId = "q1", answer = "made up" } } })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(endpoint, new { answers = new[] { new { externalId = "q1", answer = "first" } } })).StatusCode);
         var question = await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.SingleAsync(q => q.ExternalId == "q1"));
-        var edit = new { answers = new[] { new { externalId = "q1", answer = "edited", expectedRevision = question.Id, editExisting = true, expectedAnswerRevision = question.AnsweredAt!.Value.ToString("O") } } };
+        var edit = new { answers = new[] { new { externalId = "q1", answer = "Second", expectedRevision = question.Id, editExisting = true, expectedAnswerRevision = question.AnsweredAt!.Value.ToString("O") } } };
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(endpoint, edit)).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(endpoint, edit)).StatusCode);
-        Assert.Equal("edited", await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.Where(q => q.ExternalId == "q1").Select(q => q.Answer).SingleAsync()));
+        Assert.Equal("Second", await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.Where(q => q.ExternalId == "q1").Select(q => q.Answer).SingleAsync()));
     }
 
     [Fact]

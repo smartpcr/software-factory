@@ -226,10 +226,7 @@ public static class OperatorSessionEndpoints
             ILocalBrowserIdentity browser, OperatorSessions sessions, ControlDbContext control, IAntiforgery anti) =>
         {
             ctx.Response.Headers.CacheControl = "no-store";
-            // A loopback proxy must never lend its Windows identity to another caller.
-            if (ctx.Request.Headers.ContainsKey("X-Forge-Proxy") || ctx.Request.Headers.ContainsKey("Forwarded")
-                || ctx.Request.Headers.ContainsKey("X-Forwarded-For")
-                || !OperatorAuthentication.IsLoopbackOrigin(ctx.Request.Headers.Origin.ToString()) || !browser.IsHostUser(ctx))
+            if (!IsDirectHostBrowser(ctx, browser))
                 return Results.Problem(title: "Connect directly from the Forge host user's browser", statusCode: 403);
             var enrollment = await EnsureLocalEnrollmentAsync(identities, control, ctx.RequestAborted);
             if (enrollment is null)
@@ -270,6 +267,24 @@ public static class OperatorSessionEndpoints
                 ? Results.Accepted(value: new { delivered = true, platform = transport.Platform })
                 : Results.Problem(title: "Could not deliver the pairing code to chat", statusCode: 502);
         }).AllowAnonymous();
+        // Lets the host user, already signed in on this computer, hand a pairing code to
+        // another browser. It demands the same proof as local sign-in (a direct loopback
+        // connection whose socket the host Windows user owns), so it grants nothing that
+        // `--operator pair` on the host would not. A remote or proxied session can never
+        // mint a code, which would otherwise let it outlive its eight-hour limit. The code
+        // is for the session's own user only; picking another account stays host-CLI only.
+        // Audit and idempotency skip /api/operator, so the code is never persisted.
+        app.MapPost("/api/operator/issue-pairing-code", async (HttpContext ctx, HostIdentityStore identities,
+            ForgeActorResolver actors, ILocalBrowserIdentity browser) =>
+        {
+            ctx.Response.Headers.CacheControl = "no-store";
+            if (!IsDirectHostBrowser(ctx, browser))
+                return Results.Problem(title: "Connect directly from the Forge host user's browser", statusCode: 403);
+            var actor = await actors.FromBrowserAsync(ctx.User, ctx.RequestAborted);
+            if (actor is null || identities.GetEnrollment(actor.UserId) is not { Enabled: true })
+                return Results.Problem(title: "Sign in with an enrolled Forge account first", statusCode: 403);
+            return Results.Ok(new { challenge = identities.IssueBrowserChallenge(actor.UserId), expiresInSeconds = 120 });
+        });
         app.MapPost("/api/operator/logout", async (HttpContext ctx, OperatorSessions sessions) =>
         {
             sessions.Revoke(ctx.User.FindFirstValue(OperatorSessions.SessionClaim));
@@ -298,6 +313,15 @@ public static class OperatorSessionEndpoints
             return Results.NoContent();
         });
     }
+
+    /// <summary>
+    /// True only for the host Windows user's own browser talking straight to the API. A
+    /// loopback proxy must never lend its Windows identity to another caller.
+    /// </summary>
+    private static bool IsDirectHostBrowser(HttpContext ctx, ILocalBrowserIdentity browser) =>
+        !ctx.Request.Headers.ContainsKey("X-Forge-Proxy") && !ctx.Request.Headers.ContainsKey("Forwarded")
+        && !ctx.Request.Headers.ContainsKey("X-Forwarded-For")
+        && OperatorAuthentication.IsLoopbackOrigin(ctx.Request.Headers.Origin.ToString()) && browser.IsHostUser(ctx);
 
     /// <summary>Destination for out-of-band codes, or null when chat is disabled or unconfigured.</summary>
     private static string? DeliveryChatId(ChatBridgeOptions options)

@@ -459,7 +459,10 @@ builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
         sp.GetRequiredService<Forge.Api.Persistence.ControlDbContext>(),
         sp.GetRequiredService<Forge.Api.Persistence.ProductDbContext>(),
         sp.GetService<Forge.Api.Realtime.TaskChannel>(),
-        sp.GetService<Forge.Api.Services.Chat.IChatNotifier>()));
+        sp.GetService<Forge.Api.Services.Chat.IChatNotifier>(),
+        sp.GetService<Forge.Api.Services.IQuestionOptionsSynthesizer>()));
+// Drafts options for agent questions that arrive without any (operator rule).
+builder.Services.AddScoped<Forge.Api.Services.IQuestionOptionsSynthesizer, Forge.Api.Services.QuestionOptionsSynthesizer>();
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
 // Phase 91 — nightly auto-promotion scheduler (02:00 PT). Promotion-only,

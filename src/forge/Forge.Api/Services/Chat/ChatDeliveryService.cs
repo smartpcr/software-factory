@@ -127,14 +127,15 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         if (target.Interactive && capabilities.Buttons && part.QuestionId is not null && part.ActionKind != "question.prompt" && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
         {
             var choices = ChatPayloadConverter.Read(notification)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision)?.Choices ?? [];
-            for (var index = 0; index <= choices.Count; index++)
+            // Operator rule: answers are picked from the options, never typed, so there is
+            // no "Custom answer" control.
+            for (var index = 0; index < choices.Count; index++)
             {
-                var token = NewActionToken(); var custom = index == choices.Count;
-                // The custom token also accepts an explicitly supplied answer from generic clients.
+                var token = NewActionToken();
                 control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id,
-                    Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision, ChoiceIndex = custom ? null : index,
+                    Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision, ChoiceIndex = index,
                     ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
-                actions.Add(new(custom ? "Custom answer" : choices[index], token, "question.answer"));
+                actions.Add(new(choices[index], token, "question.answer"));
             }
             // Dismiss without answering, and (plan documents) pin a binding decision.
             foreach (var extra in notification.ArtifactKey is null ? new[] { "question.dismiss" } : new[] { "question.dismiss", ForgeCapabilities.ArtifactPin })

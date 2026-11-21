@@ -2840,26 +2840,11 @@
 .swarm-ctrl .oq-wizard__q-choice input[type="radio"] {
   accent-color: var(--sc-amber);
 }
-.swarm-ctrl .oq-wizard__q-other-input {
-  flex: 1;
-  background: var(--sc-bg);
-  border: 1px solid var(--sc-border-2);
-  color: var(--sc-text);
-  padding: 4px 8px;
+.swarm-ctrl .oq-wizard__q-pending-options {
+  color: var(--sc-text-dim, var(--sc-text));
   font-family: var(--sc-font-mono); font-size: 12px;
-}
-.swarm-ctrl .oq-wizard__q-textarea {
-  width: 100%;
-  background: var(--sc-bg);
-  border: 1px solid var(--sc-border-2);
-  color: var(--sc-text);
-  padding: 6px 8px;
-  font-family: var(--sc-font-mono); font-size: 12px;
-  resize: vertical;
-}
-.swarm-ctrl .oq-wizard__q-textarea:focus,
-.swarm-ctrl .oq-wizard__q-other-input:focus {
-  outline: none; border-color: var(--sc-amber);
+  font-style: italic;
+  padding: 4px 0;
 }
 .swarm-ctrl .oq-wizard__actions {
   display: flex; justify-content: flex-end; gap: 8px;

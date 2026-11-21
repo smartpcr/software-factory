@@ -586,6 +586,31 @@ public sealed class SloppyReassignmentReconciler : BackgroundService
         try
         {
             await RunGitAsync(worktreePath, $"fetch origin {baseBranch}", ct);
+
+            // Never discard committed work. harness:DSH stage 1.4 (2026-11-20): a
+            // flat-plateau reassignment reset a finished, CI-verified branch to base
+            // and force-pushed it, which closed its open PR; the new pair rebuilt the
+            // stage from scratch. A branch with commits ahead of base (an open PR
+            // always has some) is kept for the new pair, and a backup ref records the
+            // prior pair's tip either way.
+            var (headCode, headOut, _) = await RunGitCaptureAsync(worktreePath, ct, "rev-parse", "HEAD");
+            var (aheadCode, aheadOut, _) = await RunGitCaptureAsync(
+                worktreePath, ct, "rev-list", "--count", $"origin/{baseBranch}..HEAD");
+            if (headCode == 0)
+            {
+                var refSafeId = new string(wi.Id.Select(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-').ToArray());
+                var backupRef = $"refs/forge/backup/{refSafeId}/before-attempt-{wi.PairAttemptCount}";
+                await RunGitCaptureAsync(worktreePath, ct, "update-ref", backupRef, headOut.Trim());
+            }
+
+            if (aheadCode == 0 && int.TryParse(aheadOut.Trim(), out var ahead) && ahead > 0)
+            {
+                this.logger.LogInformation(
+                    "Sloppy reassignment kept the work branch: wi={Wi} path={Path} commitsAheadOf{Base}={Ahead}",
+                    wi.Id, worktreePath, baseBranch, ahead);
+                return;
+            }
+
             await RunGitAsync(worktreePath, $"reset --hard origin/{baseBranch}", ct);
             await RunGitAsync(worktreePath, "clean -fdx", ct);
 

@@ -852,7 +852,9 @@ Implement a host-local **Pair browser** command as the initial identity source.
 The trusted host administrator explicitly enrolls stable `UserRow.Id` identities
 and host-admin IDs in an OS-protected local identity store. The command selects an
 enrolled user and issues a 256-bit single-use pairing challenge, valid for two
-minutes. HTTP cannot mint challenges or nominate a new administrator. Browser
+minutes. HTTP cannot nominate a new administrator, and anonymous or remote HTTP
+cannot obtain a challenge; the only HTTP issuers are the out-of-band chat
+delivery and the host-browser handoff described below. Browser
 redemption on the expected loopback origin exchanges it for a protected,
 HttpOnly/SameSite session cookie with an eight-hour maximum lifetime; the challenge
 is neither a URL query parameter nor a log entry. Use ASP.NET Core authentication,
@@ -892,6 +894,25 @@ identity mechanism, not Microsoft or GitHub SSO.
 The host-local `--operator open-browser` fragment handoff and clipboard pairing
 remain available to explicitly select an enrolled account. The one-use fragment
 is removed before POST redemption; no challenge is exposed by anonymous HTTP.
+
+**Pairing another browser from the host:** a signed-in browser on the host can
+issue a pairing code for a browser on another machine, from Settings → Browser
+session → *Pair another browser*. `POST /api/operator/issue-pairing-code`
+requires a live session plus the same proof as automatic localhost sign-in: a
+direct (unproxied, no `Forwarded`/`X-Forwarded-For`) loopback connection with a
+loopback Origin whose socket the API's Windows user owns, and a valid CSRF token.
+That is exactly the authority of running `--operator pair` on the host, so the
+button adds no new trust path. It returns a 64-hex, single-use, two-minute code
+for the session's own user only; choosing another enrolled account stays
+host-CLI only. A remote or proxied session cannot mint a code, which would
+otherwise let a stolen session cookie outlive its eight-hour limit. Issuing
+supersedes that user's outstanding browser code, including one sent by chat.
+Audit and idempotency middleware skip `/api/operator`, so the code is never
+persisted; the response is `no-store`. Proof: `IssuePairingCodeTests` (host issue
+and remote redemption as the same user, single use; denial for unverified peer,
+proxy, forwarded, remote Origin, missing CSRF, signed-out and revoked sessions)
+and the `issuing a pairing code from the host browser` cases in
+`operatorSession.spec.ts`.
 Implementation uses the Windows [TCP connection ownership API](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable).
 
 `ForgeActorResolver` accepts only an authenticated browser principal or a verified

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { completeBrowserHandoff, getOperatorStatus, restoreLocalOperator, signInLocalOperator, requestPairingCode, localSignInUsable, operatorSessionChanged, pairOperator, unpairOperator, type OperatorStatus } from '@/api/operatorSession';
+import { completeBrowserHandoff, getOperatorStatus, restoreLocalOperator, signInLocalOperator, requestPairingCode, issuePairingCode, isHostBrowser, localSignInUsable, operatorSessionChanged, pairOperator, unpairOperator, type IssuedPairingCode, type OperatorStatus } from '@/api/operatorSession';
 
 export function OperatorGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<OperatorStatus | null>(null);
@@ -7,28 +7,41 @@ export function OperatorGate({ children }: { children: ReactNode }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [sentCode, setSentCode] = useState(false);
+  const [checkRequest, setCheckRequest] = useState(0);
   const demo = new URLSearchParams(window.location.search).get('seed') === 'local';
 
   useEffect(() => {
     if (demo) return;
     let active = true;
+    let retry: number | undefined;
     const refresh = () => {
+      window.clearTimeout(retry);
       void (async () => {
         try { await completeBrowserHandoff(); }
         catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Sign-in failed.'); }
-        try {
-          const value = await getOperatorStatus();
-          if (active) setStatus(value);
-          try { const restored = await restoreLocalOperator(value); if (active) setStatus(restored); }
-          catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Sign-in failed.'); }
+        let value: OperatorStatus;
+        try { value = await getOperatorStatus(); }
+        catch (reason) {
+          // Forge.Api restarting or not yet up: keep trying instead of stranding the page.
+          if (active) { setError(reason instanceof Error ? reason.message : 'Connection failed.'); retry = window.setTimeout(refresh, 2000); }
+          return;
         }
-        catch (reason) { if (active) setError(reason instanceof Error ? reason.message : 'Connection failed.'); }
+        if (!active) return;
+        setError('');
+        setStatus(value);
+        try { const restored = await restoreLocalOperator(value); if (active) setStatus(restored); }
+        catch (reason) {
+          if (!active) return;
+          setError(reason instanceof Error ? reason.message : 'Sign-in failed.');
+          // The API went away between the status read and sign-in: retry the whole check.
+          if (reason instanceof TypeError) retry = window.setTimeout(refresh, 2000);
+        }
       })();
     };
     refresh();
     window.addEventListener(operatorSessionChanged, refresh);
-    return () => { active = false; window.removeEventListener(operatorSessionChanged, refresh); };
-  }, [demo]);
+    return () => { active = false; window.clearTimeout(retry); window.removeEventListener(operatorSessionChanged, refresh); };
+  }, [demo, checkRequest]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -91,10 +104,7 @@ export function OperatorGate({ children }: { children: ReactNode }) {
             <p style={{ color: '#a7adb7', fontSize: 13 }}>Sessions last up to eight hours. Signing out keeps this browser signed out until you sign in again.</p>
           </form>
         ) : null}
-        <button type="button" onClick={() => {
-          setError('');
-          void getOperatorStatus().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : 'Connection failed.'));
-        }} style={{ marginTop: 16 }}>Check again</button>
+        <button type="button" onClick={() => { setError(''); setCheckRequest((n) => n + 1); }} style={{ marginTop: 16 }}>Check again</button>
         {error && <p role="alert" style={{ color: '#ffb0a7' }}>{error}</p>}
       </section>
     </main>
@@ -108,5 +118,59 @@ export function OperatorSessionSettings() {
     <p>This browser is paired with your enrolled Forge operator.</p>
     <button onClick={() => { void unpairOperator().catch(() => setError('Could not end this session.')); }}>Unpair this browser</button>
     {error && <p role="alert">{error}</p>}
+    {isHostBrowser() && <PairAnotherBrowser />}
   </section>;
+}
+
+/** Shows a one-use code for signing in a browser on another machine as this same operator. */
+function PairAnotherBrowser() {
+  const [code, setCode] = useState<IssuedPairingCode | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+  const secondsLeft = code ? Math.max(0, Math.ceil((code.expiresAt - now) / 1000)) : 0;
+
+  useEffect(() => {
+    if (!code) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [code]);
+
+  // Drop the secret from the page as soon as it can no longer be used.
+  useEffect(() => { if (code && secondsLeft === 0) { setCode(null); setCopied(false); } }, [code, secondsLeft]);
+
+  async function issue() {
+    setBusy(true); setError(''); setCopied(false);
+    try { setCode(await issuePairingCode()); setNow(Date.now()); }
+    catch (reason) { setCode(null); setError(reason instanceof Error ? reason.message : 'Could not issue a pairing code.'); }
+    finally { setBusy(false); }
+  }
+
+  async function copy() {
+    if (!code) return;
+    try { await navigator.clipboard.writeText(code.challenge); setCopied(true); }
+    catch { setError('Copy failed. Select the code and copy it manually.'); }
+  }
+
+  return <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #34383f' }}>
+    <h4 style={{ margin: '0 0 6px' }}>Pair another browser</h4>
+    <p style={{ margin: '0 0 10px', color: '#a7adb7', fontSize: 13 }}>
+      Get a one-use code that signs a browser on another machine into Forge as you. Paste it into that
+      browser's Pair browser form within two minutes. A new code replaces the previous one.
+    </p>
+    <button type="button" disabled={busy} onClick={() => { void issue(); }}>
+      {busy ? 'Issuing…' : code ? 'Issue a new code' : 'Issue pairing code'}
+    </button>
+    {code && <div style={{ marginTop: 10 }}>
+      <code aria-label="Pairing code" style={{ display: 'block', padding: 10, background: '#151a21', border: '1px solid #50555d', wordBreak: 'break-all', userSelect: 'all' }}>
+        {code.challenge}
+      </code>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+        <button type="button" onClick={() => { void copy(); }}>{copied ? 'Copied' : 'Copy'}</button>
+        <span role="status" style={{ color: '#a7adb7', fontSize: 13 }}>Expires in {secondsLeft}s</span>
+      </div>
+    </div>}
+    {error && <p role="alert" style={{ color: '#ffb0a7' }}>{error}</p>}
+  </div>;
 }

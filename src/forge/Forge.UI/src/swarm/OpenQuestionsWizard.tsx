@@ -136,7 +136,7 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
       .map((q) => ({ externalId: q.externalId, expectedRevision: q.id, answer: (drafts[q.externalId] ?? '').trim() }))
       .filter((a) => a.answer.length > 0);
     if (answers.length === 0) {
-      showToast('Pick or write an answer for at least one question.', 'info');
+      showToast('Pick an option for at least one question.', 'info');
       return;
     }
     setSubmitting(true);
@@ -173,7 +173,7 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
   async function handleEditSave(externalId: string) {
     const answer = editDraft.trim();
     if (answer.length === 0) {
-      showToast('Enter a new answer before saving.', 'info');
+      showToast('Pick an option before saving.', 'info');
       return;
     }
     setSubmitting(true);
@@ -278,33 +278,11 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                         </label>
                         );
                       })}
-                      <label className="oq-wizard__q-choice oq-wizard__q-choice--other">
-                        <input
-                          type="radio"
-                          name={`q-${q.externalId}`}
-                          value="__other__"
-                          checked={drafts[q.externalId]?.startsWith('__other__:') ?? false}
-                          onChange={() => setDrafts((d) => ({ ...d, [q.externalId]: '__other__:' }))}
-                        />
-                        <span>Other:</span>
-                        <input
-                          type="text"
-                          className="oq-wizard__q-other-input"
-                          placeholder="custom answer"
-                          value={drafts[q.externalId]?.startsWith('__other__:') ? drafts[q.externalId].slice('__other__:'.length) : ''}
-                          onChange={(e) => setDrafts((d) => ({ ...d, [q.externalId]: '__other__:' + e.target.value }))}
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </label>
                     </div>
                   ) : (
-                    <textarea
-                      className="oq-wizard__q-textarea"
-                      placeholder="Type your answer…"
-                      rows={2}
-                      value={drafts[q.externalId] ?? ''}
-                      onChange={(e) => setDrafts((d) => ({ ...d, [q.externalId]: e.target.value }))}
-                    />
+                    // Answers are picked, never typed. The server drafts options for any
+                    // question that arrives without them, so this only shows until it has.
+                    <div className="oq-wizard__q-pending-options">Preparing options for this question…</div>
                   )}
                 </div>
               ))}
@@ -348,7 +326,8 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                       >
                         ⓘ explain
                       </button>
-                      {editingFor !== q.externalId && (
+                      {/* Answers can only be changed to another option; legacy option-less answers stay as history. */}
+                      {editingFor !== q.externalId && q.choices.length > 0 && (
                         <button
                           type="button"
                           className="oq-wizard__q-edit"
@@ -363,30 +342,21 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                     <div className="oq-wizard__q-text">{q.text}</div>
                     {editingFor === q.externalId ? (
                       <div className="oq-wizard__q-edit-panel">
-                        {q.kind === 'choice' && q.choices.length > 0 && (
-                          <div className="oq-wizard__q-choices">
-                            {q.choices.map((c) => (
-                              <label key={c} className="oq-wizard__q-choice">
-                                <input
-                                  type="radio"
-                                  name={`edit-${q.externalId}`}
-                                  value={c}
-                                  checked={editDraft === c}
-                                  onChange={() => setEditDraft(c)}
-                                />
-                                <span>{c}</span>
-                              </label>
-                            ))}
-                          </div>
-                        )}
-                        <textarea
-                          className="oq-wizard__q-textarea"
-                          placeholder="Type the new answer…"
-                          rows={2}
-                          value={editDraft}
-                          disabled={submitting}
-                          onChange={(e) => setEditDraft(e.target.value)}
-                        />
+                        <div className="oq-wizard__q-choices">
+                          {q.choices.map((c) => (
+                            <label key={c} className="oq-wizard__q-choice">
+                              <input
+                                type="radio"
+                                name={`edit-${q.externalId}`}
+                                value={c}
+                                checked={editDraft === c}
+                                disabled={submitting}
+                                onChange={() => setEditDraft(c)}
+                              />
+                              <span>{c}</span>
+                            </label>
+                          ))}
+                        </div>
                         <div className="oq-wizard__actions">
                           <button
                             type="button"

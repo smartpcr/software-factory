@@ -83,6 +83,7 @@ public static class TaskExecutionEndpoints
         string id,
         ControlDbContext control,
         ProductDbContext db,
+        IQuestionOptionsSynthesizer questionOptions,
         CancellationToken ct)
     {
         var rows = await db.DeliverableQuestions.AsNoTracking()
@@ -105,6 +106,7 @@ public static class TaskExecutionEndpoints
             .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
             .OrderBy(q => q.Iter).ThenBy(q => q.ExternalId)
             .ToList();
+        await BackfillQuestionOptionsAsync(db, latestPerId, rows, questionOptions, ct);
         var items = latestPerId.Select(q => new
         {
             id = q.Id,
@@ -128,6 +130,44 @@ public static class TaskExecutionEndpoints
         var unansweredCount = items.Count(i => string.IsNullOrEmpty(i.answer));
         var answeredCount = items.Count - unansweredCount;
         return Results.Ok(new { workItemId = id, items, unansweredCount, answeredCount, totalCount = items.Count });
+    }
+
+    /// <summary>
+    /// Operator rule: never show a question without options. Questions stored before the
+    /// rule (agent emitted <c>type: "open"</c>, markdown fallback, plan-doc import) get
+    /// options drafted once, persisted on their latest row, and reused from then on.
+    /// Answered questions are history and stay as they were.
+    /// </summary>
+    private static async Task BackfillQuestionOptionsAsync(ProductDbContext db, List<DeliverableQuestionRow> latestPerId,
+        IReadOnlyList<DeliverableQuestionRow> allRows, IQuestionOptionsSynthesizer questionOptions, CancellationToken ct)
+    {
+        var missing = latestPerId
+            .Where(q => string.IsNullOrEmpty(q.Answer) && !QuestionOptions.HasOptions(q.Kind, QuestionOptions.ParseChoices(q.ChoicesJson)))
+            .ToList();
+        if (missing.Count == 0) return;
+        var stored = allRows.Where(q => QuestionOptions.ParseChoices(q.ChoicesJson).Count >= QuestionOptions.MinChoices)
+            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(), StringComparer.OrdinalIgnoreCase);
+        var ensured = await QuestionOptions.EnsureAsync(
+            missing.Select(q => new OpenQuestionsExtractor.OpenQuestion(q.ExternalId, q.Text, q.Kind,
+                QuestionOptions.ParseChoices(q.ChoicesJson), q.ExplanationJson)).ToList(),
+            stored, questionOptions, ct);
+        var ids = missing.Select(q => q.Id).ToList();
+        var tracked = await db.DeliverableQuestions.Where(q => ids.Contains(q.Id)).ToDictionaryAsync(q => q.Id, ct);
+        for (var i = 0; i < missing.Count; i++)
+        {
+            var row = missing[i];
+            row.Kind = ensured[i].Kind;
+            row.ChoicesJson = JsonSerializer.Serialize(ensured[i].Choices);
+            row.ExplanationJson = ensured[i].ExplanationJson;
+            if (tracked.TryGetValue(row.Id, out var t))
+            {
+                t.Kind = row.Kind;
+                t.ChoicesJson = row.ChoicesJson;
+                t.ExplanationJson = row.ExplanationJson;
+            }
+        }
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -363,7 +403,7 @@ public static class TaskExecutionEndpoints
     private static string? NormalizeGeneratedExplanation(string? modelText)
     {
         if (string.IsNullOrWhiteSpace(modelText)) return null;
-        var json = ExtractJsonObject(modelText);
+        var json = QuestionOptions.ExtractJsonObject(modelText);
         if (json is null) return null; // No JSON object — caller surfaces a clean error (never dump the raw prompt).
 
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -435,36 +475,6 @@ public static class TaskExecutionEndpoints
                     result.Add(v.GetString()!.Trim());
         }
         return result;
-    }
-
-    /// <summary>Extract the first balanced JSON object from text that may wrap
-    /// it in <c>```json</c> fences or prose. Returns null when none is found.</summary>
-    private static string? ExtractJsonObject(string text)
-    {
-        var start = text.IndexOf('{');
-        if (start < 0) return null;
-        var depth = 0;
-        var inStr = false;
-        var escaped = false;
-        for (var i = start; i < text.Length; i++)
-        {
-            var ch = text[i];
-            if (inStr)
-            {
-                if (escaped) escaped = false;
-                else if (ch == '\\') escaped = true;
-                else if (ch == '"') inStr = false;
-                continue;
-            }
-            if (ch == '"') inStr = true;
-            else if (ch == '{') depth++;
-            else if (ch == '}')
-            {
-                depth--;
-                if (depth == 0) return text[start..(i + 1)];
-            }
-        }
-        return null;
     }
 
     public sealed record AnswerQuestionsRequest(IReadOnlyList<AnswerEntry> Answers);
@@ -553,7 +563,10 @@ public static class TaskExecutionEndpoints
             .ToList();
         var result = await questions.AnswerAsync(id, mapped, actor, ct);
         if (result.RevisionConflict) return Results.Problem(title: "Question changed; refresh before answering.", statusCode: 409);
-        return Results.Ok(new { workItemId = id, unansweredCount = result.UnansweredCount, resumeScheduled = result.ResumeScheduled });
+        if (result.NotAnOptionCount > 0 && result.AcceptedCount == 0)
+            return Results.Problem(title: "Pick one of the question's options; typed answers are not accepted.", statusCode: 422);
+        return Results.Ok(new { workItemId = id, unansweredCount = result.UnansweredCount, resumeScheduled = result.ResumeScheduled,
+            notAnOptionCount = result.NotAnOptionCount });
     }
 
     private static async Task<IResult> GetExecution(

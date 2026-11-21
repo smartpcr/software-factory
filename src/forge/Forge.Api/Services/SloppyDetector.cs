@@ -276,6 +276,51 @@ public static class SloppyDetector
     ///   stalled for operator triage.</item>
     /// </list>
     /// </summary>
+    /// <summary>
+    /// The trailing scores that belong to the current attempt: the iterations
+    /// scored after the operator last answered or dismissed a question, or
+    /// steered the work item. Operator input changes what the loop is working
+    /// toward, so scores from before it do not make a plateau.
+    /// <para>
+    /// harness:DSH stage 1.4 (2026-11-20): scores 89 ×3 while the generator waited
+    /// on an operator question, then 89 ×3 after the answer while the requested PR
+    /// review was pending. The flat-plateau rule counted all six as one stuck run,
+    /// marked the loop sloppy one minute after the answer, and the reassignment
+    /// discarded a finished, CI-verified implementation.
+    /// </para>
+    /// </summary>
+    /// <param name="db">Product DB holding deliverables, questions and operator prompts.</param>
+    /// <param name="workItemId">Work item (workstream) id.</param>
+    /// <param name="scoresInOrder">Scores of the loop's chain, oldest first, including the latest iteration.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>All scores when there was no operator input; otherwise the trailing scores scored after it.</returns>
+    public static async Task<IReadOnlyList<int>> ScoresSinceOperatorInputAsync(
+        ProductDbContext db,
+        string workItemId,
+        IReadOnlyList<int> scoresInOrder,
+        CancellationToken ct)
+    {
+        // SQLite cannot compare DateTimeOffset in SQL; the per-item sets are small.
+        var answeredAt = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => q.WorkItemId == workItemId && q.AnsweredAt != null)
+            .Select(q => q.AnsweredAt!.Value)
+            .ToListAsync(ct);
+        var steeredAt = await db.OperatorPrompts.AsNoTracking()
+            .Where(p => p.WorkstreamId == workItemId)
+            .Select(p => p.CreatedAt)
+            .ToListAsync(ct);
+        var inputs = answeredAt.Concat(steeredAt).ToList();
+        if (inputs.Count == 0) return scoresInOrder;
+
+        var lastInput = inputs.Max();
+        var scoredAt = await db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == workItemId)
+            .Select(d => d.CreatedAt)
+            .ToListAsync(ct);
+        var since = scoredAt.Count(t => t > lastInput);
+        return since >= scoresInOrder.Count ? scoresInOrder : scoresInOrder.Skip(scoresInOrder.Count - since).ToList();
+    }
+
     public static async Task<SloppyCheckResult> CheckAsync(
         ControlDbContext control,
         ProductDbContext db,

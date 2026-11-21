@@ -165,7 +165,7 @@ public class ChatInboundTests
     }
 
     [Fact]
-    public async Task Free_Text_In_Spawn_Topic_Answers_That_Spawns_Question_Without_Reply()
+    public async Task Free_Text_In_Spawn_Topic_Is_Refused_And_Points_To_The_Option_Buttons()
     {
         var fake = new FakeChatTransport();
         await using var f = new ForgeWebApplicationFactory();
@@ -199,7 +199,7 @@ public class ChatInboundTests
             db.DeliverableQuestions.Add(new DeliverableQuestionRow
             {
                 WorkItemId = Wi, ExternalId = "persistence", Iter = 1, Text = "Which backend?",
-                Kind = "open", CreatedAt = DateTimeOffset.UtcNow,
+                Kind = "choice", ChoicesJson = "[\"asz store\",\"legacy\"]", CreatedAt = DateTimeOffset.UtcNow,
             });
             await control.SaveChangesAsync();
             await db.SaveChangesAsync();
@@ -222,13 +222,15 @@ public class ChatInboundTests
         {
             var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
             var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            // Operator rule: answers are picked, never typed — the typed text answers nothing.
             var q = await db.DeliverableQuestions.AsNoTracking().SingleAsync(x => x.WorkItemId == Wi);
-            Assert.Equal("use asz store", q.Answer);
+            Assert.Null(q.Answer);
             var notif = await control.ChatNotifications.AsNoTracking().SingleAsync(n => n.Id == "n-t");
-            Assert.Equal(ChatNotificationStatuses.Answered, notif.Status);
+            Assert.Equal(ChatNotificationStatuses.Sent, notif.Status);
         }
 
-        Assert.Contains(fake.Edits, e => e.Text.Contains("Answered: use asz store"));
+        Assert.Empty(fake.Edits);
+        Assert.Contains(fake.Sent, s => s.Text.Contains("Typed answers are not accepted"));
     }
 
     [Fact]

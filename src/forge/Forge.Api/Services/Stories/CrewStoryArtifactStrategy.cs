@@ -39,6 +39,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
     /// <summary>
+    /// Operator rule shared by every agent prompt that can raise open questions: never ask
+    /// without options. <see cref="QuestionOptions"/> enforces it server-side for agents
+    /// that ignore this.
+    /// </summary>
+    internal const string QuestionOptionsRule = """
+        - EVERY question MUST be `type: "choice"` with 2-5 concrete, mutually
+          exclusive `choices`. Never emit `type: "open"` and never ask a
+          question without options. The operator can ONLY pick one of your
+          options (typed answers are not accepted), so the options must
+          cover every realistic answer; never add an "Other" option.
+        - For "who", "when" or "which value" questions, list the concrete
+          candidates (e.g. "The operator runs it now", "Defer it to a
+          follow-up PR", "Drop the requirement") instead of asking open-ended.
+        """;
+
+    /// <summary>
     /// Maximum number of files <see cref="ProduceStageE2eAsync"/> will
     /// accept from the QA crew's scratch workspace before failing fast.
     /// Legitimate qa-e2e producers emit a handful of artifacts
@@ -3102,25 +3118,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     { "choice": "C", "pros": ["..."], "cons": ["..."] }
                   ],
                   "recommendation": "A",
-                  "recommendationRationale": "<why you recommend A, 1-3 sentences>" },
-                { "id": "<other-slug>", "text": "<question>", "type": "open",
-                  "explanation": "<plain-language explanation + terms>",
-                  "recommendation": "<your suggested answer>",
-                  "recommendationRationale": "<why, 1-3 sentences>" }
+                  "recommendationRationale": "<why you recommend A, 1-3 sentences>" }
             ] }
             ```
             For EVERY question ALSO include `explanation` (define the terms — the
-            operator may lack your context), `recommendation` (your best call),
-            and `recommendationRationale`. For `choice` questions add
-            `choiceAnalysis` — ONE entry per option with concise `pros` and `cons`
-            arrays (one short phrase each, not paragraphs). These power the
-            operator's "Explain" popup (rendered as a pros/cons table), so make
-            them self-contained — do not assume the operator has read the diff.
+            operator may lack your context), `recommendation` (one of your
+            `choices`, verbatim), `recommendationRationale`, and `choiceAnalysis`
+            — ONE entry per option with concise `pros` and `cons` arrays (one
+            short phrase each, not paragraphs). These power the operator's
+            "Explain" popup (rendered as a pros/cons table), so make them
+            self-contained — do not assume the operator has read the diff.
 
             Rules:
-            - Use `type: "choice"` with explicit `choices` whenever you have
-              2-5 reasonable options the operator can pick from.
-            - Use `type: "open"` only when the answer is genuinely free-form.
+            {{QuestionOptionsRule}}
             - Re-emit the same `id` if a previous answer wasn't sufficient.
             - Omit the block entirely when you have no questions.
             - The evaluator WILL hold you below pass while any unanswered
@@ -4355,25 +4365,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     { "choice": "C", "pros": ["..."], "cons": ["..."] }
                   ],
                   "recommendation": "A",
-                  "recommendationRationale": "<why you recommend A, 1-3 sentences>" },
-                { "id": "<other-slug>", "text": "<question>", "type": "open",
-                  "explanation": "<plain-language explanation + terms>",
-                  "recommendation": "<your suggested answer>",
-                  "recommendationRationale": "<why, 1-3 sentences>" }
+                  "recommendationRationale": "<why you recommend A, 1-3 sentences>" }
             ] }
             ```
             For EVERY question ALSO include `explanation` (define the terms — the
-            operator may lack your context), `recommendation` (your best call),
-            and `recommendationRationale`. For `choice` questions add
-            `choiceAnalysis` — ONE entry per option with concise `pros` and `cons`
-            arrays (one short phrase each, not paragraphs). These power the
-            operator's "Explain" popup (rendered as a pros/cons table), so make
-            them self-contained — do not assume the operator has read the diff.
+            operator may lack your context), `recommendation` (one of your
+            `choices`, verbatim), `recommendationRationale`, and `choiceAnalysis`
+            — ONE entry per option with concise `pros` and `cons` arrays (one
+            short phrase each, not paragraphs). These power the operator's
+            "Explain" popup (rendered as a pros/cons table), so make them
+            self-contained — do not assume the operator has read the diff.
 
-            Use `type: "choice"` with explicit options whenever 2-5 sensible
-            answers exist; use `type: "open"` only for free-form. The
-            evaluator will hold you below pass while any unanswered question
-            exists for this workstream.
+            Rules:
+            {{QuestionOptionsRule}}
+            - The evaluator will hold you below pass while any unanswered
+              question exists for this workstream.
             """;
 
         var evaluatorPrompt = $$"""

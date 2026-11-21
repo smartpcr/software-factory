@@ -54,29 +54,27 @@ public sealed class ChatSlackRuntimeTests
         var address = await f.AddressAsync(); var q2 = await f.MessageAsync("q2");
         await f.ReceiveAsync(SlackProviderFixture.Event("ambiguous", thread: address.ConversationId, text: "I choose this")); await f.DispatchAsync(); await f.RespondAsync();
         Assert.All(await f.QuestionsAsync(), q => Assert.Null(q.Answer)); Assert.Equal("select-one-question", Assert.Single(await f.InboxAsync()).Result);
-        Assert.Contains(f.Slack.Calls, c => c.Method == "chat.postMessage" && c.Body.GetProperty("text").GetString()!.Contains("!forge answer", StringComparison.Ordinal));
-        await f.ReceiveAsync(SlackProviderFixture.Event("explicit", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " precise answer"));
-        await f.ReceiveAsync(SlackProviderFixture.Event("explicit", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " precise answer", envelopeId: "different-envelope"));
+        Assert.Contains(f.Slack.Calls, c => c.Method == "chat.postMessage" && c.Body.GetProperty("text").GetString()!.Contains("option buttons", StringComparison.Ordinal));
+        await f.ReceiveAsync(SlackProviderFixture.Event("explicit", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " Second"));
+        await f.ReceiveAsync(SlackProviderFixture.Event("explicit", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " Second", envelopeId: "different-envelope"));
         await f.DispatchAsync(); Assert.Equal(2, (await f.InboxAsync()).Count);
-        Assert.Equal("precise answer", (await f.QuestionsAsync()).Single(q => q.ExternalId == "q2").Answer);
+        Assert.Equal("Second", (await f.QuestionsAsync()).Single(q => q.ExternalId == "q2").Answer);
         Assert.Null((await f.QuestionsAsync()).Single(q => q.ExternalId == "q1").Answer);
     }
 
     [Fact]
-    public async Task Custom_selection_is_actor_bound_and_thread_text_answers_only_the_selected_question()
+    public async Task Typed_answer_is_refused_and_no_custom_answer_control_exists()
     {
+        // Operator rule: answers are picked from the options, never typed.
         await using var f = new ChatSlackRuntimeTestFactory(); await f.SetupAsync(); await f.EnqueueAsync(); await f.DeliverAsync();
+        Assert.DoesNotContain(f.Slack.Calls, c => c.Method == "chat.postMessage" && c.Body.ToString().Contains("Custom answer", StringComparison.Ordinal));
         var address = await f.AddressAsync(); var q2 = await f.MessageAsync("q2");
-        await f.ReceiveAsync(SlackProviderFixture.Button("custom", q2.MessageId!, f.Button("q2", 2), thread: address.ConversationId));
-        await f.DispatchAsync(); await f.DeliverAsync();
-        var prompt = (await f.MessagesAsync()).Single(m => m.ActionKind == "question.prompt"); Assert.Equal("owner-p", prompt.ConfirmationActorId);
-        await f.EnrollAsync("second-operator", productId: "p");
-        var identities = f.Services.GetRequiredService<HostIdentityStore>();
-        Assert.NotNull(identities.RedeemLinkChallenge(identities.IssueLinkChallenge("second-operator", "slack", "T1", "UOTHER"), "slack", "T1", "UOTHER"));
-        await f.ReceiveAsync(SlackProviderFixture.Event("other-actor", thread: address.ConversationId, text: "not my selection", sender: "UOTHER"));
-        await f.DispatchAsync(); Assert.All(await f.QuestionsAsync(), q => Assert.Null(q.Answer));
-        await f.ReceiveAsync(SlackProviderFixture.Event("selected-answer", thread: address.ConversationId, text: "chosen custom answer")); await f.DispatchAsync();
-        Assert.Equal("chosen custom answer", (await f.QuestionsAsync()).Single(q => q.ExternalId == "q2").Answer); Assert.Null((await f.QuestionsAsync()).Single(q => q.ExternalId == "q1").Answer);
+        await f.ReceiveAsync(SlackProviderFixture.Event("typed", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " chosen custom answer"));
+        await f.DispatchAsync(); await f.RespondAsync();
+        Assert.Equal("choice-required", Assert.Single(await f.InboxAsync()).Result);
+        Assert.All(await f.QuestionsAsync(), q => Assert.Null(q.Answer));
+        Assert.Contains(f.Slack.Calls, c => c.Method == "chat.postMessage" && c.Body.GetProperty("text").GetString()!.Contains("Typed answers are not accepted", StringComparison.Ordinal));
+        Assert.DoesNotContain(await f.MessagesAsync(), m => m.ActionKind == "question.prompt");
     }
 
     [Fact]
@@ -200,17 +198,14 @@ public sealed class ChatSlackRuntimeTests
     }
 
     [Fact]
-    public async Task Several_custom_selections_require_explicit_selection_and_copied_buttons_cannot_change_the_address()
+    public async Task Copied_buttons_cannot_change_the_address_and_thread_text_never_guesses()
     {
         await using var f = new ChatSlackRuntimeTestFactory(); await f.SetupAsync(); await f.EnqueueAsync(); await f.DeliverAsync();
-        var address = await f.AddressAsync(); var one = await f.MessageAsync(); var two = await f.MessageAsync("q2");
+        var address = await f.AddressAsync(); var one = await f.MessageAsync();
         await f.ReceiveAsync(SlackProviderFixture.Button("copied", one.MessageId!, f.Button(), thread: address.ConversationId, channel: "COTHER"));
         await f.DispatchAsync(); Assert.All(await f.QuestionsAsync(), q => Assert.Null(q.Answer));
-        await f.ReceiveAsync(SlackProviderFixture.Button("custom-one", one.MessageId!, f.Button(index: 2), thread: address.ConversationId));
-        await f.ReceiveAsync(SlackProviderFixture.Button("custom-two", two.MessageId!, f.Button("q2", 2), thread: address.ConversationId));
-        await f.DispatchAsync(); await f.DeliverAsync();
-        await f.ReceiveAsync(SlackProviderFixture.Event("ambiguous-custom", thread: address.ConversationId, text: "This matches neither uniquely")); await f.DispatchAsync();
-        Assert.Equal("select-one-question", (await f.InboxAsync()).Single(i => i.DeliveryKey == "event:ambiguous-custom").Result);
+        await f.ReceiveAsync(SlackProviderFixture.Event("ambiguous", thread: address.ConversationId, text: "First")); await f.DispatchAsync();
+        Assert.Equal("select-one-question", (await f.InboxAsync()).Single(i => i.DeliveryKey == "event:ambiguous").Result);
         Assert.All(await f.QuestionsAsync(), q => Assert.Null(q.Answer));
     }
 

@@ -101,7 +101,12 @@ export async function requestPairingCode(): Promise<void> {
 }
 
 let localSignInRequest: Promise<void> | null = null;
-let automaticSignInAttempted = false;
+/**
+ * Set only when the host actually refused this browser's Windows identity (or the operator
+ * signed out). An unreachable API, e.g. during a Forge.Api restart, must not block it: the
+ * restart drops every in-memory session, and a localhost tab has to sign itself back in.
+ */
+let automaticSignInBlocked = false;
 const signedOutKey = 'forge.operator.signed-out';
 
 function setSignedOut(value: boolean): void {
@@ -115,23 +120,51 @@ function setSignedOut(value: boolean): void {
  * satisfy that, so it must not be offered the local path or auto-attempt it.
  */
 export function localSignInUsable(status: OperatorStatus | null): boolean {
-  if (!status?.localSignInAvailable || typeof window === 'undefined') return false;
+  return !!status?.localSignInAvailable && isHostBrowser();
+}
+
+/** True when this page reaches the API on localhost, so host-socket proofs can succeed. */
+export function isHostBrowser(): boolean {
+  if (typeof window === 'undefined') return false;
   try { return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(baseUrl || window.location.origin).hostname); }
   catch { return false; }
+}
+
+/**
+ * Host-only operator calls go straight to the API, bypassing Vite: the host verifies the
+ * browser's own TCP connection owner, which a proxied request cannot prove.
+ */
+function directHostApiUrl(path: string, purpose: string): URL {
+  const url = new URL(baseUrl || window.location.origin);
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error(`${purpose} requires a localhost connection.`);
+  if (!baseUrl && url.port === '5181') url.port = '5180';
+  url.pathname = path;
+  url.search = ''; url.hash = '';
+  return url;
+}
+
+export interface IssuedPairingCode { challenge: string; expiresAt: number }
+
+/**
+ * Mints a one-use code that pairs another browser as the signed-in user. The host refuses
+ * unless this request comes directly from the host Windows user's browser.
+ */
+export async function issuePairingCode(): Promise<IssuedPairingCode> {
+  const response = await operatorFetch(directHostApiUrl('/api/operator/issue-pairing-code', 'Issuing a pairing code'), { method: 'POST' });
+  if (response.status === 403) throw new Error('Only the Windows account running Forge can issue a pairing code, from a browser on the host.');
+  if (!response.ok) throw new Error('Could not issue a pairing code.');
+  const data = await response.json() as { challenge: string; expiresInSeconds: number };
+  return { challenge: data.challenge, expiresAt: Date.now() + data.expiresInSeconds * 1000 };
 }
 
 export async function signInLocalOperator(): Promise<void> {
   if (localSignInRequest) return localSignInRequest;
   localSignInRequest = (async () => {
-    const url = new URL(baseUrl || window.location.origin);
-    if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Local sign-in requires a localhost connection.');
-    if (!baseUrl && url.port === '5181') url.port = '5180';
-    // Bypass Vite: the host verifies the browser's TCP connection owner.
-    url.pathname = '/api/operator/local-sign-in';
-    url.search = ''; url.hash = '';
+    const url = directHostApiUrl('/api/operator/local-sign-in', 'Local sign-in');
     const response = await operatorFetch(url, { method: 'POST' });
     if (!response.ok) throw new Error('Automatic sign-in is unavailable. Use a pairing code, or retry from the Windows account running Forge.');
     csrfToken = ((await response.json()) as { token: string }).token;
+    automaticSignInBlocked = false;
     setSignedOut(false);
     window.dispatchEvent(new Event(operatorSessionChanged));
   })().finally(() => { localSignInRequest = null; });
@@ -143,16 +176,20 @@ export async function restoreLocalOperator(status: OperatorStatus): Promise<Oper
   // Explicit logout must remain logged out, including after a reload or in another tab.
   try { if (window.localStorage.getItem(signedOutKey) === 'true') return status; } catch { /* Optional preference. */ }
   if (localSignInRequest) { await localSignInRequest; return getOperatorStatus(); }
-  if (automaticSignInAttempted) return status;
-  automaticSignInAttempted = true;
-  await signInLocalOperator();
+  if (automaticSignInBlocked) return status;
+  try { await signInLocalOperator(); }
+  catch (reason) {
+    // fetch rejects with TypeError only when the API is unreachable; anything else is a refusal.
+    if (!(reason instanceof TypeError)) automaticSignInBlocked = true;
+    throw reason;
+  }
   return getOperatorStatus();
 }
 
 export async function unpairOperator(): Promise<void> {
   const response = await operatorFetch(`${baseUrl}/api/operator/logout`, { method: 'POST' });
   if (!response.ok) throw new Error('Could not end this session.');
-  automaticSignInAttempted = true;
+  automaticSignInBlocked = true;
   setSignedOut(true);
   clearOperatorSession();
 }

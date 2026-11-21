@@ -22,6 +22,10 @@ using System.Text.RegularExpressions;
 /// ] }
 /// ```
 /// </code>
+/// Operator rule: a question is never shown without options. Agents are told to emit
+/// only <c>choice</c> questions; anything parsed here as <c>open</c> (or a choice with
+/// fewer than two options) gets options from <see cref="QuestionOptions.EnsureAsync"/>
+/// before it is stored or shown.
 /// We accept either <c>```json open-questions</c> or just <c>```json</c> so a
 /// model that drops the language tag still works. Returns an empty list when
 /// no block is found, the JSON is malformed, or the array is empty.

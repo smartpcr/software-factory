@@ -393,22 +393,11 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
                 return;
             }
 
-            // Free-text reply → answers the single unanswered question, when unambiguous.
-            var unanswered = await db.DeliverableQuestions
-                .Where(q => q.WorkItemId == notif.WorkItemId && (q.Answer == null || q.Answer == ""))
-                .ToListAsync(ct);
-            var distinct = unanswered
-                .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.Key)
-                .ToList();
-            if (distinct.Count == 1 && !string.IsNullOrWhiteSpace(update.Text))
-            {
-                await this.AnswerAndEditAsync(openQuestions, notif, distinct[0], update.Text!.Trim(), actor, ct);
-            }
-            else if (distinct.Count > 1)
+            // Operator rule: answers are picked, never typed — a text reply answers nothing.
+            if (!string.IsNullOrWhiteSpace(update.Text))
             {
                 await this.transport.SendAsync(update.ChatId,
-                    "This item has multiple open questions — tap a choice button, or answer in the Forge UI.", buttons: null, ct);
+                    "Typed answers are not accepted — tap one of the question's option buttons, or answer in the Forge UI.", buttons: null, ct);
             }
         }
     }
@@ -433,8 +422,17 @@ public sealed class ChatInboundDispatcher : IChatInboundHandler
 
     private async Task AnswerAndEditAsync(IOpenQuestionService openQuestions, ChatNotificationRow notif, string externalId, string answer, string actor, CancellationToken ct)
     {
-        await openQuestions.AnswerAsync(
+        var result = await openQuestions.AnswerAsync(
             notif.WorkItemId!, new[] { new OpenQuestionAnswer(externalId, answer) }, actor, ct);
+        if (result.AcceptedCount == 0) return;
+
+        // One alert carries buttons for every question; keep it open until all are answered.
+        if (result.UnansweredCount > 0)
+        {
+            if (!string.IsNullOrEmpty(notif.ChatId))
+                await this.transport.SendAsync(notif.ChatId!, $"✅ Saved: {answer}. {result.UnansweredCount} question(s) still open.", buttons: null, ct);
+            return;
+        }
 
         // Reflect the answer on the sent message and release the outbox slot.
         notif.Status = ChatNotificationStatuses.Answered;

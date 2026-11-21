@@ -47,8 +47,13 @@ public interface IOpenQuestionService
 public sealed record OpenQuestionAnswer(string ExternalId, string? Answer, long? ExpectedRevision = null,
     bool EditExisting = false, string? ExpectedAnswerRevision = null);
 
-/// <summary>Result of an answer/dismiss: the recomputed unanswered count + whether a resume fired.</summary>
-public sealed record OpenQuestionAnswerResult(int UnansweredCount, bool ResumeScheduled, int AcceptedCount = 0, bool RevisionConflict = false);
+/// <summary>
+/// Result of an answer/dismiss: the recomputed unanswered count + whether a resume fired.
+/// <paramref name="NotAnOptionCount"/> counts answers refused because they were not one of
+/// the question's options (operator rule: no free-text answers).
+/// </summary>
+public sealed record OpenQuestionAnswerResult(int UnansweredCount, bool ResumeScheduled, int AcceptedCount = 0, bool RevisionConflict = false,
+    int NotAnOptionCount = 0);
 
 /// <inheritdoc/>
 public sealed class OpenQuestionService : IOpenQuestionService
@@ -97,6 +102,7 @@ public sealed class OpenQuestionService : IOpenQuestionService
             var accepted = 0;
             var newAnswers = 0;
             var conflict = false;
+            var notAnOption = 0;
             ChatActionReceiptRow? resume = null;
             int unanswered;
             await using (var tx = await this.db.Database.BeginTransactionAsync(ct))
@@ -110,8 +116,11 @@ public sealed class OpenQuestionService : IOpenQuestionService
                     var editing = !string.IsNullOrEmpty(latest.Answer);
                     if (editing && (!answer.EditExisting || verifiedActor.Source != "browser")) continue;
                     if (editing && (answer.ExpectedAnswerRevision is null || answer.ExpectedAnswerRevision != latest.AnsweredAt?.ToString("O"))) { conflict = true; continue; }
+                    // Operator rule: answers are picked, never typed. Store the option's own text.
+                    var chosen = answer.Answer == DismissSentinel ? DismissSentinel : MatchOption(latest, answer.Answer!);
+                    if (chosen is null) { notAnOption++; continue; }
                     var actionKey = editing ? $"question-edit:{workItemId}:{latest.Id}:{answer.ExpectedAnswerRevision}" : $"question:{workItemId}:{latest.Id}";
-                    latest.Answer = answer.Answer ?? string.Empty; latest.AnsweredAt = now; latest.AnsweredBy = actor;
+                    latest.Answer = chosen; latest.AnsweredAt = now; latest.AnsweredBy = actor;
                     this.db.ChatActionReceipts.Add(new() { ProductId = productId, ActionKey = ChatEventCatalog.Hash(actionKey),
                         Action = editing ? "question.edit" : "question.answer", TargetId = workItemId, ExpectedRevision = latest.Id, ActorId = actor,
                         CreatedAt = now.ToUnixTimeMilliseconds(), TerminalAt = now.ToUnixTimeMilliseconds() });
@@ -137,9 +146,16 @@ public sealed class OpenQuestionService : IOpenQuestionService
                 await this.db.SaveChangesAsync(ct);
             }
             this.chatRuntime.Signal();
-            return new(unanswered, scheduled, accepted, conflict);
+            return new(unanswered, scheduled, accepted, conflict, notAnOption);
         }
         finally { this.chatRuntime.DomainGate.Release(); }
+    }
+
+    /// <summary>The question's option equal to <paramref name="answer"/> (trimmed, case-insensitive), or null.</summary>
+    private static string? MatchOption(DeliverableQuestionRow question, string answer)
+    {
+        var typed = answer.Trim();
+        return QuestionOptions.ParseChoices(question.ChoicesJson).FirstOrDefault(c => string.Equals(c.Trim(), typed, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <inheritdoc/>

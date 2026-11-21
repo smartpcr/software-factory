@@ -50,22 +50,20 @@ public sealed class ChatTelegramInteractionTests
     }
 
     [Fact]
-    public async Task Custom_prompt_is_question_and_actor_bound_and_retains_other_question()
+    public async Task Typed_reply_is_refused_and_no_custom_answer_control_exists()
     {
+        // Operator rule: answers are picked from the options, never typed.
         await using var f = new ChatTelegramRuntimeTestFactory(); await f.SetupAsync(); await f.EnqueueAsync(); await f.TickAsync(); await f.TickAsync();
+        Assert.DoesNotContain(f.Http.Calls, c => c.Method == "sendMessage" && c.Body.ToString().Contains("Custom answer", StringComparison.Ordinal));
         var q2 = (await f.MessagesAsync()).Single(m => m.QuestionId == "q2");
-        await f.ReceiveAsync(ChatTelegramRuntimeTestFactory.Callback(1, f.ButtonFor("q2", 2), q2.MessageId!));
-        await f.DispatchAsync(); await f.TickAsync();
-        var prompt = (await f.MessagesAsync()).Single(m => m.ActionKind == "question.prompt");
-        Assert.Equal("q2", prompt.QuestionId); Assert.Equal("owner-p", prompt.ConfirmationActorId);
-        Assert.Contains(f.Http.Calls, c => c.Method == "sendMessage" && c.Body.GetProperty("reply_markup").TryGetProperty("force_reply", out var force) && force.GetBoolean());
-        var identities = f.Services.GetRequiredService<HostIdentityStore>();
-        await f.EnrollAsync("second-operator", productId: "p");
-        identities.RedeemLinkChallenge(identities.IssueLinkChallenge("second-operator", "telegram", "12345", "43"), "telegram", "12345", "43");
-        await f.ReceiveAsync(ChatTelegramRuntimeTestFactory.Reply(2, prompt.MessageId!, "wrong actor", "43")); await f.DispatchAsync();
-        Assert.Equal("confirmation-actor-mismatch", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
-        await f.ReceiveAsync(ChatTelegramRuntimeTestFactory.Reply(3, prompt.MessageId!, "my custom answer")); await f.DispatchAsync(); await f.TickAsync();
-        Assert.Equal("answered-more-remain", (await f.InboxAsync()).Single(i => i.DeliveryKey == "3").Result);
+        await f.ReceiveAsync(ChatTelegramRuntimeTestFactory.Reply(1, q2.MessageId!, "my custom answer")); await f.DispatchAsync(); await f.TickAsync();
+        Assert.Equal("choice-required", (await f.InboxAsync()).Single(i => i.DeliveryKey == "1").Result);
+        Assert.All(await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.ToListAsync()), q => Assert.Null(q.Answer));
+        Assert.DoesNotContain(await f.MessagesAsync(), m => m.ActionKind == "question.prompt");
+        // Typing an option's exact text is picking it, not a free-text answer.
+        await f.ReceiveAsync(ChatTelegramRuntimeTestFactory.Reply(2, q2.MessageId!, "second")); await f.DispatchAsync(); await f.TickAsync();
+        Assert.Equal("answered-more-remain", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
+        Assert.Equal("Second", await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.Where(q => q.ExternalId == "q2").Select(q => q.Answer).SingleAsync()));
         Assert.False((await f.MessagesAsync()).Single(m => m.QuestionId == "q1").ControlsRetired);
     }
 
@@ -76,7 +74,7 @@ public sealed class ChatTelegramInteractionTests
         await f.ReceiveAsync(TelegramProviderFixture.Message(1, "choose a value")); await f.DispatchAsync();
         Assert.Equal("select-one-question", (await f.InboxAsync()).Single().Result);
         var q2 = (await f.MessagesAsync()).Single(m => m.QuestionId == "q2");
-        await f.ReceiveAsync(TelegramProviderFixture.Message(2, "/answer@forge_test_bot " + q2.MessageId + " selected second question")); await f.DispatchAsync();
+        await f.ReceiveAsync(TelegramProviderFixture.Message(2, "/answer@forge_test_bot " + q2.MessageId + " Second")); await f.DispatchAsync();
         Assert.Equal("answered-more-remain", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
         Assert.Null(await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.Where(q => q.ExternalId == "q1").Select(q => q.Answer).SingleAsync()));
     }

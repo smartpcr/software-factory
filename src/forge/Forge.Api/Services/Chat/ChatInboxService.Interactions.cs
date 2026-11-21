@@ -187,8 +187,7 @@ public sealed partial class ChatInboxService
         questions = questions.Where(q => deliveries.Any(d => d.Id == q.DeliveryId)).ToList();
         row.ContentScopesJson = JsonSerializer.Serialize(deliveries.Select(d => JsonSerializer.Deserialize<ChatDeliveryTarget>(d.TargetJson)!).Select(t => new { t.ProductId, t.SpawnId }).Distinct());
         return questions.Count == 0 ? "No open question messages in this conversation. Open Forge for the current status."
-            : (envelope.ProviderId == "slack" ? "Use !forge answer <message ID> <answer> in this thread, or select a question's Custom answer button.\n"
-                : "Reply to the specific question message, or use the answer command with its message ID and your answer.\n")
+            : "Tap one of the option buttons on the specific question message, or answer in Forge.\n"
                 + string.Join("\n", questions.Take(20).Select(q => $"Message {q.MessageId}: question {q.QuestionId}"))
                 + (questions.Count > 20 ? "\nMore questions are available in Forge." : "");
     }
@@ -217,8 +216,9 @@ public sealed partial class ChatInboxService
             "pinned" => "Decision pinned. Every future iteration of this document follows it.",
             "confirmation-queued" => "Review the separate restart confirmation before proceeding.",
             "operation-needs-repair" => "A previous operation has an unknown outcome. Open Forge to inspect and repair it before retrying.",
-            "safe-replacement-required" => "The answer contains unsupported or sensitive content. Send a safe replacement, or answer in Forge.",
-            "unsupported-input" => "This conversation accepts text answers and Forge buttons. Send a text reply to a question.",
+            "safe-replacement-required" => "The answer contains unsupported or sensitive content. Pick one of the question's options, or answer in Forge.",
+            "choice-required" => "Answer by tapping one of the question's options. Typed answers are not accepted.",
+            "unsupported-input" => "This conversation accepts Forge buttons. Tap one of the question's options.",
             "answer-in-forge" => "This destination permits metadata only. Answer in Forge.",
             "select-one-question" => "Several questions can match. Reply to a specific question message or use the questions command.",
             "too-many-questions" => "There are too many question messages to select automatically. Reply to a specific question message or select it in Forge.",

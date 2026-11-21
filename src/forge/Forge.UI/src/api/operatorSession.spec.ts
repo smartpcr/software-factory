@@ -172,6 +172,27 @@ describe('automatic localhost sign-in', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('signs in again automatically after a Forge.Api restart drops the session', async () => {
+    browser();
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/status')
+      ? json({ state: 'Paired', userId: 'existing' }) : json({ token: 'csrf' }));
+    const { restoreLocalOperator } = await import('./operatorSession');
+    await restoreLocalOperator(unpaired);
+    // The restart revoked the in-memory session; the same page load sees an unpaired status again.
+    await restoreLocalOperator(unpaired);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/local-sign-in'))).toHaveLength(2);
+  });
+
+  it('keeps trying automatic sign-in while Forge.Api is unreachable', async () => {
+    browser();
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const { restoreLocalOperator } = await import('./operatorSession');
+    await expect(restoreLocalOperator(unpaired)).rejects.toThrow(TypeError);
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/status')
+      ? json({ state: 'Paired', userId: 'existing' }) : json({ token: 'csrf' }));
+    expect((await restoreLocalOperator(unpaired)).state).toBe('Paired');
+  });
+
   it('respects explicit logout across reloads and permits explicit local sign-in', async () => {
     const values = browser();
     fetchMock.mockResolvedValueOnce(json({ token: 'csrf' })).mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -213,6 +234,42 @@ describe('choosing a sign-in path', () => {
     const { localSignInUsable } = await import('./operatorSession');
     expect(localSignInUsable({ state: 'Pair browser', userId: null, localSignInAvailable: true })).toBe(true);
     expect(localSignInUsable({ state: 'Pair browser', userId: null, localSignInAvailable: false })).toBe(false);
+  });
+});
+
+describe('issuing a pairing code from the host browser', () => {
+  const hostWindow = (hostname: string) => ({ location: { hostname, origin: `http://${hostname}:5181` }, dispatchEvent: vi.fn() });
+
+  it('calls the API directly, bypassing Vite, and returns the code with its expiry', async () => {
+    vi.stubGlobal('window', hostWindow('localhost'));
+    const code = 'C'.repeat(64);
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/csrf') ? json({ token: 'csrf' }) : json({ challenge: code, expiresInSeconds: 120 }));
+    const { issuePairingCode, isHostBrowser } = await import('./operatorSession');
+    expect(isHostBrowser()).toBe(true);
+    const before = Date.now();
+    const issued = await issuePairingCode();
+    expect(issued.challenge).toBe(code);
+    expect(issued.expiresAt).toBeGreaterThanOrEqual(before + 120_000);
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/issue-pairing-code'));
+    expect(String(call?.[0])).toBe('http://localhost:5180/api/operator/issue-pairing-code');
+    expect(call?.[1]?.method).toBe('POST');
+    expect(call?.[1]?.credentials).toBe('include');
+    expect(new Headers(call?.[1]?.headers).get('X-Forge-CSRF')).toBe('csrf');
+  });
+
+  it('is hidden and never requested from another machine', async () => {
+    vi.stubGlobal('window', hostWindow('xd003'));
+    const { issuePairingCode, isHostBrowser } = await import('./operatorSession');
+    expect(isHostBrowser()).toBe(false);
+    await expect(issuePairingCode()).rejects.toThrow('localhost');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('explains a host refusal', async () => {
+    vi.stubGlobal('window', hostWindow('localhost'));
+    fetchMock.mockImplementation(async (url) => String(url).endsWith('/csrf') ? json({ token: 'csrf' }) : json({ title: 'denied' }, 403));
+    const { issuePairingCode } = await import('./operatorSession');
+    await expect(issuePairingCode()).rejects.toThrow(/Windows account running Forge/);
   });
 });
 

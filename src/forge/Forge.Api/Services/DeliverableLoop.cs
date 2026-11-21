@@ -617,13 +617,21 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// emits <c>task.iteration.started | scored | iterated | passed |
     /// rejected | stalled</c> events on the per-work-item live channel.
     /// </summary>
-    public DeliverableLoop(ControlDbContext control, ProductDbContext db, TaskChannel? channel, IChatNotifier? chatNotifier = null)
+    public DeliverableLoop(ControlDbContext control, ProductDbContext db, TaskChannel? channel, IChatNotifier? chatNotifier = null,
+        IQuestionOptionsSynthesizer? questionOptions = null)
     {
         this.control = control;
         this.db = db;
         this.channel = channel;
         this.chatNotifier = chatNotifier;
+        this.questionOptions = questionOptions;
     }
+
+    /// <summary>
+    /// Drafts options for a question an agent asked without any. Null in unit tests /
+    /// offline, where <see cref="QuestionOptions.Fallback"/> still guarantees options.
+    /// </summary>
+    private readonly IQuestionOptionsSynthesizer? questionOptions;
 
     /// <summary>
     /// Phase 74 test helper — clear the per-process mutex map between
@@ -649,32 +657,24 @@ public sealed class DeliverableLoop : IDeliverableLoop
         {
             var title = $"❓ {unansweredCount} open question(s) need your answer";
 
-            // Parity with the QUESTIONS tab (OpenQuestionsWizard): mark the
-            // agent's recommended choice and surface the "Other" free-text
-            // path — the inbound dispatcher accepts a plain reply as a custom
-            // answer when exactly one question is open (multi-question replies
-            // get redirected to buttons/UI), but without the hint the Telegram
-            // message reads as buttons-only.
-            var otherHint = unansweredCount == 1
-                ? "✏️ Other: reply to this message with a custom answer."
-                : "✏️ Tap a choice to answer; free-text replies work once a single question remains (or answer in the Forge UI).";
+            // Operator rule: answers are picked, never typed. Every question gets
+            // its own option buttons (numbered to match the list when there are
+            // several), and the agent's recommended option is starred — the same
+            // match rule as the wizard UI (OpenQuestionsWizard.tsx `rec === c`).
+            var numbered = questions.Count > 1;
             var body = string.Join("\n", questions.Select((q, i) => $"{i + 1}. {q.Text}"))
-                + "\n\n" + otherHint;
+                + "\n\n👉 Tap an option to answer (or answer in the Forge UI).";
 
-            IReadOnlyList<ChatButton>? buttons = null;
-            var firstChoice = questions.FirstOrDefault(q =>
-                string.Equals(q.Kind, "choice", StringComparison.OrdinalIgnoreCase) && q.Choices is { Count: > 0 });
-            if (firstChoice is not null)
-            {
-                // Same match rule as the wizard UI: recommendation is the exact
-                // choice string (OpenQuestionsWizard.tsx `rec === c`).
-                var recommended = TryGetRecommendation(firstChoice.ExplanationJson);
-                buttons = firstChoice.Choices!
-                    .Select((c, idx) => new ChatButton(
-                        (string.Equals(c, recommended, StringComparison.Ordinal) ? "★ " : string.Empty) + c,
-                        $"oq|{firstChoice.ExternalId}|{idx}"))
-                    .ToList();
-            }
+            var buttons = questions
+                .SelectMany((q, qi) =>
+                {
+                    var recommended = TryGetRecommendation(q.ExplanationJson);
+                    return (q.Choices ?? Array.Empty<string>()).Select((c, idx) => new ChatButton(
+                        (numbered ? $"{qi + 1}: " : string.Empty)
+                            + (string.Equals(c, recommended, StringComparison.Ordinal) ? "★ " : string.Empty) + c,
+                        $"oq|{q.ExternalId}|{idx}"));
+                })
+                .ToList();
 
             // Part B — route this alert into the owning spawn's forum topic (group
             // mode). Resolved from the workstream; null → group root.
@@ -700,7 +700,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                     Iter: iter,
                     Title: title,
                     Body: body,
-                    Buttons: buttons,
+                    Buttons: buttons.Count > 0 ? buttons : null,
                     SpawnId: spawnId),
                 ct);
         }
@@ -1447,9 +1447,19 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // non-empty answer for the same ExternalId so the regenerated
             // row stays "answered" until the operator explicitly clears or
             // updates it via the wizard.
-            var newQuestions = OpenQuestionsExtractor.Extract(gen.OutputText);
+            IReadOnlyList<OpenQuestionsExtractor.OpenQuestion> newQuestions = OpenQuestionsExtractor.Extract(gen.OutputText);
             if (newQuestions.Count > 0)
             {
+                // Operator rule: never ask a question without options. Reuse options
+                // already stored for the same id before spending a model call.
+                var storedWithOptions = (await this.db.DeliverableQuestions.AsNoTracking()
+                        .Where(q => q.WorkItemId == request.WorkItemId && q.ChoicesJson != null)
+                        .ToListAsync(ct))
+                    .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(),
+                        StringComparer.OrdinalIgnoreCase);
+                newQuestions = await QuestionOptions.EnsureAsync(newQuestions, storedWithOptions, this.questionOptions, ct);
+
                 var priorAnswers = await this.db.DeliverableQuestions.AsNoTracking()
                     .Where(q => q.WorkItemId == request.WorkItemId
                         && q.Answer != null && q.Answer != string.Empty)
@@ -1809,13 +1819,51 @@ public sealed class DeliverableLoop : IDeliverableLoop
             // the reconciler, not here — keeps the loop's side effects
             // localized.
             var scoresInOrder = priorChain.Select(c => c.Score).ToList();
+            // Only iterations scored since the operator's latest answer or steer count
+            // toward a plateau (see SloppyDetector.ScoresSinceOperatorInputAsync).
+            var attemptScores = await SloppyDetector.ScoresSinceOperatorInputAsync(
+                this.db, request.WorkItemId, scoresInOrder, ct);
             var sloppy = await SloppyDetector.CheckAsync(
                 this.control, this.db,
                 request.WorkItemId,
                 request.GeneratorAgentId,
                 budgetWindowStartUtc,
-                scoresInOrder,
+                attemptScores.ToList(),
                 ct);
+            if (sloppy.IsSloppy && unansweredCount > 0)
+            {
+                // A flat score while questions are unanswered means the loop is waiting
+                // on the operator, not stuck: park for answers instead of reassigning
+                // (the orchestrator soft-parks 'stalled-questions' and resumes once
+                // every question is answered or dismissed).
+                verdict = "stalled-questions";
+                row.Verdict = verdict;
+                var parkNote = $"PARKED: the score stayed flat ({sloppy.Reason}) while {unansweredCount} operator question(s) are unanswered, so the loop is waiting on the operator rather than stuck. It resumes when the questions are answered or dismissed.";
+                row.Notes = string.IsNullOrEmpty(row.Notes) ? parkNote : row.Notes + "\n\n" + parkNote;
+                var parkedWi = await this.db.WorkItems.FirstOrDefaultAsync(w => w.Id == request.WorkItemId, ct);
+                if (parkedWi is not null)
+                {
+                    parkedWi.ExecutionStatus = ExecutionStatuses.AwaitingAnswers;
+                    parkedWi.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+
+                await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
+                await this.StampPairAssignmentAsync(
+                    pairAssignmentId,
+                    AgentPairAssignmentOutcomes.Cancelled,
+                    sloppyReason: null,
+                    finalScore: lastScore.Score,
+                    ct);
+                await this.EmitAsync(request.WorkItemId, "task.iteration.parked-for-questions", new
+                {
+                    iter,
+                    score = lastScore.Score,
+                    unansweredQuestions = unansweredCount,
+                    suppressedSloppyReason = sloppy.Reason,
+                }, ct);
+                return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
+            }
+
             if (sloppy.IsSloppy)
             {
                 verdict = "sloppy";

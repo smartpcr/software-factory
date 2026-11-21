@@ -201,21 +201,9 @@ public sealed partial class ChatInboxService
                 if (questionPayload?.Choices is null || choice < 0 || choice >= questionPayload.Choices.Count) return "stale-action";
                 envelope = envelope with { Text = questionPayload.Choices[choice] };
             }
-            if (string.IsNullOrWhiteSpace(envelope.Text))
-            {
-                if (token is null) return "answer-required";
-                var promptKey = "prompt:" + row.Id;
-                if (!await control.ChatDeliveryMessages.AnyAsync(m => m.DeliveryId == delivery.Id && m.PartKey == promptKey, ct))
-                {
-                    control.ChatDeliveryMessages.Add(new() { DeliveryId = delivery.Id, PartKey = promptKey, ActionKind = "question.prompt",
-                        QuestionId = message.QuestionId, ExpectedRevision = revision, ConfirmationActorId = actor!.UserId,
-                        ExpiresAt = clock.GetUtcNow().AddMinutes(10).ToUnixTimeMilliseconds() });
-                    var queued = await control.ChatDeliveries.SingleAsync(d => d.Id == delivery.Id, ct);
-                    queued.State = "pending"; queued.NextAttemptAt = clock.GetUtcNow().ToUnixTimeMilliseconds();
-                    await budget.SaveAsync(control, ct); runtime.Signal();
-                }
-                return "answer-prompt-queued";
-            }
+            // Operator rule: answers are picked, never typed. A blank tap (an old "Custom answer"
+            // control) no longer opens a type-your-answer prompt; typed text must name an option.
+            if (string.IsNullOrWhiteSpace(envelope.Text)) return "choice-required";
             var connection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == delivery.ConnectionId, ct);
             if (!policy.AcceptsAnswer(envelope.Text, await secrets.ValuesAsync(connection, ct))) return "safe-replacement-required";
             var latest = (await db.DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == notification.WorkItemId).ToListAsync(ct))
@@ -225,7 +213,8 @@ public sealed partial class ChatInboxService
                 [new(message.QuestionId!, envelope.Text, revision)], actor!.UserId, ct);
             var key = ChatEventCatalog.Hash($"question:{notification.WorkItemId}:{revision}");
             row.ActionReceiptId = await db.ChatActionReceipts.Where(r => r.ProductId == product.Id && r.ActionKey == key).Select(r => r.Id).SingleOrDefaultAsync(ct);
-            return result.RevisionConflict ? "stale-revision" : result.AcceptedCount == 0 ? "already-resolved" : result.UnansweredCount == 0 ? "answered-all" : "answered-more-remain";
+            return result.RevisionConflict ? "stale-revision" : result.NotAnOptionCount > 0 ? "choice-required"
+                : result.AcceptedCount == 0 ? "already-resolved" : result.UnansweredCount == 0 ? "answered-all" : "answered-more-remain";
         }
         if (action.StartsWith("workstream.", StringComparison.Ordinal))
         {

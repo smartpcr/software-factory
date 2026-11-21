@@ -122,7 +122,7 @@ public sealed class ChatRuntimeTests
         var question = f.Alpha.Sent.Single().Notification.QuestionReference!;
         var actor = await f.ProviderActorAsync("123", "owner-p");
         using var actorScope = ForgeActorScope.Push(actor, "p"); using var productScope = ProductDbContextFactory.PushAsyncLocalSlug("p");
-        await f.WithAsync(sp => sp.GetRequiredService<IOpenQuestionService>().AnswerAsync("child-0", [new(question, "web answer")], "owner-p", default));
+        await f.WithAsync(sp => sp.GetRequiredService<IOpenQuestionService>().AnswerAsync("child-0", [new(question, "First")], "owner-p", default));
         await f.TickAsync();
         Assert.Single(f.Alpha.Edits); Assert.Single(f.Beta.Edits);
         Assert.Equal(2, (await f.MessagesAsync()).Count(m => !m.ControlsRetired));

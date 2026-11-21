@@ -56,7 +56,8 @@ internal sealed class ChatRuntimeTestFactory : ChatPluginTestFactory
             if (interactive) foreach (var sub in await control.ChatSubscriptions.ToListAsync()) sub.Interactive = true;
             await control.SaveChangesAsync();
             var product = sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p");
-            for (var i = 1; i <= questions; i++) product.DeliverableQuestions.Add(new() { WorkItemId = "child-0", ExternalId = "q" + i, Iter = 1, Text = "Choose a safe value " + i });
+            for (var i = 1; i <= questions; i++) product.DeliverableQuestions.Add(new() { WorkItemId = "child-0", ExternalId = "q" + i, Iter = 1, Text = "Choose a safe value " + i,
+                Kind = "choice", ChoicesJson = "[\"First\",\"Second\"]" });
             await product.SaveChangesAsync();
         });
         var identities = this.Services.GetRequiredService<HostIdentityStore>();
@@ -89,7 +90,8 @@ internal sealed class ChatRuntimeTestFactory : ChatPluginTestFactory
     {
         var sent = provider.Sent.Where(s => s.Address.ConnectionId == connection).ElementAt(question);
         return new(provider.Descriptor.Id, connection, deliveryKey, sent.Address, "operator", "action", "incoming-" + deliveryKey,
-            sent.MessageId, "safe answer", sent.Notification.Actions.Single(a => a.Kind == "question.answer").Token, this.Clock.GetUtcNow());
+            // A tap on the first option button: answers are picked, never typed.
+            sent.MessageId, null, sent.Notification.Actions.First(a => a.Kind == "question.answer").Token, this.Clock.GetUtcNow());
     }
 }
 

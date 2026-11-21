@@ -56,7 +56,8 @@ public class OpenQuestionServiceTests
                 ExternalId = ext,
                 Iter = iter++,
                 Text = "Question " + ext,
-                Kind = "open",
+                Kind = "choice",
+                ChoicesJson = "[\"Go with A\",\"Go with B\"]",
                 CreatedAt = now,
             });
         }
@@ -77,7 +78,7 @@ public class OpenQuestionServiceTests
         using (var scope = f.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<IOpenQuestionService>();
-            result = await svc.AnswerAsync(Id, new[] { new OpenQuestionAnswer("q1", "go with A") }, "operator", default);
+            result = await svc.AnswerAsync(Id, new[] { new OpenQuestionAnswer("q1", "  go WITH a ") }, "operator", default);
         }
 
         Assert.Equal(0, result.UnansweredCount);
@@ -90,7 +91,8 @@ public class OpenQuestionServiceTests
             Assert.Equal("active", ws.Status);
             Assert.Null(ws.StallReason);
             var q = await db.DeliverableQuestions.AsNoTracking().SingleAsync(x => x.WorkItemId == Id);
-            Assert.Equal("go with A", q.Answer);
+            // Matched case-insensitively and stored as the option's own text.
+            Assert.Equal("Go with A", q.Answer);
             Assert.Equal("operator", q.AnsweredBy);
         }
     }
@@ -108,7 +110,7 @@ public class OpenQuestionServiceTests
         using (var scope = f.Services.CreateScope())
         {
             var svc = scope.ServiceProvider.GetRequiredService<IOpenQuestionService>();
-            result = await svc.AnswerAsync(Id, new[] { new OpenQuestionAnswer("q1", "answered") }, "operator", default);
+            result = await svc.AnswerAsync(Id, new[] { new OpenQuestionAnswer("q1", "Go with B") }, "operator", default);
         }
 
         Assert.Equal(1, result.UnansweredCount);
@@ -120,6 +122,34 @@ public class OpenQuestionServiceTests
             var ws = await db.Workstreams.AsNoTracking().SingleAsync(w => w.Id == Id);
             // Not all answered → stall left intact, no resume.
             Assert.Equal("stalled", ws.Status);
+        }
+    }
+
+    [Fact]
+    public async Task AnswerAsync_Refuses_A_Typed_Answer_That_Is_Not_An_Option()
+    {
+        await using var f = await BootAsync();
+        const string Id = "ws-oq-svc-typed";
+        await SeedWorkstreamWithQuestionsAsync(f, Id, "Sloppy-3-attempts: mis-counted", "q1");
+
+        using var actor = ForgeActorScope.Push(await f.ProviderActorAsync(), "p");
+        using var productScope = ProductDbContextFactory.PushAsyncLocalSlug("p");
+        OpenQuestionAnswerResult result;
+        using (var scope = f.Services.CreateScope())
+        {
+            var svc = scope.ServiceProvider.GetRequiredService<IOpenQuestionService>();
+            result = await svc.AnswerAsync(Id, new[] { new OpenQuestionAnswer("q1", "something I typed") }, "operator", default);
+        }
+
+        Assert.Equal(1, result.NotAnOptionCount);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.UnansweredCount);
+        Assert.False(result.ResumeScheduled);
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            Assert.Null((await db.DeliverableQuestions.AsNoTracking().SingleAsync(x => x.WorkItemId == Id)).Answer);
+            Assert.Equal("stalled", (await db.Workstreams.AsNoTracking().SingleAsync(w => w.Id == Id)).Status);
         }
     }
 
