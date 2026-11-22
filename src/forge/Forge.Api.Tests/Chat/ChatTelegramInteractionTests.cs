@@ -60,23 +60,24 @@ public sealed class ChatTelegramInteractionTests
         Assert.Equal("choice-required", (await f.InboxAsync()).Single(i => i.DeliveryKey == "1").Result);
         Assert.All(await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.ToListAsync()), q => Assert.Null(q.Answer));
         Assert.DoesNotContain(await f.MessagesAsync(), m => m.ActionKind == "question.prompt");
-        // Typing an option's exact text is picking it, not a free-text answer.
+        // Only a button tap answers: typing an option's exact text is refused too.
         await f.ReceiveAsync(ChatTelegramRuntimeTestFactory.Reply(2, q2.MessageId!, "second")); await f.DispatchAsync(); await f.TickAsync();
-        Assert.Equal("answered-more-remain", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
-        Assert.Equal("Second", await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.Where(q => q.ExternalId == "q2").Select(q => q.Answer).SingleAsync()));
+        Assert.Equal("choice-required", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
+        Assert.All(await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.ToListAsync()), q => Assert.Null(q.Answer));
         Assert.False((await f.MessagesAsync()).Single(m => m.QuestionId == "q1").ControlsRetired);
     }
 
     [Fact]
-    public async Task Ambiguous_text_lists_questions_and_explicit_answer_selects_exact_message()
+    public async Task Ambiguous_text_lists_questions_and_explicit_typed_answer_is_refused()
     {
         await using var f = new ChatTelegramRuntimeTestFactory(); await f.SetupAsync(); await f.EnqueueAsync(); await f.TickAsync(); await f.TickAsync();
         await f.ReceiveAsync(TelegramProviderFixture.Message(1, "choose a value")); await f.DispatchAsync();
         Assert.Equal("select-one-question", (await f.InboxAsync()).Single().Result);
         var q2 = (await f.MessagesAsync()).Single(m => m.QuestionId == "q2");
+        // The selector addresses exactly one question, but typed text never answers it.
         await f.ReceiveAsync(TelegramProviderFixture.Message(2, "/answer@forge_test_bot " + q2.MessageId + " Second")); await f.DispatchAsync();
-        Assert.Equal("answered-more-remain", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
-        Assert.Null(await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.Where(q => q.ExternalId == "q1").Select(q => q.Answer).SingleAsync()));
+        Assert.Equal("choice-required", (await f.InboxAsync()).Single(i => i.DeliveryKey == "2").Result);
+        Assert.All(await f.ReadAsync(sp => sp.GetRequiredService<IProductDbContextFactory>().CreateFor("p").DeliverableQuestions.ToListAsync()), q => Assert.Null(q.Answer));
     }
 
     [Fact]

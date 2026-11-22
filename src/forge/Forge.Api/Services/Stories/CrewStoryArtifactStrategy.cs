@@ -2692,6 +2692,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 this.logger?.LogInformation(
                     "Plan file '{File}' (workItem {WorkItem}) latest verdict already 'pass'; skipping architect invocation.",
                     spec.FileName, docWorkItemId);
+                // A replay of an already-passed doc also repairs a badge an
+                // earlier sweep left on Failed.
+                await this.MarkPlanDocCompletedAsync(docWorkItemId, ct);
                 return cachedFromDisk;
             }
         }
@@ -9765,7 +9768,40 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
 
         // Terminal pass — not skipped; the caller proceeds to commit / PR.
+        await this.MarkPlanDocCompletedAsync(workItemId, ct);
         return false;
+    }
+
+    /// <summary>
+    /// A plan doc's work item runs without a task_queue row, so no queue
+    /// completion ever ends the Live badge DeliverableLoop stamps on it. Left
+    /// Live, the live-badge sweep later finds it idle with a terminal pass
+    /// verdict and flips it to Failed — a doc that passed and merged shows a
+    /// red "failed" card. Record the pass as Completed instead. Only plan-doc
+    /// items: workstream items complete when their PR exists. Best-effort; a
+    /// status write must never fail the doc that was just produced.
+    /// </summary>
+    private Task MarkPlanDocCompletedAsync(string workItemId, CancellationToken ct)
+        => MarkPlanDocCompletedAsync(this.scopeFactory, workItemId, this.logger, ct);
+
+    internal static async Task MarkPlanDocCompletedAsync(
+        IServiceScopeFactory scopeFactory, string workItemId, ILogger? logger, CancellationToken ct)
+    {
+        if (!workItemId.StartsWith("plan-doc:", StringComparison.Ordinal)) return;
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            if (wi is null || string.Equals(wi.ExecutionStatus, ExecutionStatuses.Completed, StringComparison.Ordinal)) return;
+            wi.ExecutionStatus = ExecutionStatuses.Completed;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger?.LogWarning(ex, "Could not mark plan doc {WorkItem} completed after its passing verdict.", workItemId);
+        }
     }
 
     /// <summary>

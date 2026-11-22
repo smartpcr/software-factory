@@ -196,14 +196,12 @@ public sealed partial class ChatInboxService
             if (!policy.AllowsQuestions(product.Id, subscription.ContentMode)
                 || ChatPayloadConverter.Read(notification)?.Questions.Any(q => q.Id == message.QuestionId && q.Text is not null) != true) return "answer-in-forge";
             var questionPayload = ChatPayloadConverter.Read(notification)?.Questions.SingleOrDefault(q => q.Id == message.QuestionId && q.Revision == revision);
-            if (token?.ChoiceIndex is { } choice)
-            {
-                if (questionPayload?.Choices is null || choice < 0 || choice >= questionPayload.Choices.Count) return "stale-action";
-                envelope = envelope with { Text = questionPayload.Choices[choice] };
-            }
-            // Operator rule: answers are picked, never typed. A blank tap (an old "Custom answer"
-            // control) no longer opens a type-your-answer prompt; typed text must name an option.
-            if (string.IsNullOrWhiteSpace(envelope.Text)) return "choice-required";
+            // Operator rule: answers are picked by tapping an option button, never typed. Typed
+            // text is refused even when it spells an option, and a tap without a choice (an old
+            // "Custom answer" control) no longer opens a type-your-answer prompt.
+            if (token?.ChoiceIndex is not { } choice) return "choice-required";
+            if (questionPayload?.Choices is null || choice < 0 || choice >= questionPayload.Choices.Count) return "stale-action";
+            envelope = envelope with { Text = questionPayload.Choices[choice] };
             var connection = await control.ChatConnections.AsNoTracking().SingleAsync(c => c.Id == delivery.ConnectionId, ct);
             if (!policy.AcceptsAnswer(envelope.Text, await secrets.ValuesAsync(connection, ct))) return "safe-replacement-required";
             var latest = (await db.DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == notification.WorkItemId).ToListAsync(ct))

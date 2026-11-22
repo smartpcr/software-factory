@@ -48,7 +48,7 @@ public sealed class ChatSlackRuntimeTests
     }
 
     [Fact]
-    public async Task Ambiguous_thread_replies_never_guess_and_explicit_decimal_selector_is_scoped_and_deduplicated()
+    public async Task Ambiguous_thread_replies_never_guess_and_explicit_typed_selector_is_deduplicated_and_refused()
     {
         await using var f = new ChatSlackRuntimeTestFactory(); await f.SetupAsync(); await f.EnqueueAsync(); await f.DeliverAsync();
         var address = await f.AddressAsync(); var q2 = await f.MessageAsync("q2");
@@ -58,8 +58,9 @@ public sealed class ChatSlackRuntimeTests
         await f.ReceiveAsync(SlackProviderFixture.Event("explicit", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " Second"));
         await f.ReceiveAsync(SlackProviderFixture.Event("explicit", thread: address.ConversationId, text: "!forge answer " + q2.MessageId + " Second", envelopeId: "different-envelope"));
         await f.DispatchAsync(); Assert.Equal(2, (await f.InboxAsync()).Count);
-        Assert.Equal("Second", (await f.QuestionsAsync()).Single(q => q.ExternalId == "q2").Answer);
-        Assert.Null((await f.QuestionsAsync()).Single(q => q.ExternalId == "q1").Answer);
+        // Only a button tap answers: typing an option's exact text is refused.
+        Assert.Equal("choice-required", (await f.InboxAsync()).Single(i => i.DeliveryKey == "event:explicit").Result);
+        Assert.All(await f.QuestionsAsync(), q => Assert.Null(q.Answer));
     }
 
     [Fact]

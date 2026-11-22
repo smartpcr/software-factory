@@ -3907,7 +3907,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// </list>
     /// </para>
     /// </summary>
-    private async Task<int> SweepLiveBadgeReconciliationAsync(CancellationToken ct)
+    internal async Task<int> SweepLiveBadgeReconciliationAsync(CancellationToken ct)
     {
         using var scope = this.scopeFactory.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
@@ -3934,11 +3934,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         // gives the story-spawn path a grace window to write its first deliverable before
         // this sweep can touch it.
         var recentActivityCutoff = DateTimeOffset.UtcNow.AddSeconds(-60);
+        // An agent can think for minutes without emitting a transcript event, so
+        // the 60-second activity window alone flipped running plan docs to Failed
+        // mid-run (observed: harness:DSH architecture.md, a 68 s silent stretch).
+        // A running invocation for the work item is direct proof it is not stuck.
+        var runner = scope.ServiceProvider.GetService<IAgentRunner>();
         foreach (var wi in liveWis)
         {
             var hasOpenRow = await db.TaskQueue.AsNoTracking()
                 .AnyAsync(r => r.WorkItemId == wi.Id && openStates.Contains(r.State), ct);
             if (hasOpenRow) continue;
+            if (runner?.IsTaskActive(wi.Id) == true) continue;
 
             // Recent transcript activity ⇒ a spawn (story-spawn or otherwise) is actively
             // driving this WI through its iteration loop. Healing now would race the writer
