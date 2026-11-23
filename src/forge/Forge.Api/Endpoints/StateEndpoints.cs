@@ -64,7 +64,16 @@ public static class StateEndpoints
                     wiQ = wiQ.Where(w => w.RepoId != null && ids.Contains(w.RepoId));
                 }
                 var workItems = await wiQ.ToListAsync();
-                projectedCards = workItems.Select(WorkItemToCardProjection).ToList();
+                // A spawned story also gets a work item of its own (Id = the
+                // story id) with no parent, so it projected as an orphan card
+                // under "No story" beside the story row that already shows it.
+                // The story row is that item's view; keep it off the card list.
+                var storyIds = (await db.ProductStories.AsNoTracking().Select(s => s.Id).ToListAsync())
+                    .ToHashSet(StringComparer.Ordinal);
+                projectedCards = workItems
+                    .Where(w => !storyIds.Contains(w.Id))
+                    .Select(WorkItemToCardProjection)
+                    .ToList();
             }
             var columns = await db.Columns.AsNoTracking().OrderBy(c => c.Sort).ToListAsync();
             var workstreams = await wsQ.OrderBy(w => w.Sort).ToListAsync();

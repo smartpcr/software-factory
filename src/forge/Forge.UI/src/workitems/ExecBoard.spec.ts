@@ -8,7 +8,7 @@ import { ForgeApiError, forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import type { WorkItem } from './workItemTypes';
 
-const { parseDropId, dropId, dragId, reconcileExecutionStatusFromDrag } = __testing;
+const { computeExecGroups, parseDropId, dropId, dragId, reconcileExecutionStatusFromDrag } = __testing;
 
 function makeItem(overrides: Partial<WorkItem> = {}): WorkItem {
   return {
@@ -70,6 +70,31 @@ describe('ExecBoard.parseDropId', () => {
     expect(parseDropId('col::g')).toBeNull();
     expect(parseDropId('something-else')).toBeNull();
     expect(parseDropId('')).toBeNull();
+  });
+});
+
+describe('ExecBoard.computeExecGroups', () => {
+  const story = makeItem({ id: 'h:S-M1', type: 'feature', title: 'S M1 - a turn runs' });
+  const child = makeItem({ id: 'ws-1', featureRef: 'h:S-M1' });
+  const loose = makeItem({ id: 'ws-loose' });
+
+  it("names the story lane from the story's own work item without drawing it as a card", () => {
+    const groups = computeExecGroups([story, child, loose], 'story');
+    expect(groups.map((g) => [g.label, g.items.map((i) => i.id)])).toEqual([
+      ['S M1 - a turn runs', ['ws-1']],
+      ['No story', ['ws-loose']],
+    ]);
+  });
+
+  it('keeps a feature work item that no card points at', () => {
+    const groups = computeExecGroups([story, loose], 'story');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items.map((i) => i.id)).toEqual(['h:S-M1', 'ws-loose']);
+  });
+
+  it("still lists the story's work item when grouping by agent", () => {
+    const groups = computeExecGroups([story, child], 'agent');
+    expect(groups.flatMap((g) => g.items.map((i) => i.id))).toEqual(['h:S-M1', 'ws-1']);
   });
 });
 

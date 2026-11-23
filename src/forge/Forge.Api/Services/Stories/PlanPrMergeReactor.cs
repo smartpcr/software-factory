@@ -31,7 +31,8 @@ using Microsoft.EntityFrameworkCore;
 ///
 /// <para>
 /// Idempotent: re-firing on an already-handled spawn is a no-op (every
-/// plan-doc work item is already <c>idle</c> + has no in-flight invocations).
+/// plan-doc work item is already closed + completed and has no in-flight
+/// invocations).
 /// </para>
 /// </summary>
 internal static class PlanPrMergeReactor
@@ -83,12 +84,19 @@ internal static class PlanPrMergeReactor
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 log?.LogWarning(ex,
-                    "PlanPrMergeReactor: CancelByTaskAsync failed for {WorkItem}; the row will still be flipped to idle.",
+                    "PlanPrMergeReactor: CancelByTaskAsync failed for {WorkItem}; the row will still be closed.",
                     wi.Id);
             }
-            if (wi.ExecutionStatus is "live" or "queued")
+            // The merged doc is done. Close its work item the way a finished
+            // workstream is closed: without this it kept State="active" forever
+            // and the Plan & Design board (State → column) showed every shipped
+            // plan doc in Build. A later Restart re-runs the loop, which sets the
+            // item back to active.
+            if (!string.Equals(wi.State, "closed", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(wi.ExecutionStatus, ExecutionStatuses.Completed, StringComparison.Ordinal))
             {
-                wi.ExecutionStatus = "idle";
+                wi.State = "closed";
+                wi.ExecutionStatus = ExecutionStatuses.Completed;
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
             }
 

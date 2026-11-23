@@ -86,8 +86,15 @@ function computeExecGroups(items: WorkItem[], groupBy: BoardGroupBy): ExecGroup[
     }
   };
 
+  // A spawned story also has a work item of its own (id = story id, no
+  // featureRef). It names the story lane above; drawing it as a card too put
+  // a duplicate of the story under "No story".
+  const storyGrouping = groupBy === 'story' || groupBy === 'epic' || groupBy === 'phase';
+  const laneIds = new Set(items.map((i) => i.featureRef).filter((r): r is string => !!r));
+
   const map = new Map<string, ExecGroup>();
   for (const i of items) {
+    if (storyGrouping && !i.featureRef && laneIds.has(i.id)) continue;
     const { key, label } = keyOf(i);
     let g = map.get(key);
     if (!g) { g = { key, label, items: [] }; map.set(key, g); }
@@ -130,6 +137,7 @@ function parseDropId(id: string): { groupKey: string; status: ExecStatus } | nul
 // used by useTaskLiveStore for unit-testable internals that aren't part of
 // the public component surface.
 export const __testing = {
+  computeExecGroups,
   dragId,
   dropId,
   parseDropId,

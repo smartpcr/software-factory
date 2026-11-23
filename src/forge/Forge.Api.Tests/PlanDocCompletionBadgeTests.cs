@@ -79,6 +79,48 @@ public class PlanDocCompletionBadgeTests
         Assert.Equal(ExecutionStatuses.Failed, await StatusAsync(f, workstream));
     }
 
+    [Fact]
+    public async Task Merging_a_plan_doc_pr_closes_only_that_doc()
+    {
+        // The Plan & Design board maps State to a column (active → Build,
+        // closed → Done); a merged plan doc must leave Build.
+        const string spawnId = "spawn-badge-merge";
+        const string merged = $"plan-doc:{spawnId}:architecture.md";
+        const string pending = $"plan-doc:{spawnId}:tech-spec.md";
+        using var f = new RunnerFactory(new FakeRunner(Array.Empty<string>()));
+        using (f.CreateClient()) { /* boot host + migrations */ }
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            db.StorySpawns.Add(new StorySpawnRow
+            {
+                Id = spawnId,
+                StoryId = "WI-badge-merge",
+                StoryTitle = "Badge merge",
+                Phase = StorySpawnPhases.Plan,
+                BaseBranch = "main",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                PlanDocPrsJson = "[{\"key\":\"architecture\",\"branch\":\"story/b/plan-architecture\",\"prId\":\"PR badge#1\"},"
+                    + "{\"key\":\"tech-spec\",\"branch\":\"story/b/plan-tech-spec\",\"prId\":\"PR badge#2\"}]",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await SeedAsync(f, merged, ExecutionStatuses.Failed);
+        await SeedAsync(f, pending, ExecutionStatuses.Live);
+
+        using (var scope = f.Services.CreateScope())
+        {
+            var sp = scope.ServiceProvider;
+            await PlanPrMergeReactor.OnPlanPrMergedAsync(sp.GetRequiredService<ControlDbContext>(), sp.GetRequiredService<ProductDbContext>(),
+                sp.GetRequiredService<IAgentRunner>(), hub: null, "PR badge#1", log: null, default);
+        }
+
+        Assert.Equal(("closed", ExecutionStatuses.Completed), await StateAsync(f, merged));
+        Assert.Equal(("active", ExecutionStatuses.Live), await StateAsync(f, pending));
+    }
+
     private static async Task SeedAsync(ForgeWebApplicationFactory f, string id, string status)
     {
         using var scope = f.Services.CreateScope();
@@ -96,10 +138,14 @@ public class PlanDocCompletionBadgeTests
     }
 
     private static async Task<string?> StatusAsync(ForgeWebApplicationFactory f, string id)
+        => (await StateAsync(f, id)).Status;
+
+    private static async Task<(string? State, string? Status)> StateAsync(ForgeWebApplicationFactory f, string id)
     {
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        return await db.WorkItems.AsNoTracking().Where(w => w.Id == id).Select(w => w.ExecutionStatus).SingleAsync();
+        var row = await db.WorkItems.AsNoTracking().Where(w => w.Id == id).Select(w => new { w.State, w.ExecutionStatus }).SingleAsync();
+        return (row.State, row.ExecutionStatus);
     }
 
     private sealed class RunnerFactory : ForgeWebApplicationFactory
