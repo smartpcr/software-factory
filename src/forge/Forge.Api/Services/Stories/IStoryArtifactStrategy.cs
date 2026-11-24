@@ -355,6 +355,30 @@ public sealed class NoProgressException : Exception
 }
 
 /// <summary>
+/// Thrown by <see cref="IStoryArtifactStrategy.ProduceWorkstreamChangesAsync"/> before
+/// an iteration starts when the operator answered an open question with a choice the
+/// agent marked as parking the work ("pause until the repair merges"). The orchestrator
+/// stalls the workstream with that answer as the reason; Retry resumes it. Without this
+/// the answer was only text: observed 2026-11-24 on harness:DSH-M2 stage 2.8, where
+/// six more iterations each reported "still paused" until the no-progress guard fired.
+/// </summary>
+public sealed class ParkedByAnswerException : Exception
+{
+    public ParkedByAnswerException(string questionId, string answer)
+        : base($"Parked by the answer to '{questionId}': {answer}")
+    {
+        this.QuestionId = questionId;
+        this.Answer = answer;
+    }
+
+    /// <summary>The question's stable id (ExternalId).</summary>
+    public string QuestionId { get; }
+
+    /// <summary>The operator's answer, one of the question's park choices.</summary>
+    public string Answer { get; }
+}
+
+/// <summary>
 /// Thrown by <c>StorySpawnOrchestrator.ApproveAndMergeAsync</c> when the PR's
 /// branch carries no diff vs its base — merging it would land nothing and
 /// falsely mark the stage "done with tests". Observed on

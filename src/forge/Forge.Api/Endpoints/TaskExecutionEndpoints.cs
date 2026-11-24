@@ -348,6 +348,8 @@ public static class TaskExecutionEndpoints
             return Results.Problem(title: "The model returned no usable explanation", statusCode: 502);
         }
 
+        // A regenerated explanation is prose; keep the park keys it does not author.
+        explanationJson = QuestionOptions.KeepParkKeys(q.ExplanationJson, explanationJson);
         q.ExplanationJson = explanationJson;
         await db.SaveChangesAsync(ct);
         return Results.Ok(new

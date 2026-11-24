@@ -211,6 +211,13 @@ public static class OpenQuestionsExtractor
             if (!string.IsNullOrWhiteSpace(s)) payload["recommendationRationale"] = s.Trim();
         }
 
+        // Choices that park the work ("stop and wait for something outside it"); only
+        // ones that are among the question's own choices count (QuestionOptions.ParkInForce).
+        var parks = ReadStringArray(item, "parks");
+        var choices = ReadStringArray(item, "choices");
+        parks.RemoveAll(p => !choices.Contains(p, StringComparer.OrdinalIgnoreCase));
+        if (parks.Count > 0) payload["parks"] = parks;
+
         if (payload.Count == 0) return null;
         payload["generated"] = false; // agent-authored
         return JsonSerializer.Serialize(payload);

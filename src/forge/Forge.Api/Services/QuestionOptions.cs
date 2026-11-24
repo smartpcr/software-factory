@@ -35,6 +35,8 @@ public static class QuestionOptions
     public const int MinChoices = 2;
     public const int MaxChoices = 5;
     private const int MaxChoiceLength = 200;
+    private const string ParksKey = "parks";
+    private const string ParkAppliedKey = "parkAppliedAt";
 
     public const string BestJudgmentChoice = "Proceed with your best judgment and record the assumption";
     public const string DeferChoice = "Defer: leave this out of the current scope";
@@ -47,6 +49,73 @@ public static class QuestionOptions
         if (string.IsNullOrEmpty(choicesJson)) return Array.Empty<string>();
         try { return JsonSerializer.Deserialize<string[]>(choicesJson) ?? Array.Empty<string>(); }
         catch (JsonException) { return Array.Empty<string>(); }
+    }
+
+    /// <summary>
+    /// The question's choices that park the work: picking one means "stop and wait for
+    /// something outside this work" (another PR merging, an external fix). The agent
+    /// lists them in the question's <c>parks</c> array; they are kept in
+    /// <see cref="DeliverableQuestionRow.ExplanationJson"/> with the question's other
+    /// agent-authored metadata.
+    /// </summary>
+    public static IReadOnlyList<string> ParkChoices(string? explanationJson) =>
+        ReadExplanation(explanationJson).TryGetValue(ParksKey, out var v) && v is JsonElement { ValueKind: JsonValueKind.Array } arr
+            ? arr.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!.Trim()).Where(s => s.Length > 0).ToList()
+            : Array.Empty<string>();
+
+    /// <summary>
+    /// The question (latest row of its id) whose answer parks the work and has not been
+    /// applied yet, or null. <paramref name="rows"/> are every row of one work item: an
+    /// agent re-emits a question each iteration, the new row inherits the answer but not
+    /// the park stamp, so the park choices and the applied stamp are read across every
+    /// row of the id. Applying a park stamps it (<see cref="WithParkApplied"/>), so the
+    /// operator's Retry resumes the work; answering with a park choice again (a newer
+    /// AnsweredAt) parks it again.
+    /// </summary>
+    public static DeliverableQuestionRow? FindParkInForce(IEnumerable<DeliverableQuestionRow> rows)
+    {
+        foreach (var byId in rows.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase))
+        {
+            var latest = byId.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First();
+            if (string.IsNullOrWhiteSpace(latest.Answer) || latest.AnsweredAt is not { } answeredAt) continue;
+            var answer = latest.Answer.Trim();
+            if (!byId.Any(q => ParkChoices(q.ExplanationJson).Contains(answer, StringComparer.OrdinalIgnoreCase))) continue;
+            if (byId.Any(q => ParkAppliedAt(q.ExplanationJson) is { } applied && applied >= answeredAt)) continue;
+            return latest;
+        }
+        return null;
+    }
+
+    private static DateTimeOffset? ParkAppliedAt(string? explanationJson) =>
+        ReadExplanation(explanationJson).TryGetValue(ParkAppliedKey, out var at) && at is string s
+            && DateTimeOffset.TryParse(s, null, System.Globalization.DateTimeStyles.RoundtripKind, out var applied) ? applied : null;
+
+    /// <summary>
+    /// <paramref name="replacement"/> (a regenerated explanation) keeping the park keys
+    /// of <paramref name="previous"/>: they are the agent's and Forge's state, not prose.
+    /// </summary>
+    public static string KeepParkKeys(string? previous, string replacement)
+    {
+        var prior = ReadExplanation(previous);
+        var next = ReadExplanation(replacement);
+        var kept = false;
+        foreach (var key in new[] { ParksKey, ParkAppliedKey })
+        {
+            if (prior.TryGetValue(key, out var v) && !next.ContainsKey(key))
+            {
+                next[key] = v;
+                kept = true;
+            }
+        }
+        return kept ? JsonSerializer.Serialize(next) : replacement;
+    }
+
+    /// <summary><paramref name="explanationJson"/> with the park recorded as applied at <paramref name="at"/>.</summary>
+    public static string WithParkApplied(string? explanationJson, DateTimeOffset at)
+    {
+        var explanation = ReadExplanation(explanationJson);
+        explanation[ParkAppliedKey] = at.ToString("O");
+        return JsonSerializer.Serialize(explanation);
     }
 
     /// <summary>

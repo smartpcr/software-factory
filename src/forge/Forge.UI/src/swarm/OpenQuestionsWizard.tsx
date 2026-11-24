@@ -260,8 +260,10 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                   {q.kind === 'choice' && q.choices.length > 0 ? (
                     <div className="oq-wizard__q-choices">
                       {q.choices.map((c) => {
-                        const rec = (q.explanation ?? explainData[q.externalId])?.recommendation;
+                        const expl = q.explanation ?? explainData[q.externalId];
+                        const rec = expl?.recommendation;
                         const isRec = rec != null && rec === c;
+                        const parks = expl?.parks?.some((p) => p.trim().toLowerCase() === c.trim().toLowerCase()) ?? false;
                         return (
                         <label key={c} className={`oq-wizard__q-choice${isRec ? ' oq-wizard__q-choice--recommended' : ''}`}>
                           <input
@@ -274,6 +276,15 @@ export function OpenQuestionsWizard({ workItemId, onAnswered, pollMs = 8_000 }: 
                           <span>{c}</span>
                           {isRec && (
                             <span className="oq-wizard__q-rec-tag" title="Agent's recommendation">★ recommended</span>
+                          )}
+                          {parks && (
+                            <span
+                              className="oq-wizard__q-park-tag"
+                              data-testid="oq-park-tag"
+                              title="Picking this parks the workstream: it stops iterating until you click Retry."
+                            >
+                              ⏸ parks workstream
+                            </span>
                           )}
                         </label>
                         );

@@ -55,6 +55,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         """;
 
     /// <summary>
+    /// Workstream (impl) prompts only: how an agent marks a choice that stops the work
+    /// to wait for something outside it. Forge acts on it (<see cref="ParkedByAnswerException"/>),
+    /// so an answer like "pause until the repair merges" really parks the workstream.
+    /// </summary>
+    internal const string QuestionParkRule = """
+        - If a choice means this workstream must STOP and wait for something
+          outside it (another PR or workstream merging, an external fix, a
+          person acting), list that choice verbatim in the question's
+          `parks` array, e.g. `"parks": ["Pause until the repair merges"]`.
+          When the operator picks it, Forge parks the workstream: no further
+          iterations until the operator clicks Retry. Never offer a choice
+          that keeps iterating while waiting on something outside the work.
+        """;
+
+    /// <summary>
     /// Maximum number of files <see cref="ProduceStageE2eAsync"/> will
     /// accept from the QA crew's scratch workspace before failing fast.
     /// Legitimate qa-e2e producers emit a handful of artifacts
@@ -653,6 +668,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// (global rules / pins) is honoured only on plan-doc + qa-e2e prompts;
     /// impl-path prompts silently drop the operator's pinned decisions.</para>
     /// </summary>
+    /// <summary>
+    /// The open question of <paramref name="workItemId"/> whose answer parks the work and
+    /// has not been applied yet (<see cref="QuestionOptions.FindParkInForce"/>), stamped as
+    /// applied so a later Retry resumes the work; null when none.
+    /// </summary>
+    internal static async Task<DeliverableQuestionRow?> ApplyParkAnswerAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return null;
+        using var scope = scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var rows = await db.DeliverableQuestions.Where(q => q.WorkItemId == workItemId).ToListAsync(ct);
+        var park = QuestionOptions.FindParkInForce(rows);
+        if (park is null) return null;
+        park.ExplanationJson = QuestionOptions.WithParkApplied(park.ExplanationJson, DateTimeOffset.UtcNow);
+        await db.SaveChangesAsync(ct);
+        return park;
+    }
+
     internal static async Task<string> BuildDecisionPinsBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workItemId)) return string.Empty;
@@ -4381,6 +4414,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             Rules:
             {{QuestionOptionsRule}}
+            {{QuestionParkRule}}
             - The evaluator will hold you below pass while any unanswered
               question exists for this workstream.
             """;
@@ -7619,6 +7653,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // a long-but-healthy multi-iter plan-doc run isn't mistaken for a
             // hang and force-recovered. No-op for non-plan-doc work items.
             RefreshPlanDocLockHeartbeat(workItemId);
+
+            // An answer that parks the work ("pause until the repair merges") stops
+            // the loop before any agent runs; the orchestrator stalls the workstream
+            // with the answer as its reason, and Retry resumes it.
+            if (isImplPhase && await ApplyParkAnswerAsync(this.scopeFactory, workItemId, iterCt) is { } park)
+            {
+                throw new ParkedByAnswerException(park.ExternalId, park.Answer!.Trim());
+            }
 
             // Phase 49 follow-up -- assemble the iter prompt from up to
             // THREE layered sections so the generator sees the most

@@ -82,6 +82,8 @@ export interface QuestionExplanation {
   recommendationRationale?: string;
   /** True when produced by on-demand generation rather than the authoring agent. */
   generated?: boolean;
+  /** Choices that park the workstream when picked (it stops until Retry). */
+  parks?: string[];
 }
 
 // forge_implementation.md Phase 28 — story spawn types.

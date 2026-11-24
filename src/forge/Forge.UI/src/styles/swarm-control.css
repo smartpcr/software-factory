@@ -2940,6 +2940,13 @@
   letter-spacing: 0.12em; text-transform: uppercase;
   color: var(--sc-green, #3aa675);
 }
+/* A choice that parks the workstream (it stops until Retry). */
+.swarm-ctrl .oq-wizard__q-park-tag {
+  margin-left: 8px;
+  font-family: var(--sc-font-display); font-size: 8px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--sc-amber);
+}
 
 /* Phase 91 — Explain popup. */
 .swarm-ctrl .oq-explain__overlay {

@@ -2738,6 +2738,39 @@ public sealed class StorySpawnOrchestrator
                     lastIter = npe.LastIteration,
                 }, CancellationToken.None);
             }
+            catch (ParkedByAnswerException pbe)
+            {
+                // The operator answered an open question with a choice that parks the
+                // work ("pause until the repair merges"). Stall it with that answer as
+                // the reason: the scheduler leaves stalled rows alone, and Retry resumes.
+                this.logger?.LogInformation(
+                    "Workstream {WsId} parked by the answer to {QuestionId}: {Answer}",
+                    item.ws.Id, pbe.QuestionId, pbe.Answer);
+
+                using var parkScope = this.services.CreateScope();
+                var parkDb = parkScope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var parkRow = await parkDb.Workstreams.FirstOrDefaultAsync(
+                    ws => ws.Id == item.ws.Id, CancellationToken.None);
+                if (parkRow is not null && parkRow.Status is not "cancelled" and not "complete")
+                {
+                    parkRow.Status = WorkstreamStatuses.Stalled;
+                    parkRow.StallReason =
+                        $"Parked by your answer to '{pbe.QuestionId}': \"{pbe.Answer}\". "
+                        + "It will not iterate until you click Retry.";
+                    await parkDb.SaveChangesAsync(CancellationToken.None);
+                    await EmitChange(hub, "ws-stalled", spawn, CancellationToken.None);
+                }
+
+                await this.EmitSpawnEventAsync(item.ws.Id, ImplSpawnGuard.SpawnFinishedKind, new
+                {
+                    wsId = item.ws.Id,
+                    spawnId = spawn.Id,
+                    success = false,
+                    exceptionType = nameof(ParkedByAnswerException),
+                    message = pbe.Message,
+                    questionId = pbe.QuestionId,
+                }, CancellationToken.None);
+            }
             catch (OffTaskException ote)
             {
                 // #2 — the engineer abandoned its declared file scope for N
