@@ -715,7 +715,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// <c>ExplanationJson</c> payload (see <see cref="OpenQuestionsExtractor"/>).
     /// Null when absent or malformed — best-effort, the marker is cosmetic.
     /// </summary>
-    private static string? TryGetRecommendation(string? explanationJson)
+    internal static string? TryGetRecommendation(string? explanationJson)
     {
         if (string.IsNullOrWhiteSpace(explanationJson)) return null;
         try

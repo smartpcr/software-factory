@@ -1590,6 +1590,39 @@ public static class StoriesEndpoints
     }
 
     /// <summary>
+    /// The model each agent runs with as generator and as evaluator, resolved
+    /// the way <c>CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync</c>
+    /// dispatches: generator = agent.GeneratorModel ?? crew.Model; evaluator =
+    /// agent.EvaluatorModel ?? crew.EvaluatorModel ?? agent.GeneratorModel ?? crew.Model.
+    /// Unknown agent ids are absent from the result.
+    /// </summary>
+    internal static async Task<Dictionary<string, (string? Generator, string? Evaluator)>> ResolvePairModelsAsync(
+        ControlDbContext control, IReadOnlyCollection<string> agentIds)
+    {
+        var result = new Dictionary<string, (string? Generator, string? Evaluator)>(StringComparer.Ordinal);
+        if (agentIds.Count == 0) return result;
+        var agents = await control.Agents.AsNoTracking()
+            .Where(a => agentIds.Contains(a.Id))
+            .Select(a => new { a.Id, a.CrewId, a.GeneratorModel, a.EvaluatorModel })
+            .ToListAsync();
+        var crewIds = agents.Select(a => a.CrewId).Where(c => !string.IsNullOrEmpty(c)).Distinct().ToList();
+        var crews = await control.Crews.AsNoTracking()
+            .Where(c => crewIds.Contains(c.Id))
+            .Select(c => new { c.Id, c.Model, c.EvaluatorModel })
+            .ToDictionaryAsync(c => c.Id, StringComparer.Ordinal);
+        foreach (var a in agents)
+        {
+            var crew = a.CrewId is not null && crews.TryGetValue(a.CrewId, out var c) ? c : null;
+            static string? First(params string?[] values) => values.FirstOrDefault(v => !string.IsNullOrEmpty(v));
+            result[a.Id] = (
+                First(a.GeneratorModel, crew?.Model),
+                First(a.EvaluatorModel, crew?.EvaluatorModel, a.GeneratorModel, crew?.Model));
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Unanswered operator questions per spawn, across its plan docs
     /// (<c>plan-doc:{spawnId}:{file}</c>) and its workstreams. A question counts
     /// once per external id (latest iteration wins, as the answer gate does).
@@ -1745,6 +1778,17 @@ public static class StoriesEndpoints
                 g => g.Key,
                 g => g.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase).Count(),
                 StringComparer.OrdinalIgnoreCase);
+
+        // Models the latest gen/eval pair runs with, resolved from agent + crew
+        // config (the UI used to guess them from a hard-coded per-role table).
+        var pairAgentIds = deliverablesByWs.Values
+            .Select(list => list.FirstOrDefault())
+            .Where(d => d is not null)
+            .SelectMany(d => new[] { d!.GeneratorAgentId, d.EvaluatorAgentId })
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var pairModels = await ResolvePairModelsAsync(control, pairAgentIds!);
 
 
         // Detect "loop is re-running right now" so the stalled override
@@ -1906,6 +1950,8 @@ public static class StoriesEndpoints
                 latestVerdict = latest?.Verdict,
                 latestGenAgentId = latest?.GeneratorAgentId,
                 latestEvalAgentId = latest?.EvaluatorAgentId,
+                latestGenModel = latest?.GeneratorAgentId is { Length: > 0 } genId && pairModels.TryGetValue(genId, out var gm) ? gm.Generator : null,
+                latestEvalModel = latest?.EvaluatorAgentId is { Length: > 0 } evalId && pairModels.TryGetValue(evalId, out var em) ? em.Evaluator : null,
                 // Full (generator, evaluator) pair history for this workstream,
                 // oldest first, consecutive-deduped — so the swarm card can show
                 // PRIOR pairs when the workstream was reassigned mid-run

@@ -116,15 +116,6 @@ const CAPABILITIES_BY_BUCKET: Record<string, string[]> = {
   'reserve': ['floats between pods', 'cross-team spikes'],
 };
 
-const MODEL_BY_ROLE: Record<string, string> = {
-  arch:            'claude-opus-4-7',
-  eng:             'claude-opus-4-7',
-  rev:             'claude-sonnet-4-6',
-  qa:              'claude-haiku-4-5',
-  'product-owner': 'human',
-  human:           'human',
-};
-
 function roleFromId(id: string): string {
   switch (id.charAt(0).toUpperCase()) {
     case 'A': return 'arch';
@@ -144,9 +135,10 @@ for (const [proto, charId] of Object.entries(PROTOTYPE_ALIAS)) {
 }
 
 /**
- * Multi-line tooltip for an agent chip: id · name on the first line, role +
- * model on the second, capabilities on the third. Plain `\n` newlines
- * because `<img title>` only renders text.
+ * Multi-line tooltip for an agent chip: id · name on the first line, role on
+ * the second, capabilities on the third. Plain `\n` newlines because
+ * `<img title>` only renders text. No model: an agent runs one model as
+ * generator and another as evaluator, set in crew/agent config on the server.
  */
 export function agentTooltip(
   id: string | null | undefined,
@@ -159,15 +151,12 @@ export function agentTooltip(
   // role rather than crashing on roleFromId / ALLOC_BY_ID lookups.
   const safeId = id ?? '';
   const r = role ?? (safeId ? roleFromId(safeId) : 'human');
-  const model = MODEL_BY_ROLE[r] ?? 'unknown';
   const entry = safeId ? ALLOC_BY_ID[safeId] : undefined;
   const caps = entry ? CAPABILITIES_BY_BUCKET[entry.role_bucket] : undefined;
   const head = safeId
     ? `${safeId}${name ? ' · ' + name : ''}`
     : (name ?? 'unknown');
-  const meta = entry?.role_label
-    ? `${entry.role_label} · ${model}`
-    : `${r} · ${model}`;
+  const meta = entry?.role_label ?? r;
   const lines = [head, meta];
   if (caps && caps.length > 0) lines.push(caps.join(' · '));
   if (soulPath) lines.push(`soul: ${soulPath}`);
@@ -180,28 +169,22 @@ export function listAllocation(): AllocationEntry[] {
 }
 
 /**
- * Resolve an agent id to display name + crew role + default model. Used by
- * tooltips that show "(name) — model" pairs without making an API call —
- * for example the per-rectangle tooltip on the story-delivery strip
- * (`SwarmStoryRow`). Falls back to plausible defaults when the id is
- * unknown (legacy / prototype / deactivated agents). Returns null when no
- * id is supplied at all (caller decides whether to render an "unassigned"
- * placeholder).
+ * Resolve an agent id to display name + crew role without an API call.
+ * Falls back to the id when it is unknown (legacy / prototype / deactivated
+ * agents). Returns null when no id is supplied. The model is not here: it is
+ * server config, sent with the data that needs it (e.g. latestGenModel).
  */
 export function agentInfo(id: string | null | undefined): {
   id: string;
   name: string;
   role: string;
-  model: string;
 } | null {
   if (!id) return null;
   const entry = ALLOC_BY_ID[id];
   const role = entry?.crew_role ?? roleFromId(id);
-  const model = MODEL_BY_ROLE[role] ?? 'unknown';
   return {
     id,
     name: entry?.name ?? id,
     role,
-    model,
   };
 }

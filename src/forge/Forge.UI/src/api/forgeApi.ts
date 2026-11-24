@@ -167,6 +167,9 @@ export interface StorySpawnWorkstreamSummary {
   latestVerdict?: string | null;
   latestGenAgentId?: string | null;
   latestEvalAgentId?: string | null;
+  /** Models the latest pair runs with, resolved server-side from agent + crew config. */
+  latestGenModel?: string | null;
+  latestEvalModel?: string | null;
   // Full gen/eval pair history (oldest first, consecutive-deduped). >1 entry
   // means the workstream was reassigned mid-run — the swarm card shows the
   // prior pairs faded before the current one so the switches are visible.

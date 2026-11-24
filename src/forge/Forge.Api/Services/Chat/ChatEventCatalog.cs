@@ -37,7 +37,18 @@ public static class ChatEventCatalog
     public static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 
-public sealed record ChatQuestionPayload(string Id, long Revision, string? Text, IReadOnlyList<string>? Choices = null);
+// Recommended: index into Choices of the agent's recommended option; null when there is none.
+public sealed record ChatQuestionPayload(string Id, long Revision, string? Text, IReadOnlyList<string>? Choices = null, int? Recommended = null)
+{
+    /// <summary>Index of <paramref name="recommendation"/> among <paramref name="choices"/>, or null when absent.</summary>
+    public static int? RecommendedIndex(IReadOnlyList<string>? choices, string? recommendation)
+    {
+        if (choices is null || string.IsNullOrEmpty(recommendation)) return null;
+        for (var index = 0; index < choices.Count; index++)
+            if (string.Equals(choices[index], recommendation, StringComparison.Ordinal)) return index;
+        return null;
+    }
+}
 // TargetLabel: human label of the target, e.g. "Stage 1.2 — Gate Runner Core"; null for the story itself.
 public sealed record ChatEventPayload(int Version, string Title, string Body, IReadOnlyList<ChatQuestionPayload> Questions,
     IReadOnlyList<ChatSemanticAction> LegacyActions, string? StoryId = null, string? TargetLabel = null);

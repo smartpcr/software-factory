@@ -126,7 +126,8 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
         foreach (var previousToken in await control.ChatActionTokens.Where(t => t.DeliveryMessageId == part.Id && t.State == "active").ToListAsync(ct)) previousToken.State = "retired";
         if (target.Interactive && capabilities.Buttons && part.QuestionId is not null && part.ActionKind != "question.prompt" && policy.AllowsQuestions(target.ProductId, subscription.ContentMode))
         {
-            var choices = ChatPayloadConverter.Read(notification)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision)?.Choices ?? [];
+            var question = ChatPayloadConverter.Read(notification)?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision);
+            var choices = question?.Choices ?? [];
             // Operator rule: answers are picked from the options, never typed, so there is
             // no "Custom answer" control.
             for (var index = 0; index < choices.Count; index++)
@@ -135,7 +136,9 @@ public sealed partial class ChatDeliveryService(ControlDbContext control, ChatRu
                 control.ChatActionTokens.Add(new() { Hash = ChatEventCatalog.Hash(token), DeliveryMessageId = part.Id,
                     Action = "question.answer", QuestionId = part.QuestionId, ExpectedRevision = part.ExpectedRevision, ChoiceIndex = index,
                     ExpiresAt = Math.Min(now.AddDays(1).ToUnixTimeMilliseconds(), notification.ExpiresAt?.ToUnixTimeMilliseconds() ?? long.MaxValue) });
-                actions.Add(new(choices[index], token, "question.answer"));
+                // Star the agent's recommended option, matching the Questions tab. The label is display
+                // only: the answer is resolved from ChoiceIndex, never from the button text.
+                actions.Add(new((question?.Recommended == index ? "★ " : "") + choices[index], token, "question.answer"));
             }
             // Dismiss without answering, and (plan documents) pin a binding decision.
             foreach (var extra in notification.ArtifactKey is null ? new[] { "question.dismiss" } : new[] { "question.dismiss", ForgeCapabilities.ArtifactPin })

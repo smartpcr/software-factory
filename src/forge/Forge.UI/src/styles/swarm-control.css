@@ -1271,6 +1271,40 @@
   transform: translateY(0);
   transition-delay: 220ms;
 }
+/* Portalled tooltip (ScFloatingTooltip). The layer reuses `.swarm-ctrl` for
+   its theme tokens, so undo that block's page-level layout and background. */
+.swarm-ctrl.sc-float-tip-layer {
+  position: fixed;
+  inset: 0 auto auto 0;
+  width: 0;
+  height: 0;
+  min-height: 0;
+  overflow: visible;
+  background: none;
+  pointer-events: none;
+  z-index: 1000;
+  display: block;
+}
+.sc-float-tip-layer .sc-float-tip {
+  position: fixed;
+  padding: 7px 10px;
+  background: var(--sc-surface-3);
+  color: var(--sc-text-dim);
+  border: 1px solid var(--sc-border-2);
+  border-radius: 4px;
+  font-family: var(--sc-font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.sc-float-tip-layer .sc-float-tip__head {
+  color: var(--sc-text);
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
 /* When the element has data-sc-tooltip-pos="bottom", flip below. */
 .swarm-ctrl [data-sc-tooltip][data-sc-tooltip-pos="bottom"]::after {
   bottom: auto;

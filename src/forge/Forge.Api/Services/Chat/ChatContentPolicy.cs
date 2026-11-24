@@ -46,7 +46,13 @@ public sealed class ChatContentPolicy(IOptions<ChatPluginOptions> options)
         var question = payload?.Questions.SingleOrDefault(q => q.Id == part.QuestionId && q.Revision == part.ExpectedRevision);
         var allow = !part.ControlsRetired && this.AllowsQuestions(row.ScopeKind == "host" ? null : row.ProductId, subscriptionMode)
             && (part.QuestionId is null || question?.Text is not null);
-        if (allow && question?.Text is { } questionText) body = questionText + "\n\n" + body;
+        if (allow && question?.Text is { } questionText)
+        {
+            // Long choice labels are truncated on chat buttons, so also name the recommendation in full.
+            var recommended = question.Recommended is int rec && question.Choices is { } choices && rec >= 0 && rec < choices.Count
+                ? $"\n\n★ Recommended: {choices[rec]}" : "";
+            body = questionText + recommended + "\n\n" + body;
+        }
         // A halted story's reason (redacted at enqueue) leads the message where content is allowed.
         if (allow && row.Kind == ChatEventCatalog.SpawnHalted && part.ConfirmationActorId is null && payload?.Body is { Length: > 0 } reason
             && reason != row.Body) body = reason + "\n\n" + body;

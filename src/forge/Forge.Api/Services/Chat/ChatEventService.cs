@@ -56,8 +56,13 @@ public sealed class ChatEventService(ControlDbContext control, IProductDbContext
                 var rows = await products.CreateFor(owned.Product!.Slug).DeliverableQuestions.AsNoTracking().Where(q => q.WorkItemId == owned.WorkItemId).ToListAsync(ct);
                 questions.AddRange(rows.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
                     .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First()).Where(q => string.IsNullOrEmpty(q.Answer))
-                    .Select(q => new ChatQuestionPayload(q.ExternalId, q.Id, includeQuestionText ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], credentials) : null,
-                        includeQuestionText ? ChatContentPolicy.Choices(q.ChoicesJson, credentials) : null)));
+                    .Select(q =>
+                    {
+                        var choices = includeQuestionText ? ChatContentPolicy.Choices(q.ChoicesJson, credentials) : null;
+                        // Same recommendation the Questions tab highlights, so chat marks the same option.
+                        return new ChatQuestionPayload(q.ExternalId, q.Id, includeQuestionText ? ChatContentPolicy.Redact(q.Text[..Math.Min(q.Text.Length, 2000)], credentials) : null,
+                            choices, ChatQuestionPayload.RecommendedIndex(choices, DeliverableLoop.TryGetRecommendation(q.ExplanationJson)));
+                    }));
             }
             // Detail (e.g. the halt reason) is free text: it is redacted here and shown only where the content policy allows.
             var detail = includeQuestionText && !string.IsNullOrWhiteSpace(input.Detail)

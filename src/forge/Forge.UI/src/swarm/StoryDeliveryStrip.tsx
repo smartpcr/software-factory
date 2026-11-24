@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   forgeApi,
@@ -13,6 +13,7 @@ import {
   type StorySpawnWorkstreamSummary,
 } from '@/api/forgeApi';
 import { agentInfo } from '@/agentAvatar';
+import { ScFloatingTooltip, type ScTip } from './ScFloatingTooltip';
 
 interface Props {
   detail: StorySpawnDetail;
@@ -219,9 +220,15 @@ function decompositionRect(spawn: StorySpawn): Rect {
   };
 }
 
+/** Agent name from the local roster; model from the server, never guessed. */
+function pairMember(id: string | null | undefined, model: string | null | undefined): Rect['generator'] {
+  if (!id) return null;
+  return { id, name: agentInfo(id)?.name ?? id, model: model ?? null };
+}
+
 function workstreamRect(w: StorySpawnWorkstreamSummary): Rect {
-  const gen = agentInfo(w.latestGenAgentId ?? null);
-  const evl = agentInfo(w.latestEvalAgentId ?? null);
+  const gen = pairMember(w.latestGenAgentId, w.latestGenModel);
+  const evl = pairMember(w.latestEvalAgentId, w.latestEvalModel);
   const extras: string[] = [];
   if (typeof w.iter === 'number' && w.iter > 0) extras.push(`iter: ${w.iter}`);
   if (typeof w.latestScore === 'number') extras.push(`score: ${w.latestScore}`);
@@ -249,10 +256,8 @@ function workstreamRect(w: StorySpawnWorkstreamSummary): Rect {
 
 /* ─── Tooltip builder ──────────────────────────────────────────────── */
 
-function buildTooltip(r: Rect): string {
-  // Multi-line `\n` title text. Chrome/Edge respect newlines; Safari/FF
-  // flatten — accepted trade-off for staying consistent with the rest of
-  // the swarm-control surface that uses native `title` everywhere.
+function buildTooltip(r: Rect): string[] {
+  // Rendered by ScFloatingTooltip (themed, portalled); the first line is the heading.
   const lines: string[] = [];
   lines.push(r.title);
   if (r.subtitle) lines.push(r.subtitle);
@@ -268,7 +273,7 @@ function buildTooltip(r: Rect): string {
   if (r.extras && r.extras.length > 0) {
     for (const x of r.extras) lines.push(x);
   }
-  return lines.join('\n');
+  return lines;
 }
 
 /* ─── Component ────────────────────────────────────────────────────── */
@@ -436,6 +441,8 @@ function rectTarget(rect: Rect): { mode: 'design' | 'impl' | 'release'; selKind:
 export function StoryDeliveryStrip({ detail }: Props) {
   const docStats = useDocStats(detail.spawn.storyId);
   const navigate = useNavigate();
+  const [tip, setTip] = useState<ScTip | null>(null);
+  const hideTip = useCallback(() => setTip(null), []);
 
   // Stage 1 — 4 design MD docs + 1 decomposition.
   const stage1: Rect[] = [
@@ -545,14 +552,20 @@ export function StoryDeliveryStrip({ detail }: Props) {
         </svg>
         {allRects.map((r) => {
           const p = pos(r.key);
+          const lines = buildTooltip(r);
+          const showTip = (el: HTMLElement) => setTip({ lines, anchor: el.getBoundingClientRect() });
           return (
             <span
               key={r.key}
               className={`ws-chip stage-${r.stage} ${r.status}`}
               style={{ left: p.x, top: p.y, cursor: 'pointer' }}
-              title={buildTooltip(r)}
+              aria-label={lines.join(', ')}
               role="button"
               tabIndex={0}
+              onMouseEnter={(e) => showTip(e.currentTarget)}
+              onMouseLeave={hideTip}
+              onFocus={(e) => showTip(e.currentTarget)}
+              onBlur={hideTip}
               onClick={(e) => handleRectClick(r, e)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -568,6 +581,7 @@ export function StoryDeliveryStrip({ detail }: Props) {
           );
         })}
       </div>
+      <ScFloatingTooltip tip={tip} onDismiss={hideTip} />
     </div>
   );
 }
