@@ -459,6 +459,27 @@ interface PhaseCardProps {
   variant?: 'impl' | 'qae2e';
 }
 
+/**
+ * "Q" metric: answered (✓N, green) and unanswered (plain N, red) counts, the
+ * same split the Questions tab shows. A part that is 0 is left out; nothing renders
+ * when no question was raised.
+ */
+export function QuestionsCell({ total, unanswered, scope }: { total: number; unanswered: number; scope: 'workstream' | 'doc' }) {
+  const open = Math.max(0, unanswered);
+  const answered = Math.max(0, total - open);
+  if (answered === 0 && open === 0) return null;
+  const parts = [answered > 0 ? `${answered} answered` : null, open > 0 ? `${open} unanswered` : null].filter(Boolean);
+  return (
+    <span className="m-cell q" data-testid="questions-cell" title={`Questions on this ${scope}: ${parts.join(', ')}`}>
+      <span className="v">
+        {answered > 0 && <span className="q-ans">✓{answered}</span>}
+        {answered > 0 && open > 0 && ' '}
+        {open > 0 && <span className="q-open">{open}</span>}
+      </span>
+    </span>
+  );
+}
+
 function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, variant = 'impl' }: PhaseCardProps) {
   const phaseCls = STATUS_TO_PHASE_CLASS[ws.status] ?? 'queued';
   const badgeCls = STATUS_TO_BADGE[ws.status] ?? 'blocked';
@@ -517,24 +538,6 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
             title="Shipped + merged under a previous version of the plan; the architect has since re-decomposed and this anchor was either renamed or removed. The merged code is still on the base branch — only the plan attribution moved."
           >
             obsolete
-          </span>
-        )}
-        {unanswered > 0 && (
-          <span
-            className="badge stalled"
-            style={{
-              marginLeft: 4,
-              background: 'rgba(244,71,71,0.15)',
-              color: '#f44747',
-              border: '1px solid rgba(244,71,71,0.3)',
-              fontSize: 10,
-              padding: '1px 6px',
-              borderRadius: 8,
-              fontWeight: 600,
-            }}
-            title={`${unanswered} unanswered question${unanswered === 1 ? '' : 's'} blocking pass`}
-          >
-            ⚠ {unanswered} Q
           </span>
         )}
       </div>
@@ -603,11 +606,7 @@ function PhaseCard({ ws, stageNum, stageNumOf, wsNameById, selected, onSelect, v
                 <span className="k">TEST</span><span className="v">{gateGlyph(ws.testGate)}</span>
               </span>
             )}
-            {(ws.questionCount ?? 0) > 0 && (
-              <span className="m-cell q" title={`${ws.questionCount} question${ws.questionCount === 1 ? '' : 's'} raised on this workstream`}>
-                <span className="k">Q</span><span className="v">{ws.questionCount}</span>
-              </span>
-            )}
+            <QuestionsCell total={ws.questionCount ?? 0} unanswered={unanswered} scope="workstream" />
           </div>
         </div>
       )}
@@ -734,6 +733,7 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
                       <span className="v">${stats.cost.toFixed(2)}</span>
                     </span>
                   )}
+                  {stats && <QuestionsCell total={stats.questionCount} unanswered={stats.unansweredQuestions} scope="doc" />}
                 </div>
               </div>
             );
@@ -874,6 +874,8 @@ interface DocStats {
    *  Surfaced next to the stalled badge so the operator knows the
    *  loop isn't making meaningful progress until they answer. */
   unansweredQuestions: number;
+  /** Distinct questions raised on the doc, answered or not. */
+  questionCount: number;
   generator: DocAgentInfo | null;
   evaluator: DocAgentInfo | null;
 }
@@ -902,6 +904,7 @@ function useDocStats(storyId: string, keys: string[]): Record<string, DocStats |
             status: r.status,
             stallReason: r.stallReason ?? null,
             unansweredQuestions: r.unansweredQuestions ?? 0,
+            questionCount: r.questionCount ?? 0,
             generator: r.generator,
             evaluator: r.evaluator,
           };

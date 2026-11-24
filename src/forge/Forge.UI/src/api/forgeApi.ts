@@ -102,6 +102,8 @@ export interface StorySpawn {
   /** Explicit ownership from the list response, including the all-products view. */
   productId?: string | null;
   chatSummary?: import('../swarm/plugins/chatApi').ChatSummary;
+  /** Unanswered plan-doc + workstream questions; set by the spawn list only. */
+  unansweredQuestionCount?: number | null;
   storyId: string;
   storyTitle: string;
   repoId: string | null;
@@ -1739,6 +1741,8 @@ export const forgeApi = {
      *  next to the stalled badge so the operator knows how many answers
      *  the agent is still waiting on. */
     unansweredQuestions: number;
+    /** Distinct questions raised on this doc, answered or not. */
+    questionCount?: number;
     /** Latest generator agent name + model, null until first iteration lands. */
     generator: { agentId: string; name: string; model: string | null } | null;
     /** Latest evaluator agent name + model, null until first iteration lands. */

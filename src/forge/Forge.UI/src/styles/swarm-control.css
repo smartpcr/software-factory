@@ -879,7 +879,8 @@
   max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  margin-top: 6px;
+  margin-top: 2px;
+  padding-top: 4px;
   padding-bottom: 2px;
   scrollbar-width: thin;
   scrollbar-color: var(--sc-border-2) transparent;
@@ -928,6 +929,20 @@
 .swarm-ctrl .ws-chip:hover {
   transform: scale(1.6);
   z-index: 2;
+}
+/* Unanswered-question marker: a small red "?" dot on the chip's top-right
+ * corner. The strip scroller's top padding keeps the top lane's dot visible. */
+.swarm-ctrl .ws-chip-q {
+  position: absolute;
+  top: -5px; right: -5px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--sc-red);
+  color: #fff;
+  font: 700 7px/8px var(--sc-font-mono);
+  text-align: center;
+  pointer-events: none;
+  z-index: 1;
 }
 /* Stage tint — outer ring drawn via box-shadow so the status background
  * and border (set below) remain authoritative. Stage 1 = magenta (design
@@ -3531,8 +3546,12 @@
 .swarm-ctrl .phase-metrics .m-cell.build.iterate .v { color: var(--sc-amber); }
 .swarm-ctrl .phase-metrics .m-cell.build.reject  .v { color: var(--sc-red); }
 .swarm-ctrl .phase-metrics .m-cell.build.neutral .v { color: var(--sc-muted); }
-.swarm-ctrl .phase-metrics .m-cell.q             .k { color: var(--sc-blue); }
-.swarm-ctrl .phase-metrics .m-cell.q             .v { color: var(--sc-blue); font-weight: 700; }
+.swarm-ctrl .phase-metrics .m-cell.q             .k,
+.swarm-ctrl .doc-card__metrics .m-cell.q         .k { color: var(--sc-blue); }
+.swarm-ctrl .phase-metrics .m-cell.q             .v,
+.swarm-ctrl .doc-card__metrics .m-cell.q         .v { color: var(--sc-blue); font-weight: 700; }
+.swarm-ctrl .m-cell.q .q-ans  { color: var(--sc-green); }
+.swarm-ctrl .m-cell.q .q-open { color: var(--sc-red); }
 .swarm-ctrl .phase-metrics .doc-agents { display: inline-flex; align-items: center; gap: 4px; }
 .swarm-ctrl .phase-metrics .doc-agents-link { font-size: 10px; opacity: 0.6; margin: 0 2px; }
 .swarm-ctrl .phase-metrics .doc-agent {

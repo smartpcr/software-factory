@@ -770,5 +770,19 @@
     "status": "live",
     "reasoningOverride": true,
     "defaultReasoningEffort": "medium"
+  },
+  {
+    "id": "gemini-4-neon",
+    "vendor": "copilot",
+    "family": "gemini-4",
+    "displayName": "Gemini 4 Neon",
+    "_autoAdded_note": "Auto-added 2026-11-24 by the weekly model-catalog enrichment from the live Copilot catalog. Pricing is an estimate; adjust if needed.",
+    "contextWindow": 983040,
+    "inputPricePerMTok": 1,
+    "outputPricePerMTok": 5,
+    "supportsTools": true,
+    "supportsStreaming": true,
+    "status": "live",
+    "reasoningOverride": true
   }
 ]

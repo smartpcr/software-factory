@@ -1553,6 +1553,9 @@ public static class StoriesEndpoints
         }
         // SQLite can't ORDER BY DateTimeOffset — materialize then sort client-side.
         List<(StorySpawnRow Spawn, string ProductId)> rows;
+        // Unanswered questions per spawn, keyed by product then spawn id (spawn
+        // ids are only unique within one product database).
+        var unansweredBySpawn = new Dictionary<(string ProductId, string SpawnId), int>();
         var requested = ProductScope.Read(ctx);
         if (string.IsNullOrEmpty(requested) || requested == ProductScope.AllScope)
         {
@@ -1564,19 +1567,72 @@ public static class StoriesEndpoints
                 var repo = RepoScope.Read(ctx);
                 if (!string.IsNullOrEmpty(repo) && repo != "all") query = query.Where(spawn => spawn.RepoId == repo);
                 if (!string.IsNullOrEmpty(phase) && phase != "all") query = query.Where(spawn => spawn.Phase == phase);
-                return (await query.ToListAsync(ct)).Select(spawn => (Spawn: spawn, ProductId: productId)).ToList();
+                var spawns = await query.ToListAsync(ct);
+                var counts = await CountUnansweredQuestionsBySpawnAsync(productDb, spawns.Select(s => s.Id).ToList(), ct);
+                return spawns.Select(spawn => (Spawn: spawn, ProductId: productId, Unanswered: counts.GetValueOrDefault(spawn.Id))).ToList();
             }, ctx.RequestAborted);
-            rows = perProduct.Values.SelectMany(value => value).ToList();
+            var flat = perProduct.Values.SelectMany(value => value).ToList();
+            rows = flat.Select(r => (r.Spawn, r.ProductId)).ToList();
+            foreach (var r in flat) unansweredBySpawn[(r.ProductId, r.Spawn.Id)] = r.Unanswered;
         }
         else
         {
             var productId = await control.Products.Where(p => p.Id == requested || p.Slug == requested).Select(p => p.Id).SingleAsync();
             rows = (await q.ToListAsync()).Select(spawn => (Spawn: spawn, ProductId: productId)).ToList();
+            var counts = await CountUnansweredQuestionsBySpawnAsync(db, rows.Select(r => r.Spawn.Id).ToList(), ctx.RequestAborted);
+            foreach (var r in rows) unansweredBySpawn[(productId, r.Spawn.Id)] = counts.GetValueOrDefault(r.Spawn.Id);
         }
         rows.Sort((a, b) => b.Spawn.UpdatedAt.CompareTo(a.Spawn.UpdatedAt));
         var chatSummaries = await Forge.Api.Services.Chat.ChatSummaryService.ReadAsync(control, rows, ctx.RequestAborted, ctx.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptions<Forge.Api.Services.Chat.ChatPluginOptions>>().Value);
         return Results.Ok(rows.Select(row => ToContract(row.Spawn, row.ProductId,
-            chatSummaries.GetValueOrDefault(Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(row.ProductId, row.Spawn.Id).Key))).ToList());
+            chatSummaries.GetValueOrDefault(Forge.Api.Services.Chat.ChatConfigurationScope.Spawn(row.ProductId, row.Spawn.Id).Key),
+            unansweredBySpawn.GetValueOrDefault((row.ProductId, row.Spawn.Id)))).ToList());
+    }
+
+    /// <summary>
+    /// Unanswered operator questions per spawn, across its plan docs
+    /// (<c>plan-doc:{spawnId}:{file}</c>) and its workstreams. A question counts
+    /// once per external id (latest iteration wins, as the answer gate does).
+    /// Cancelled and historic workstreams are skipped: nothing will act on an
+    /// answer there.
+    /// </summary>
+    internal static async Task<Dictionary<string, int>> CountUnansweredQuestionsBySpawnAsync(
+        ProductDbContext db, IReadOnlyCollection<string> spawnIds, CancellationToken ct)
+    {
+        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (spawnIds.Count == 0) return result;
+        var spawnByWs = await db.Workstreams.AsNoTracking()
+            .Where(w => w.StorySpawnId != null && spawnIds.Contains(w.StorySpawnId)
+                && w.Status != "cancelled" && w.Status != WorkstreamStatuses.Historic)
+            .Select(w => new { w.Id, w.StorySpawnId })
+            .ToDictionaryAsync(w => w.Id, w => w.StorySpawnId!, StringComparer.Ordinal, ct);
+        var wsIds = spawnByWs.Keys.ToList();
+        var questions = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => q.WorkItemId.StartsWith("plan-doc:") || wsIds.Contains(q.WorkItemId))
+            .Select(q => new { q.Id, q.WorkItemId, q.ExternalId, q.Iter, q.Answer })
+            .ToListAsync(ct);
+        var wanted = new HashSet<string>(spawnIds, StringComparer.Ordinal);
+        foreach (var item in questions.GroupBy(q => q.WorkItemId, StringComparer.Ordinal))
+        {
+            string? spawnId;
+            if (item.Key.StartsWith("plan-doc:", StringComparison.Ordinal))
+            {
+                var parts = item.Key.Split(':', 3);
+                spawnId = parts.Length == 3 && wanted.Contains(parts[1]) ? parts[1] : null;
+            }
+            else
+            {
+                spawnId = spawnByWs.GetValueOrDefault(item.Key);
+            }
+
+            if (spawnId is null) continue;
+            var open = item.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
+                .Count(q => string.IsNullOrEmpty(q.Answer));
+            if (open > 0) result[spawnId] = result.GetValueOrDefault(spawnId) + open;
+        }
+
+        return result;
     }
 
     private static async Task<IResult> GetSpawn(string storyId, ControlDbContext control, ProductDbContext db, Microsoft.Extensions.Options.IOptions<Forge.Api.Services.Chat.ChatPluginOptions> chatOptions, bool includeChatSummary = true)
@@ -3531,6 +3587,8 @@ public static class StoriesEndpoints
         // Count unanswered open questions — blocks pass and should show as
         // stalled so the operator knows to answer before resuming.
         var unansweredQuestions = 0;
+        // Answered + unanswered, for the doc card's neutral "Q" count.
+        var questionCount = 0;
         if (!string.IsNullOrEmpty(workItemId))
         {
             // Dedupe by ExternalId — latest row per id wins.
@@ -3538,8 +3596,10 @@ public static class StoriesEndpoints
                 .Where(q => q.WorkItemId == workItemId)
                 .ToListAsync();
             var byExtId = allQ.GroupBy(q => q.ExternalId)
-                .Select(g => g.OrderByDescending(q => q.CreatedAt).First());
+                .Select(g => g.OrderByDescending(q => q.CreatedAt).First())
+                .ToList();
             unansweredQuestions = byExtId.Count(q => q.Answer == null);
+            questionCount = byExtId.Count;
         }
 
         // Status priority:
@@ -3674,6 +3734,7 @@ public static class StoriesEndpoints
             maxIterations,
             budgetSeconds,
             unansweredQuestions,
+            questionCount,
             generator = genInfo,
             evaluator = evalInfo,
             iterations,
@@ -3861,11 +3922,15 @@ public static class StoriesEndpoints
     private static Task<IResult> ResumeSpawn(HttpContext ctx, string storyId, StoryOperatorActionService actions) =>
         actions.ResumeSpawnAsync(storyId, ctx.RequestAborted);
 
-    internal static object ToContract(StorySpawnRow row, string? owningProductId = null, Forge.Api.Services.Chat.ChatRowSummary? chatSummary = null) => new
+    internal static object ToContract(StorySpawnRow row, string? owningProductId = null, Forge.Api.Services.Chat.ChatRowSummary? chatSummary = null,
+        int? unansweredQuestionCount = null) => new
     {
         id = row.Id,
         productId = owningProductId,
         chatSummary,
+        // Unanswered plan-doc + workstream questions. Filled by the spawn list
+        // only; null elsewhere.
+        unansweredQuestionCount,
         storyId = row.StoryId,
         storyTitle = row.StoryTitle,
         storyDescription = row.StoryDescription,

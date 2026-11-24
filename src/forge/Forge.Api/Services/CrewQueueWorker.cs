@@ -3965,6 +3965,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .FirstOrDefaultAsync(ct);
             if (lastEventAt >= recentActivityCutoff) continue;
 
+            // A story-spawn workstream belongs to StorySpawnOrchestrator, which owns its
+            // retries, stalls and badge. Re-queueing it here started a second agent on the
+            // same work in another directory (observed: harness:DSH-M2 stage 1.1, E4 via the
+            // queue beside E9/LC via the orchestrator), and healing it to Failed would stick,
+            // because TryMarkWorkItemLiveAsync never leaves Failed on the next retry.
+            var isStoryWorkstream = await db.Workstreams.AsNoTracking()
+                .AnyAsync(w => w.Id == wi.Id && w.StorySpawnId != null, ct);
+            if (isStoryWorkstream) continue;
+            var isPlanDoc = wi.Id.StartsWith("plan-doc:", StringComparison.Ordinal);
+
             // No open queue row + no recent transcript activity + executionStatus=live → stuck badge.
             var delivCandidates = await db.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi.Id)
@@ -3973,7 +3983,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
                 .FirstOrDefault();
 
-            var canResume = lastDeliv is not null
+            // Plan docs are also orchestrator-driven: heal a stuck badge, never re-queue.
+            var canResume = !isPlanDoc
+                && lastDeliv is not null
                 && lastDeliv.Verdict is "iterate" or "stalled" or "stalled-budget"
                 && wi.State is "active" or "proposed";
 

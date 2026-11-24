@@ -196,6 +196,16 @@ export function SwarmStoryRow({ spawn, index, onDeleted, onDeleteFailed }: Props
           {mergingCount > 0 && <span className="seg" style={{ color: 'var(--sc-cyan)' }}><b>{mergingCount}</b> merging</span>}
           {blockedCount > 0 && <span className="seg" style={{ color: 'var(--sc-red)' }}><b>{blockedCount}</b> blocked</span>}
           {completeCount > 0 && <span className="seg" style={{ color: 'var(--sc-green)' }}><b>{completeCount}</b> complete</span>}
+          {(spawn.unansweredQuestionCount ?? 0) > 0 && (
+            <span
+              className="seg"
+              data-testid="story-row-open-questions"
+              style={{ color: 'var(--sc-amber)' }}
+              title="Unanswered questions on this story's plan docs and workstreams"
+            >
+              ⚠ <b>{spawn.unansweredQuestionCount}</b> open question{spawn.unansweredQuestionCount === 1 ? '' : 's'}
+            </span>
+          )}
           {spawn.repoId && <span className="seg">repo <b>{spawn.repoId}</b></span>}
         </div>
         <StoryRunMetadata spawn={spawn} />

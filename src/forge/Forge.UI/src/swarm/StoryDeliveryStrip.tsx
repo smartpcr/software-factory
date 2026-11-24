@@ -50,6 +50,7 @@ interface DocStats {
   iter: number;
   score: number | null;
   verdict: string;
+  unansweredQuestions: number;
   generator: DocAgent | null;
   evaluator: DocAgent | null;
 }
@@ -80,6 +81,7 @@ function useDocStats(storyId: string): Record<PlanDocKey, DocStats | null> {
             iter: r.value.iterations.length,
             score: last?.score ?? null,
             verdict: last?.verdict ?? '',
+            unansweredQuestions: r.value.unansweredQuestions ?? 0,
             generator: r.value.generator,
             evaluator: r.value.evaluator,
           };
@@ -132,6 +134,8 @@ interface Rect {
   evaluator: { id: string; name: string; model: string | null } | null;
   /** Free-form extra tooltip lines (iter / score / stallReason / …). */
   extras?: string[];
+  /** Unanswered operator questions; > 0 draws the "?" dot on the chip. */
+  openQuestions?: number;
 }
 
 /* ─── Plan-anchored worktree slug for plan-docs ──────────────────────
@@ -172,7 +176,9 @@ function docRectFromStats(
   if (stats && stats.iter > 0) extras.push(`iter: ${stats.iter}`);
   if (stats?.score != null) extras.push(`score: ${stats.score}`);
   if (stats?.verdict) extras.push(`verdict: ${stats.verdict}`);
+  if (stats && stats.unansweredQuestions > 0) extras.push(`open Qs: ${stats.unansweredQuestions}`);
   return {
+    openQuestions: stats?.unansweredQuestions ?? 0,
     key: `plan:${key}`,
     stage: 1,
     status,
@@ -225,6 +231,9 @@ function workstreamRect(w: StorySpawnWorkstreamSummary): Rect {
   }
   if (w.status === 'stalled' && w.stallReason) extras.push(`reason: ${w.stallReason}`);
   return {
+    // Same rule as the story row's "open questions" count: cancelled and
+    // historic workstreams will never act on an answer.
+    openQuestions: w.status === 'cancelled' || w.status === 'historic' ? 0 : w.unansweredQuestionCount ?? 0,
     key: `impl:${w.id}`,
     stage: 2,
     status: (w.status as RectStatus) ?? 'pending',
@@ -551,7 +560,11 @@ export function StoryDeliveryStrip({ detail }: Props) {
                   handleRectClick(r, e as unknown as ReactMouseEvent);
                 }
               }}
-            />
+            >
+              {(r.openQuestions ?? 0) > 0 && (
+                <span className="ws-chip-q" data-testid="ws-chip-open-questions" aria-label={`${r.openQuestions} unanswered questions`}>?</span>
+              )}
+            </span>
           );
         })}
       </div>

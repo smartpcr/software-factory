@@ -57,6 +57,50 @@ public class PlanDocCompletionBadgeTests
     }
 
     [Fact]
+    public async Task Sweep_never_requeues_a_story_workstream_the_orchestrator_owns()
+    {
+        // Observed on harness:DSH-M2 stage 1.1: after a stalled iteration the sweep
+        // queued the workstream to crew-eng, so E4 ran it beside the orchestrator's
+        // E9/LC pair, in the main clone instead of the stage worktree.
+        const string id = "ws-badge-story-owned";
+        using var f = new RunnerFactory(new FakeRunner(Array.Empty<string>()));
+        using (f.CreateClient()) { /* boot host + migrations */ }
+        await SeedAsync(f, id, ExecutionStatuses.Live);
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            db.Workstreams.Add(new WorkstreamRow { Id = id, Name = id, Branch = "ws/b", Base = "main", Epic = "b", Status = "stalled", StorySpawnId = "spawn-badge-story" });
+            db.Deliverables.Add(new DeliverableRow { WorkItemId = id, CrewId = "crew-eng", Iter = 1, Verdict = "stalled" });
+            await db.SaveChangesAsync();
+        }
+
+        await f.Services.GetRequiredService<CrewQueueWorker>().SweepLiveBadgeReconciliationAsync(default);
+
+        Assert.Equal(ExecutionStatuses.Live, await StatusAsync(f, id));
+        Assert.Equal(0, await QueueRowsAsync(f, id));
+    }
+
+    [Fact]
+    public async Task Sweep_heals_a_stalled_plan_doc_without_requeueing_it()
+    {
+        const string id = "plan-doc:spawn-badge-stalled:architecture.md";
+        using var f = new RunnerFactory(new FakeRunner(Array.Empty<string>()));
+        using (f.CreateClient()) { /* boot host + migrations */ }
+        await SeedAsync(f, id, ExecutionStatuses.Live);
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+            db.Deliverables.Add(new DeliverableRow { WorkItemId = id, CrewId = "crew-arch", Iter = 1, Verdict = "stalled" });
+            await db.SaveChangesAsync();
+        }
+
+        await f.Services.GetRequiredService<CrewQueueWorker>().SweepLiveBadgeReconciliationAsync(default);
+
+        Assert.Equal(ExecutionStatuses.Failed, await StatusAsync(f, id));
+        Assert.Equal(0, await QueueRowsAsync(f, id));
+    }
+
+    [Fact]
     public async Task Passing_plan_doc_is_marked_completed_and_other_items_are_untouched()
     {
         const string live = "plan-doc:spawn-badge-pass:tech-spec.md";
@@ -135,6 +179,13 @@ public class PlanDocCompletionBadgeTests
             ExecutionStatus = status,
         });
         await db.SaveChangesAsync();
+    }
+
+    private static async Task<int> QueueRowsAsync(ForgeWebApplicationFactory f, string id)
+    {
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        return await db.TaskQueue.AsNoTracking().CountAsync(q => q.WorkItemId == id);
     }
 
     private static async Task<string?> StatusAsync(ForgeWebApplicationFactory f, string id)
