@@ -189,6 +189,16 @@ public static class DbModelProduct
             .HasIndex(x => new { x.WorkItemId, x.RuleId })
             .IsUnique()
             .HasDatabaseName("IX_work_item_rules_item_rule");
+        mb.Entity<RulePolicyRow>().ToTable("rule_policies").HasKey(x => x.Id);
+        mb.Entity<RulePolicyRow>()
+            .HasIndex(x => new { x.ProductId, x.Name })
+            .IsUnique()
+            .HasDatabaseName("IX_rule_policies_product_name");
+        mb.Entity<WorkItemPolicyRow>().ToTable("work_item_policies").HasKey(x => x.Id);
+        mb.Entity<WorkItemPolicyRow>()
+            .HasIndex(x => new { x.WorkItemId, x.PolicyId })
+            .IsUnique()
+            .HasDatabaseName("IX_work_item_policies_item_policy");
 
         // Phase 17.1 — persistent task queue + per-row history.
         mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);

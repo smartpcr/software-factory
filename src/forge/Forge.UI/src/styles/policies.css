@@ -333,3 +333,18 @@
 }
 .policy-card-matches ul { margin: 4px 0 0; padding-left: 16px; max-height: 220px; overflow: auto; }
 .policy-card-matches strong { color: var(--text-primary); font-weight: 600; }
+.policy-card[data-kind='rule']::before { background: var(--accent); }
+.policy-card-rules {
+  margin: 0 0 0 6px;
+  padding-left: 20px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.policy-card-off { color: var(--text-secondary); }
+.page-head-right { gap: 8px; }
+/* This page's eyebrow and stat captions carry information: use the readable grey. */
+#view-policies .page-eyebrow,
+#view-policies .stat-cell-label,
+#view-policies .stat-cell-trend,
+#view-policies .stat-cell-val .unit { color: var(--text-secondary); }

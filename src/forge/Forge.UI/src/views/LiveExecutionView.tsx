@@ -546,9 +546,7 @@ export function LiveExecutionView(): JSX.Element {
 
       {/* Phase 108 — pick the catalog rules this execution's prompt carries. */}
       {rulesProductId && workItemId && (
-        <div className="swarm-ctrl sc-embed">
-          <WorkItemRulesSection productId={rulesProductId} workItemId={workItemId} />
-        </div>
+        <WorkItemRulesSection productId={rulesProductId} workItemId={workItemId} />
       )}
 
       {latestPrompt && (latestPrompt.systemPrompt || latestPrompt.userPrompt) && (

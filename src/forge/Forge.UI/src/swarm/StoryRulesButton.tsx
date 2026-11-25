@@ -10,7 +10,6 @@ import { Link } from 'react-router-dom';
 import { forgeApi } from '@/api/forgeApi';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useToastStore } from '@/state/useToastStore';
-import { RuleCatalogView } from './RuleCatalogView';
 
 export interface StoryPin {
   id: string;
@@ -80,7 +79,7 @@ export function StoryRulesList({ pins, busy, onRemove }: {
   );
 }
 
-export function StoryRulesButton({ storyId, productId }: { storyId: string; productId: string | null }) {
+export function StoryRulesButton({ storyId }: { storyId: string }) {
   const [pins, setPins] = useState<StoryPin[] | null>(null);
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -102,15 +101,14 @@ export function StoryRulesButton({ storyId, productId }: { storyId: string; prod
         ref={trigger}
         type="button"
         className="sc-rules-btn"
-        title="Standing rules: the product rule catalog (rules that follow tags across stories) and this story's pins"
+        title="Story pins: one-off rules for this story. Policies are on the Policies page."
         onClick={() => { setOpen(true); void load(); }}
       >
-        📌 RULES{storyWide > 0 ? ` ${storyWide}` : ''}
+        📌 PINS{storyWide > 0 ? ` ${storyWide}` : ''}
       </button>
       {open && (
         <StoryRulesPanel
           storyId={storyId}
-          productId={productId}
           pins={pins ?? []}
           reload={load}
           onClose={() => { setOpen(false); trigger.current?.focus(); }}
@@ -120,15 +118,13 @@ export function StoryRulesButton({ storyId, productId }: { storyId: string; prod
   );
 }
 
-function StoryRulesPanel({ storyId, productId, pins, reload, onClose }: {
+function StoryRulesPanel({ storyId, pins, reload, onClose }: {
   storyId: string;
-  productId: string | null;
   pins: StoryPin[];
   reload: () => Promise<void>;
   onClose: () => void;
 }) {
   const titleId = useId();
-  const [tab, setTab] = useState<'catalog' | 'pins'>('catalog');
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -183,43 +179,18 @@ function StoryRulesPanel({ storyId, productId, pins, reload, onClose }: {
   // tokens outside the story view's own subtree.
   return createPortal(
     <div className="swarm-ctrl sc-rules-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="sc-rules sc-rules--wide" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className="sc-rules" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="sc-rules__head">
-          <h2 id={titleId} className="sc-rules__title">STANDING RULES · {storyId}</h2>
+          <h2 id={titleId} className="sc-rules__title">Story pins · {storyId}</h2>
           <button type="button" className="sc-rules__close" aria-label="Close" onClick={onClose}>✕</button>
         </header>
-        <div className="sc-rules__tabs" role="tablist" aria-label="Rule sources">
-          {([['catalog', 'Product catalog'], ['pins', `Story pins · ${pins.length}`]] as const).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={tab === key}
-              className={tab === key ? 'is-active' : undefined}
-              onClick={() => setTab(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {tab === 'catalog' && (
-          <div className="sc-rules__body" role="tabpanel">
-            <p className="sc-rc__dim sc-rc__page-link">
-              The same catalog is on the <Link to="/policies" onClick={onClose}>Policies page</Link>. Attach a rule to one
-              workstream from its Overview tab.
-            </p>
-            {productId
-              ? <RuleCatalogView productId={productId} storyId={storyId} />
-              : <p className="sc-rules__empty">This story has no product, so it has no rule catalog.</p>}
-          </div>
-        )}
-        {tab === 'pins' && (<>
         <p className="sc-rules__help">
           A story pin is a one-off rule for this story only. A pin with no document or workstream goes into every
-          iteration prompt of every plan doc and workstream in this story, from each one&apos;s next iteration. For a
-          rule that should follow a kind of work across stories, use the product catalog.
+          iteration prompt of every plan doc and workstream in this story, from each one&apos;s next iteration.
+          For rules that should follow a kind of work across stories, use{' '}
+          <Link to="/policies" onClick={onClose}>policies</Link>, and pick them per workstream on its Overview tab.
         </p>
-        <div className="sc-rules__body" role="tabpanel">
+        <div className="sc-rules__body">
           <StoryRulesList pins={pins} busy={busy} onRemove={(p) => void remove(p)} />
         </div>
         <div className="sc-rules__add">
@@ -242,7 +213,6 @@ function StoryRulesPanel({ storyId, productId, pins, reload, onClose }: {
             </button>
           </div>
         </div>
-        </>)}
       </div>
     </div>,
     document.body,

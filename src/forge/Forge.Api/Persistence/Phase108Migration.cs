@@ -12,9 +12,11 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>
 /// Phase 108 — the product rule catalog: <c>rule_tags</c>,
-/// <c>catalog_rules</c>, <c>workstream_tag_overrides</c> and
-/// <c>work_item_rules</c> (<see cref="RuleTagRow"/>, <see cref="CatalogRuleRow"/>,
-/// <see cref="WorkstreamTagOverrideRow"/>, <see cref="WorkItemRuleRow"/>).
+/// <c>catalog_rules</c>, <c>rule_policies</c>, <c>workstream_tag_overrides</c>,
+/// <c>work_item_rules</c> and <c>work_item_policies</c> (<see cref="RuleTagRow"/>,
+/// <see cref="CatalogRuleRow"/>, <see cref="RulePolicyRow"/>,
+/// <see cref="WorkstreamTagOverrideRow"/>, <see cref="WorkItemRuleRow"/>,
+/// <see cref="WorkItemPolicyRow"/>).
 ///
 /// <para>Product-only, so <see cref="PhaseMigrationRunner"/> applies it to
 /// every per-product <c>{slug}.db</c>. New tables only; no migration queries
@@ -77,6 +79,32 @@ public static class Phase108Migration
         )
         """,
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_work_item_rules_item_rule ON work_item_rules (WorkItemId, RuleId)",
+        """
+        CREATE TABLE IF NOT EXISTS rule_policies (
+            Id          TEXT NOT NULL PRIMARY KEY,
+            ProductId   TEXT NOT NULL,
+            Name        TEXT NOT NULL,
+            Description TEXT NOT NULL,
+            RuleIdsJson TEXT NOT NULL,
+            TagIdsJson  TEXT NOT NULL,
+            Enabled     INTEGER NOT NULL,
+            CreatedAt   TEXT NOT NULL,
+            CreatedBy   TEXT NULL,
+            UpdatedAt   TEXT NOT NULL
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS IX_rule_policies_product_name ON rule_policies (ProductId, Name)",
+        """
+        CREATE TABLE IF NOT EXISTS work_item_policies (
+            Id         TEXT NOT NULL PRIMARY KEY,
+            WorkItemId TEXT NOT NULL,
+            PolicyId   TEXT NOT NULL,
+            "On"       INTEGER NOT NULL,
+            CreatedAt  TEXT NOT NULL,
+            CreatedBy  TEXT NULL
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS IX_work_item_policies_item_policy ON work_item_policies (WorkItemId, PolicyId)",
     };
 
     public static async Task ApplyAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)

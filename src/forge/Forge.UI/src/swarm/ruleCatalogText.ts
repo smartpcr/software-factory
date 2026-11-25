@@ -1,7 +1,8 @@
-// Phase 108 — pure helpers for the product rule catalog UI: parsing the
-// editor's text fields into lists and describing a tag's scope and matchers.
+// Phase 108 — pure helpers for the rule catalog UI (Policies page and the
+// per-work-item checklist): parsing editor fields into lists, and describing
+// tags, policies and rules in words.
 
-import type { AppliedTag, CatalogRule, RuleChoice, RuleTag, RuleTagInput } from '@/api/forgeApi';
+import type { AppliedTag, PolicyChoice, RuleCatalog, RuleChoice, RulePolicy, RuleTagInput } from '@/api/forgeApi';
 
 /** One entry per non-empty line (phrases and patterns may contain commas). */
 export function lines(text: string): string[] {
@@ -13,7 +14,7 @@ export function items(text: string): string[] {
   return text.split(/[,\r\n]/).map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-/** "agent-plugin · impl" / "every repo · every workstream". */
+/** "agent-plugin · every workstream" / "every repo · qa-e2e". */
 export function tagScope(tag: Pick<RuleTagInput, 'repoIds' | 'categories'>): string {
   const repos = tag.repoIds.length === 0 ? 'every repo' : tag.repoIds.join(', ');
   const cats = tag.categories.length === 0 ? 'every workstream' : tag.categories.join(', ');
@@ -22,21 +23,25 @@ export function tagScope(tag: Pick<RuleTagInput, 'repoIds' | 'categories'>): str
 
 /** What makes the tag apply, in words. */
 export function tagMatchers(tag: Pick<RuleTagInput, 'phrases' | 'patterns'>): string {
-  const parts: string[] = [];
-  if (tag.phrases.length > 0) parts.push(`${tag.phrases.length} phrase${tag.phrases.length === 1 ? '' : 's'}`);
-  if (tag.patterns.length > 0) parts.push(`${tag.patterns.length} pattern${tag.patterns.length === 1 ? '' : 's'}`);
-  return parts.length === 0 ? 'applies to every workstream in scope' : `stage text has any of ${parts.join(' or ')}`;
+  const terms = [...tag.phrases.map((p) => `"${p}"`), ...tag.patterns.map((p) => `/${p}/`)];
+  return terms.length === 0 ? 'every work item in scope' : `text has ${terms.join(' or ')}`;
 }
 
-export function rulesUsingTag(rules: CatalogRule[], tagId: string): CatalogRule[] {
-  return rules.filter((r) => r.tagIds.includes(tagId));
+/** The policies that contain a rule, by name. */
+export function policiesWithRule(catalog: RuleCatalog, ruleId: string): RulePolicy[] {
+  return catalog.policies.filter((p) => p.ruleIds.includes(ruleId));
 }
 
-export function tagNames(tags: RuleTag[], ids: string[]): string[] {
-  return ids.map((id) => tags.find((t) => t.id === id)?.name ?? id);
+/** The policies a tag attaches. */
+export function policiesWithTag(catalog: RuleCatalog, tagId: string): RulePolicy[] {
+  return catalog.policies.filter((p) => p.tagIds.includes(tagId));
 }
 
-/** The operator's current choice on a workstream tag: matchers decide, forced on, or forced off. */
+export function namesOf<T extends { id: string }>(all: T[], ids: string[], name: (t: T) => string): string[] {
+  return ids.map((id) => { const t = all.find((x) => x.id === id); return t ? name(t) : id; });
+}
+
+/** The operator's current choice on a work item tag: matchers decide, forced on, or forced off. */
 export type TagChoice = 'auto' | 'on' | 'off';
 
 export function tagChoice(tag: AppliedTag): TagChoice {
@@ -46,25 +51,26 @@ export function tagChoice(tag: AppliedTag): TagChoice {
 }
 
 /**
- * The request that makes a rule's checkbox read `checked` on a work item:
- * attach (`on`), detach (`off`), or drop the override (`clear`) when the
- * rule's tags would already give that answer.
+ * The request that makes a policy's or rule's checkbox read `checked` on one
+ * work item: attach (`on`), detach (`off`), or drop the operator's choice
+ * (`clear`) when the automatic choice already gives that answer.
  */
-export function ruleAction(choice: RuleChoice, checked: boolean): 'on' | 'off' | 'clear' {
-  const byTags = choice.via.length > 0;
-  if (checked) return byTags ? 'clear' : 'on';
-  return byTags ? 'off' : 'clear';
+export function choiceAction(choice: PolicyChoice | RuleChoice, checked: boolean): 'on' | 'off' | 'clear' {
+  const automatic = choice.via.length > 0;
+  if (checked) return automatic ? 'clear' : 'on';
+  return automatic ? 'off' : 'clear';
 }
 
-/** Why a rule does or does not reach the work item, in words. */
-export function ruleStatus(choice: RuleChoice): string {
-  const tags = choice.via.join(', ');
+/** Why a policy or rule does or does not reach the work item, in words. */
+export function choiceStatus(choice: PolicyChoice | RuleChoice): string {
+  const via = choice.via.join(', ');
   switch (choice.source) {
-    case 'tag': return `via tag ${tags}`;
-    case 'attached': return 'attached to this work item';
-    case 'detached': return `detached from this work item${tags ? ` (tag ${tags} applies)` : ''}`;
-    case 'disabled': return 'disabled in the catalog';
-    default: return 'not attached';
+    case 'tag': return `added by tag ${via}`;
+    case 'policy': return `in policy ${via}`;
+    case 'attached': return 'added here by hand';
+    case 'detached': return via ? `removed here by hand (would come from ${via})` : 'removed here by hand';
+    case 'disabled': return 'disabled on the Policies page';
+    default: return 'not applied';
   }
 }
 

@@ -99,7 +99,7 @@ export interface OperatorPrompt {
   dismissedAt: string | null;
 }
 
-/** Phase 108 — a tag in a product's rule catalog and the workstreams it applies to. */
+/** Phase 108 — a tag: matches work items by repo and text, and attaches policies to them automatically. */
 export interface RuleTagInput {
   name: string;
   description: string;
@@ -107,9 +107,9 @@ export interface RuleTagInput {
   repoIds: string[];
   /** `impl`, `qa-e2e`; empty = both. */
   categories: string[];
-  /** Case-insensitive phrases over the stage text; any one is enough. */
+  /** Case-insensitive phrases over the work item text; any one is enough. */
   phrases: string[];
-  /** Case-insensitive regular expressions over the stage text; any one is enough. */
+  /** Case-insensitive regular expressions over the work item text; any one is enough. */
   patterns: string[];
 }
 
@@ -120,31 +120,53 @@ export interface RuleTag extends RuleTagInput {
   updatedAt: string;
 }
 
-/**
- * Phase 108 — a standing rule. It reaches every work item or workstream one of
- * its tags applies to, and any the operator attaches it to directly; with no
- * tags it reaches only those.
- */
+/** Phase 108 — a standing rule: one directive the agent follows on every iteration of the work items it reaches. */
 export interface CatalogRuleInput {
   title: string;
   text: string;
+  enabled: boolean;
+  /** When given, exactly the policies that contain this rule. */
+  policyIds?: string[];
+}
+
+export interface CatalogRule {
+  id: string;
+  title: string;
+  text: string;
+  enabled: boolean;
+  createdAt: string;
+  createdBy: string | null;
+  updatedAt: string;
+}
+
+/** Phase 108 — a policy: a named group of rules applied together; tags attach it automatically. */
+export interface RulePolicyInput {
+  name: string;
+  description: string;
+  /** Its rules, in the order the prompt lists them. A rule can be in several policies. */
+  ruleIds: string[];
+  /** Tags that attach this policy automatically. */
   tagIds: string[];
   enabled: boolean;
 }
 
-export interface CatalogRule extends CatalogRuleInput {
+export interface RulePolicy extends RulePolicyInput {
   id: string;
   createdAt: string;
   createdBy: string | null;
   updatedAt: string;
 }
 
+/** Work items the operator attached something to / detached it from. */
+export interface RuleUsage { attached: number; detached: number }
+
 export interface RuleCatalog {
   productId: string;
-  tags: RuleTag[];
+  policies: RulePolicy[];
   rules: CatalogRule[];
-  /** Per rule id: work items the operator attached it to / detached it from. Missing = none. */
-  usage?: Record<string, { attached: number; detached: number }>;
+  tags: RuleTag[];
+  ruleUsage: Record<string, RuleUsage>;
+  policyUsage: Record<string, RuleUsage>;
 }
 
 /** `matched` / `no-match` when the tag's matchers decided; `operator-added` / `operator-removed` when an override did. */
@@ -159,11 +181,22 @@ export interface AppliedTag {
 }
 
 /**
- * How one catalog rule stands on a work item: `tag` (one of its tags applies),
- * `attached` / `detached` (the operator's choice for this item), `none` (no
- * tag applies) or `disabled` (switched off in the catalog).
+ * How a policy or rule stands on one work item: brought automatically (`tag`
+ * for a policy, `policy` for a rule), `attached` / `detached` by the operator
+ * for this item, `none`, or `disabled` in the catalog.
  */
-export type RuleChoiceSource = 'tag' | 'attached' | 'detached' | 'none' | 'disabled';
+export type ChoiceSource = 'tag' | 'policy' | 'attached' | 'detached' | 'none' | 'disabled';
+
+export interface PolicyChoice {
+  id: string;
+  name: string;
+  enabled: boolean;
+  applied: boolean;
+  source: ChoiceSource;
+  /** Applied tags that bring it. */
+  via: string[];
+  ruleCount: number;
+}
 
 export interface RuleChoice {
   id: string;
@@ -171,19 +204,21 @@ export interface RuleChoice {
   text: string;
   enabled: boolean;
   applied: boolean;
-  source: RuleChoiceSource;
-  /** Names of this item's applied tags that the rule carries. */
+  source: ChoiceSource;
+  /** Applied policies that bring it. */
   via: string[];
+  /** Every policy that contains it. */
+  policies: string[];
 }
 
 export interface WorkItemRules {
   workItemId: string;
   productId: string;
   tags: AppliedTag[];
-  /** The rules in the next prompt; `attached` when the operator picked it for this item. */
-  rules: Array<{ id: string; title: string; text: string; via: string[]; attached: boolean }>;
-  /** Every catalog rule, for the picker. */
+  policies: PolicyChoice[];
   choices: RuleChoice[];
+  /** The rules in the next prompt; `attached` when picked on their own. */
+  rules: Array<{ id: string; title: string; text: string; via: string[]; attached: boolean }>;
 }
 
 export interface RuleTagMatch {
@@ -194,6 +229,32 @@ export interface RuleTagMatch {
   applied: boolean;
   source: AppliedTagSource;
   reason: string;
+}
+
+/** What an operator can attach to or detach from one work item. */
+export type WorkItemChoiceKind = 'policies' | 'rules' | 'tags';
+
+/** Fills lists a partial (or older) server response leaves out, so views never read `undefined.length`. */
+export function normalizeCatalog(c: Partial<RuleCatalog> | null | undefined, productId: string): RuleCatalog {
+  return {
+    productId: c?.productId ?? productId,
+    policies: c?.policies ?? [],
+    rules: c?.rules ?? [],
+    tags: c?.tags ?? [],
+    ruleUsage: c?.ruleUsage ?? {},
+    policyUsage: c?.policyUsage ?? {},
+  };
+}
+
+export function normalizeWorkItemRules(r: Partial<WorkItemRules> | null | undefined, productId: string, workItemId: string): WorkItemRules {
+  return {
+    workItemId: r?.workItemId ?? workItemId,
+    productId: r?.productId ?? productId,
+    tags: r?.tags ?? [],
+    policies: r?.policies ?? [],
+    choices: (r?.choices ?? []).map((c) => ({ ...c, via: c.via ?? [], policies: c.policies ?? [] })),
+    rules: r?.rules ?? [],
+  };
 }
 
 function ruleCatalogPath(productId: string, rest = ''): string {
@@ -1701,36 +1762,13 @@ export const forgeApi = {
     });
   },
 
-  // ── Phase 108 — product rule catalog ───────────────────────────────────
-  // Tags say which workstreams they apply to; rules attached to a tag go into
-  // the generator prompt of every workstream the tag applies to.
+  // ── Phase 108 — product rule catalog (Policies page) ───────────────────
+  // Rules are directives; policies group rules; tags attach policies
+  // automatically. On one work item the operator attaches or detaches a
+  // policy, a single rule or a tag.
 
   async getRuleCatalog(productId: string): Promise<RuleCatalog> {
-    return fetchJson(ruleCatalogPath(productId));
-  },
-
-  async addRuleTag(productId: string, tag: RuleTagInput): Promise<RuleTag> {
-    return fetchJson(ruleCatalogPath(productId, '/tags'), {
-      method: 'POST', body: JSON.stringify(tag), headers: { 'X-Forge-User': writerHeader() },
-    });
-  },
-
-  async updateRuleTag(productId: string, tagId: string, tag: RuleTagInput): Promise<RuleTag> {
-    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}`), {
-      method: 'PUT', body: JSON.stringify(tag), headers: { 'X-Forge-User': writerHeader() },
-    });
-  },
-
-  async deleteRuleTag(productId: string, tagId: string): Promise<RuleCatalog> {
-    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}`), {
-      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
-    });
-  },
-
-  /** How one tag stands on every workstream of the product, or of one story. */
-  async listRuleTagMatches(productId: string, tagId: string, storyId?: string): Promise<RuleTagMatch[]> {
-    const q = storyId ? `?storyId=${encodeURIComponent(storyId)}` : '';
-    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}/matches${q}`));
+    return normalizeCatalog(await fetchJson<Partial<RuleCatalog>>(ruleCatalogPath(productId)), productId);
   },
 
   async addCatalogRule(productId: string, rule: CatalogRuleInput): Promise<CatalogRule> {
@@ -1751,41 +1789,69 @@ export const forgeApi = {
     });
   },
 
+  async addRulePolicy(productId: string, policy: RulePolicyInput): Promise<RulePolicy> {
+    return fetchJson(ruleCatalogPath(productId, '/policies'), {
+      method: 'POST', body: JSON.stringify(policy), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async updateRulePolicy(productId: string, policyId: string, policy: RulePolicyInput): Promise<RulePolicy> {
+    return fetchJson(ruleCatalogPath(productId, `/policies/${encodeURIComponent(policyId)}`), {
+      method: 'PUT', body: JSON.stringify(policy), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async deleteRulePolicy(productId: string, policyId: string): Promise<void> {
+    await fetchJson(ruleCatalogPath(productId, `/policies/${encodeURIComponent(policyId)}`), {
+      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async addRuleTag(productId: string, tag: RuleTagInput): Promise<RuleTag> {
+    return fetchJson(ruleCatalogPath(productId, '/tags'), {
+      method: 'POST', body: JSON.stringify(tag), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async updateRuleTag(productId: string, tagId: string, tag: RuleTagInput): Promise<RuleTag> {
+    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}`), {
+      method: 'PUT', body: JSON.stringify(tag), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async deleteRuleTag(productId: string, tagId: string): Promise<void> {
+    await fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}`), {
+      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** How one tag stands on every workstream of the product, or of one story. */
+  async listRuleTagMatches(productId: string, tagId: string, storyId?: string): Promise<RuleTagMatch[]> {
+    const q = storyId ? `?storyId=${encodeURIComponent(storyId)}` : '';
+    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}/matches${q}`));
+  },
+
   /**
-   * Every catalog rule's and tag's standing on one work item execution or
-   * workstream (a workstream's id is its work item id), and the rules that
-   * reach its next prompt.
+   * Every policy's, rule's and tag's standing on one work item execution or
+   * workstream (a workstream's id is its work item id), and the rules in its
+   * next prompt.
    */
   async getWorkItemRules(productId: string, workItemId: string): Promise<WorkItemRules> {
-    return fetchJson(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}`));
+    return normalizeWorkItemRules(await fetchJson<Partial<WorkItemRules>>(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}`)), productId, workItemId);
   },
 
-  /** `on: true` attaches the rule to the work item, `false` detaches it; either wins over the rule's tags. */
-  async setWorkItemRule(productId: string, workItemId: string, ruleId: string, on: boolean): Promise<WorkItemRules> {
-    return fetchJson(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}/rules/${encodeURIComponent(ruleId)}`), {
+  /** `on: true` attaches the policy / rule / tag to the work item, `false` detaches it; either wins over the automatic choice. */
+  async setWorkItemChoice(productId: string, workItemId: string, kind: WorkItemChoiceKind, id: string, on: boolean): Promise<WorkItemRules> {
+    return normalizeWorkItemRules(await fetchJson<Partial<WorkItemRules>>(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}/${kind}/${encodeURIComponent(id)}`), {
       method: 'PUT', body: JSON.stringify({ on }), headers: { 'X-Forge-User': writerHeader() },
-    });
+    }), productId, workItemId);
   },
 
-  /** Drops the operator's choice on a rule, so its tags decide again. */
-  async clearWorkItemRule(productId: string, workItemId: string, ruleId: string): Promise<WorkItemRules> {
-    return fetchJson(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}/rules/${encodeURIComponent(ruleId)}`), {
+  /** Drops the operator's choice, so the automatic choice applies again. */
+  async clearWorkItemChoice(productId: string, workItemId: string, kind: WorkItemChoiceKind, id: string): Promise<WorkItemRules> {
+    return normalizeWorkItemRules(await fetchJson<Partial<WorkItemRules>>(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}/${kind}/${encodeURIComponent(id)}`), {
       method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
-    });
-  },
-
-  /** `on: true` adds the tag to the work item, `false` removes it; either wins over the tag's matchers. */
-  async setWorkItemTag(productId: string, workItemId: string, tagId: string, on: boolean): Promise<WorkItemRules> {
-    return fetchJson(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}/tags/${encodeURIComponent(tagId)}`), {
-      method: 'PUT', body: JSON.stringify({ on }), headers: { 'X-Forge-User': writerHeader() },
-    });
-  },
-
-  /** Drops the operator's decision on a tag, so its matchers decide again. */
-  async clearWorkItemTag(productId: string, workItemId: string, tagId: string): Promise<WorkItemRules> {
-    return fetchJson(ruleCatalogPath(productId, `/work-items/${encodeURIComponent(workItemId)}/tags/${encodeURIComponent(tagId)}`), {
-      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
-    });
+    }), productId, workItemId);
   },
 
   /** POST /api/stories/{storyId}/spawn/artifacts/{key}/resume — resume a single doc's gen↔eval loop. */

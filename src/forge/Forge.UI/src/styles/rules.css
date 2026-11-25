@@ -1,0 +1,229 @@
+/* ============================================
+   RULES — Phase 108 editors (Policies page) and the per-work-item
+   "Policies & rules" checklist.
+
+   The checklist sits on plain app pages (work item execution) and inside the
+   swarm story view (workstream Overview). Each token falls back from the
+   swarm theme (--sc-*) to the app theme, so both look native. All text pairs
+   meet WCAG AA (4.5:1): secondary text uses the "dim"/"secondary" token,
+   never the tertiary/muted one.
+   ============================================ */
+.rx {
+  --rx-text: var(--sc-text, var(--text-primary));
+  --rx-dim: var(--sc-text-dim, var(--text-secondary));
+  --rx-surface: var(--sc-surface, var(--bg-surface));
+  --rx-sunken: var(--sc-bg-2, var(--bg-sunken));
+  --rx-line: var(--sc-border-2, var(--border-strong));
+  --rx-accent: var(--sc-cyan, var(--accent));
+  --rx-on-accent: var(--sc-bg, var(--text-on-accent));
+  --rx-ok: var(--sc-green, var(--success, #2f9e44));
+  --rx-danger: var(--sc-red, var(--danger));
+  color: var(--rx-text);
+  font-family: var(--font-body, system-ui, sans-serif);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ── Modal (Policies page editors) ────────────────────────────────────── */
+.rx-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  overflow-y: auto;
+  background: rgba(10, 10, 12, 0.45);
+}
+.rx-dialog {
+  width: min(640px, 100%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl, 14px);
+  box-shadow: var(--shadow-lg);
+}
+.rx-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.rx-dialog-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.rx-close {
+  width: 30px;
+  height: 30px;
+  font-size: 16px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.rx-close:hover { border-color: var(--border-strong); }
+.rx-dialog-body { padding: 16px 20px 20px; }
+
+/* ── Form fields ──────────────────────────────────────────────────────── */
+.rx-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.rx-label { font-size: 13px; font-weight: 600; color: var(--rx-text); }
+.rx-hint { font-size: 12.5px; color: var(--rx-dim); margin: 0; }
+.rx-input,
+.rx-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--rx-text);
+  background: var(--rx-surface);
+  border: 1px solid var(--rx-line);
+  border-radius: var(--radius-md, 6px);
+}
+.rx-textarea { resize: vertical; min-height: 120px; font-family: var(--font-mono, monospace); font-size: 12.5px; line-height: 1.55; }
+.rx-input::placeholder,
+.rx-textarea::placeholder { color: var(--rx-dim); opacity: 1; }
+.rx-input:focus-visible,
+.rx-textarea:focus-visible { outline: 2px solid var(--rx-accent); outline-offset: 1px; border-color: var(--rx-accent); }
+.rx-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  background: var(--rx-sunken);
+  border: 1px solid var(--rx-line);
+  border-radius: var(--radius-md, 6px);
+}
+.rx-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 13px;
+  color: var(--rx-text);
+  cursor: pointer;
+}
+.rx-check input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--rx-accent); flex-shrink: 0; cursor: pointer; }
+.rx-check input:focus-visible { outline: 2px solid var(--rx-accent); outline-offset: 2px; }
+.rx-check .rx-hint { margin-left: auto; padding-left: 8px; }
+.rx-inline { display: flex; flex-wrap: wrap; gap: 16px; }
+.rx-error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--rx-danger);
+  border: 1px solid var(--rx-danger);
+  border-radius: var(--radius-md, 6px);
+}
+.rx-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* ── Per-work-item checklist ─────────────────────────────────────────── */
+.rx-panel {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  background: var(--rx-surface);
+  border: 1px solid var(--rx-line);
+  border-radius: var(--radius-lg, 8px);
+}
+.rx-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.rx-panel-title { margin: 0; font-size: 14px; font-weight: 700; color: var(--rx-text); }
+.rx-panel-meta { font-size: 12.5px; color: var(--rx-dim); }
+.rx-panel a { color: var(--rx-accent); font-weight: 600; }
+.rx-group-title {
+  margin: 10px 0 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--rx-dim);
+}
+.rx-list { list-style: none; margin: 0; padding: 0; }
+.rx-row { padding: 6px 0; border-top: 1px solid var(--rx-line); }
+.rx-row:first-child { border-top: none; }
+.rx-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.rx-row-main input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--rx-accent);
+  cursor: pointer;
+}
+.rx-row-main input[type='checkbox']:focus-visible { outline: 2px solid var(--rx-accent); outline-offset: 2px; }
+.rx-row-main input[type='checkbox']:disabled { cursor: default; }
+.rx-row-name { font-size: 13px; font-weight: 600; color: var(--rx-text); cursor: pointer; }
+.rx-row-why { font-size: 12.5px; color: var(--rx-dim); }
+.rx-row.is-on .rx-row-why { color: var(--rx-text); }
+.rx-row-details { margin: 4px 0 0 26px; }
+.rx-row-details summary { font-size: 12.5px; color: var(--rx-dim); cursor: pointer; }
+.rx-row-details pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--rx-text);
+  background: var(--rx-sunken);
+  border-radius: var(--radius-sm, 4px);
+}
+.rx-small-btn {
+  margin-left: auto;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--rx-text);
+  background: transparent;
+  border: 1px solid var(--rx-line);
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+}
+.rx-small-btn:hover { border-color: var(--rx-accent); color: var(--rx-accent); }
+.rx-small-btn:focus-visible { outline: 2px solid var(--rx-accent); outline-offset: 2px; }
+.rx-small-btn:disabled { opacity: 0.6; cursor: default; }
+.rx-seg { display: inline-flex; margin-left: auto; }
+.rx-seg button {
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--rx-text);
+  background: transparent;
+  border: 1px solid var(--rx-line);
+  cursor: pointer;
+}
+.rx-seg button + button { border-left: none; }
+.rx-seg button:first-child { border-radius: 4px 0 0 4px; }
+.rx-seg button:last-child { border-radius: 0 4px 4px 0; }
+.rx-seg button.is-active {
+  color: var(--rx-on-accent);
+  background: var(--rx-accent);
+  border-color: var(--rx-accent);
+  font-weight: 700;
+  cursor: default;
+}
+.rx-seg button:focus-visible { outline: 2px solid var(--rx-accent); outline-offset: 2px; }
+.rx-empty { margin: 0; font-size: 13px; color: var(--rx-dim); }
+.rx-fold { margin-top: 10px; }
+.rx-fold > summary { font-size: 12.5px; font-weight: 700; color: var(--rx-dim); cursor: pointer; }
+
+/* On the work item execution page the checklist sits between full-width strips. */
+.live-exec .rx-panel { margin: 8px 16px; }
+legend.rx-label { padding: 0; margin-bottom: 4px; font-weight: 600; }

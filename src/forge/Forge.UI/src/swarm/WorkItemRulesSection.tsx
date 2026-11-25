@@ -1,93 +1,119 @@
-// Phase 108 — attach catalog rules to one work item execution or workstream.
-// Every rule in the product catalog is listed with a checkbox: ticked rules go
-// into this item's generator prompt from its next iteration. A rule can be
-// ticked because one of its tags applies here, or because the operator
-// attached it; unticking a tag-applied rule detaches it from this item only.
-// The item's tags (and their Auto / On / Off choice) sit below, folded.
+// Phase 108 — "Policies & rules" for one work item execution or workstream.
+// Every policy and every rule of the product is listed with a checkbox:
+// ticked ones go into this item's generator prompt from its next iteration.
+// A policy can be ticked because one of its tags matches here, or by hand; a
+// rule because a ticked policy contains it, or on its own. Unticking keeps it
+// out of this item only; Reset hands the choice back to the tags/policies.
+// Styles: styles/rules.css (works on plain pages and in the swarm view).
 
 import { useCallback, useEffect, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { forgeApi, type WorkItemRules } from '@/api/forgeApi';
-import { ruleAction, ruleStatus, tagChoice, type TagChoice } from './ruleCatalogText';
+import { forgeApi, type PolicyChoice, type RuleChoice, type WorkItemChoiceKind, type WorkItemRules } from '@/api/forgeApi';
+import { choiceAction, choiceStatus, tagChoice, type TagChoice } from './ruleCatalogText';
 
 const TAG_CHOICES: { value: TagChoice; label: string; title: string }[] = [
-  { value: 'auto', label: 'Auto', title: "The tag's matchers decide" },
+  { value: 'auto', label: 'Auto', title: "The tag's phrases decide" },
   { value: 'on', label: 'On', title: 'Always apply this tag to this work item' },
   { value: 'off', label: 'Off', title: 'Never apply this tag to this work item' },
 ];
 
-/** Pure view of a work item's rules and tags, so it can be rendered in tests. */
-export function WorkItemRulesView({ rules, busy, onRule, onResetRule, onTag }: {
-  rules: WorkItemRules;
+function ChoiceRow({ choice, name, detail, busy, onCheck, onReset }: {
+  choice: PolicyChoice | RuleChoice;
+  name: string;
+  detail?: { summary: string; body: string };
   busy?: boolean;
-  onRule?: (ruleId: string, checked: boolean) => void;
-  onResetRule?: (ruleId: string) => void;
-  onTag?: (tagId: string, choice: TagChoice) => void;
+  onCheck?: (checked: boolean) => void;
+  onReset?: () => void;
 }) {
   const id = useId();
+  const overridden = choice.source === 'attached' || choice.source === 'detached';
+  return (
+    <li className={`rx-row${choice.applied ? ' is-on' : ''}`}>
+      <div className="rx-row-main">
+        <input id={id} type="checkbox" checked={choice.applied} disabled={busy || !choice.enabled || !onCheck}
+          onChange={(e) => onCheck?.(e.target.checked)} />
+        <label htmlFor={id} className="rx-row-name">{name}</label>
+        <span className="rx-row-why">{choiceStatus(choice)}</span>
+        {overridden && onReset && (
+          <button type="button" className="rx-small-btn" disabled={busy} onClick={onReset}
+            title="Drop this choice and let tags and policies decide">Reset</button>
+        )}
+      </div>
+      {detail && (
+        <details className="rx-row-details">
+          <summary>{detail.summary}</summary>
+          <pre>{detail.body}</pre>
+        </details>
+      )}
+    </li>
+  );
+}
+
+/** Pure view of a work item's policies, rules and tags, so it can be rendered in tests. */
+export function WorkItemRulesView({ rules, busy, onChoose, onReset, onTag }: {
+  rules: WorkItemRules;
+  busy?: boolean;
+  onChoose?: (kind: 'policies' | 'rules', choice: PolicyChoice | RuleChoice, checked: boolean) => void;
+  onReset?: (kind: 'policies' | 'rules', id: string) => void;
+  onTag?: (tagId: string, choice: TagChoice) => void;
+}) {
   if (rules.choices.length === 0) {
     return (
-      <p className="sc-wr__empty">
-        The product rule catalog is empty. Add rules on the <Link to="/policies">Policies page</Link>.
+      <p className="rx-empty">
+        This product has no rules yet. Create them on the <Link to="/policies">Policies page</Link>.
       </p>
     );
   }
   const appliedTags = rules.tags.filter((t) => t.applied).length;
   return (
     <>
-      <ul className="sc-wr__rules" aria-label="Catalog rules">
-        {rules.choices.map((c) => {
-          const boxId = `${id}-${c.id}`;
-          const overridden = c.source === 'attached' || c.source === 'detached';
-          return (
-            <li key={c.id} className={`sc-wr__rule${c.applied ? ' is-on' : ''}`}>
-              <div className="sc-wr__rule-row">
-                <input
-                  id={boxId}
-                  type="checkbox"
-                  checked={c.applied}
-                  disabled={busy || !c.enabled || !onRule}
-                  onChange={(e) => onRule?.(c.id, e.target.checked)}
-                />
-                <label htmlFor={boxId} className="sc-wr__name">{c.title}</label>
-                <span className="sc-wr__reason">{ruleStatus(c)}</span>
-                {overridden && onResetRule && (
-                  <button type="button" className="sc-wr__reset" disabled={busy}
-                    title="Drop this choice and let the rule's tags decide" onClick={() => onResetRule(c.id)}>
-                    Reset
-                  </button>
-                )}
-              </div>
-              <details className="sc-wr__more">
-                <summary>Rule text</summary>
-                <pre className="sc-wr__text">{c.text}</pre>
-              </details>
-            </li>
-          );
-        })}
+      <h4 className="rx-group-title">Policies</h4>
+      {rules.policies.length === 0
+        ? <p className="rx-empty">No policies yet.</p>
+        : (
+          <ul className="rx-list" aria-label="Policies">
+            {rules.policies.map((p) => (
+              <ChoiceRow key={p.id} choice={p} busy={busy}
+                name={`${p.name} · ${p.ruleCount} rule${p.ruleCount === 1 ? '' : 's'}`}
+                onCheck={onChoose && ((checked) => onChoose('policies', p, checked))}
+                onReset={onReset && (() => onReset('policies', p.id))} />
+            ))}
+          </ul>
+        )}
+
+      <h4 className="rx-group-title">Rules</h4>
+      <ul className="rx-list" aria-label="Rules">
+        {rules.choices.map((c) => (
+          <ChoiceRow key={c.id} choice={c} busy={busy} name={c.title}
+            detail={{ summary: c.policies.length > 0 ? `Text · in ${c.policies.join(', ')}` : 'Text', body: c.text }}
+            onCheck={onChoose && ((checked) => onChoose('rules', c, checked))}
+            onReset={onReset && (() => onReset('rules', c.id))} />
+        ))}
       </ul>
+
       {rules.tags.length > 0 && (
-        <details className="sc-wr__tag-box">
-          <summary>Tags · {appliedTags} of {rules.tags.length} apply</summary>
-          <ul className="sc-wr__tags">
+        <details className="rx-fold">
+          <summary>Tags · {appliedTags} of {rules.tags.length} match this work item</summary>
+          <ul className="rx-list">
             {rules.tags.map((tag) => {
               const choice = tagChoice(tag);
               return (
-                <li key={tag.tagId} className={`sc-wr__tag${tag.applied ? ' is-on' : ''}`}>
-                  <span className="sc-wr__mark" aria-hidden="true">{tag.applied ? '✓' : '–'}</span>
-                  <span className="sc-wr__name">{tag.name}</span>
-                  <span className="sc-wr__reason">{tag.reason}</span>
-                  {onTag && (
-                    <span className="sc-wr__choice" role="group" aria-label={`${tag.name} on this work item`}>
-                      {TAG_CHOICES.map((c) => (
-                        <button key={c.value} type="button" title={c.title} aria-pressed={choice === c.value}
-                          className={choice === c.value ? 'is-active' : undefined}
-                          disabled={busy || choice === c.value} onClick={() => onTag(tag.tagId, c.value)}>
-                          {c.label}
-                        </button>
-                      ))}
-                    </span>
-                  )}
+                <li key={tag.tagId} className={`rx-row${tag.applied ? ' is-on' : ''}`}>
+                  <div className="rx-row-main">
+                    <span className="rx-row-name">{tag.applied ? '✓ ' : ''}{tag.name}</span>
+                    <span className="rx-row-why">{tag.reason}</span>
+                    {onTag && (
+                      <span className="rx-seg" role="group" aria-label={`${tag.name} on this work item`}>
+                        {TAG_CHOICES.map((c) => (
+                          <button key={c.value} type="button" title={c.title} aria-pressed={choice === c.value}
+                            className={choice === c.value ? 'is-active' : undefined}
+                            disabled={busy || choice === c.value} onClick={() => onTag(tag.tagId, c.value)}>
+                            {c.label}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                  </div>
                 </li>
               );
             })}
@@ -108,7 +134,7 @@ export function WorkItemRulesSection({ productId, workItemId }: { productId: str
       setRules(await forgeApi.getWorkItemRules(productId, workItemId));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Loading the rules failed');
+      setError(e instanceof Error ? e.message : 'Loading the policies failed');
     }
   }, [productId, workItemId]);
   useEffect(() => { void load(); }, [load]);
@@ -125,38 +151,31 @@ export function WorkItemRulesSection({ productId, workItemId }: { productId: str
     }
   }
 
-  function onRule(ruleId: string, checked: boolean) {
-    const choice = rules?.choices.find((c) => c.id === ruleId);
-    if (!choice) return;
-    const action = ruleAction(choice, checked);
-    void apply(() => (action === 'clear'
-      ? forgeApi.clearWorkItemRule(productId, workItemId, ruleId)
-      : forgeApi.setWorkItemRule(productId, workItemId, ruleId, action === 'on')));
-  }
+  const set = (kind: WorkItemChoiceKind, id: string, action: 'on' | 'off' | 'clear') => apply(() => (action === 'clear'
+    ? forgeApi.clearWorkItemChoice(productId, workItemId, kind, id)
+    : forgeApi.setWorkItemChoice(productId, workItemId, kind, id, action === 'on')));
 
   const inPrompt = rules?.rules.length ?? 0;
   return (
-    <section className="sc-wr" aria-label="Rules for this work item">
-      <div className="sc-wr__head">
-        <span>RULES FOR THIS WORK ITEM</span>
-        <span className="sc-wr__count">
-          {inPrompt} in the next prompt · <Link to="/policies">Manage rules</Link>
+    <section className="rx rx-panel" aria-labelledby={`rules-${workItemId}`}>
+      <div className="rx-panel-head">
+        <h3 id={`rules-${workItemId}`} className="rx-panel-title">Policies &amp; rules</h3>
+        <span className="rx-panel-meta">
+          {inPrompt} rule{inPrompt === 1 ? '' : 's'} in the next prompt · <Link to="/policies">Manage</Link>
         </span>
       </div>
-      {error && <p className="sc-wr__error" role="alert">{error}</p>}
+      {error && <p className="rx-error" role="alert">{error}</p>}
       {rules
         ? (
           <WorkItemRulesView
             rules={rules}
             busy={busy}
-            onRule={onRule}
-            onResetRule={(ruleId) => void apply(() => forgeApi.clearWorkItemRule(productId, workItemId, ruleId))}
-            onTag={(tagId, c) => void apply(() => (c === 'auto'
-              ? forgeApi.clearWorkItemTag(productId, workItemId, tagId)
-              : forgeApi.setWorkItemTag(productId, workItemId, tagId, c === 'on')))}
+            onChoose={(kind, c, checked) => void set(kind, c.id, choiceAction(c, checked))}
+            onReset={(kind, id) => void set(kind, id, 'clear')}
+            onTag={(tagId, c) => void set('tags', tagId, c === 'auto' ? 'clear' : c)}
           />
         )
-        : !error && <p className="sc-wr__empty">Loading…</p>}
+        : !error && <p className="rx-empty">Loading…</p>}
     </section>
   );
 }

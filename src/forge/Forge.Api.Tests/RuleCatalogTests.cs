@@ -18,12 +18,13 @@ using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 /// <summary>
-/// Phase 108 — the product rule catalog. A tag's matchers decide which
-/// workstreams it applies to, an operator override wins over them, and the
-/// rules of applied tags reach the workstream's prompt. The stage text below is
-/// the work item description of harness:DSH-M2 stage 3.2 (2026-11-25), whose
-/// agent ran the full harness gate inside its iterations: it never says "full
-/// gate", but names tools/harness-gate and "both lanes".
+/// Phase 108 — the product rule catalog. Tags attach policies automatically;
+/// a policy brings its rules; on one work item the operator can attach or
+/// detach a policy or a single rule, which wins over the automatic choice.
+/// The stage text below is the work item description of harness:DSH-M2 stage
+/// 3.2 (2026-11-25), whose agent ran the full harness gate inside its
+/// iterations: it never says "full gate", but names tools/harness-gate and
+/// "both lanes".
 /// </summary>
 public sealed class RuleCatalogTests
 {
@@ -42,8 +43,28 @@ public sealed class RuleCatalogTests
         new[] { "both lanes", "tools/harness-gate", "lanes/win.ps1" },
         Array.Empty<string>());
 
+    private static readonly RuleSpec LongChecks = new("r-long", "Long-running checks", "Never run the full gate in an iteration.", true);
+    private static readonly RuleSpec ScopedVet = new("r-vet", "Scoped vet and test", "Vet and test only the packages you changed.", true);
+    private static readonly RuleSpec FakeSpawner = new("r-fake", "Use the fake spawner", "Prefer the fake spawner in unit tests.", true);
+
+    private static readonly PolicySpec HarnessGate = new("p-gate", "Harness gate", new[] { "r-long", "r-vet" }, new[] { "t-gate" }, true);
+    private static readonly PolicySpec LabE2e = new("p-lab", "Lab E2E", new[] { "r-long" }, Array.Empty<string>(), true);
+
     private static RuleSubject Subject(string text = Stage32Text, string repo = "agent-plugin", string category = "impl") =>
         new("ws-3-2", repo, category, text);
+
+    private static WorkItemRules Resolve(
+        RuleSubject? subject = null,
+        IEnumerable<PolicySpec>? policies = null,
+        IEnumerable<RuleSpec>? rules = null,
+        Dictionary<string, bool>? tagOverrides = null,
+        Dictionary<string, bool>? policyOverrides = null,
+        Dictionary<string, bool>? ruleOverrides = null) =>
+        RuleCatalogResolver.Resolve(
+            subject ?? Subject(), "harness", new[] { FullGate },
+            policies ?? new[] { HarnessGate, LabE2e },
+            rules ?? new[] { LongChecks, ScopedVet, FakeSpawner },
+            tagOverrides, policyOverrides, ruleOverrides);
 
     [Fact]
     public void Tag_MatchesStageText_AndSaysWhy()
@@ -56,187 +77,145 @@ public sealed class RuleCatalogTests
     }
 
     [Fact]
-    public void Tag_IsCaseInsensitive()
+    public void Tag_IsCaseInsensitive_AndLimitedToItsReposAndCategories()
     {
         Assert.True(RuleTagMatcher.Match(FullGate, Subject("Run it on BOTH LANES.")).Matched);
-    }
+        Assert.Contains("repo forge", RuleTagMatcher.Match(FullGate, Subject(repo: "forge")).Reason);
 
-    [Fact]
-    public void Tag_DoesNotApplyOutsideItsRepos()
-    {
-        var m = RuleTagMatcher.Match(FullGate, Subject(repo: "forge"));
-
-        Assert.False(m.Matched);
-        Assert.Contains("repo forge", m.Reason);
-    }
-
-    [Fact]
-    public void Tag_DoesNotApplyOutsideItsCategories()
-    {
         var e2eOnly = FullGate with { Categories = new[] { "qa-e2e" } };
-
         Assert.False(RuleTagMatcher.Match(e2eOnly, Subject()).Matched);
         Assert.True(RuleTagMatcher.Match(e2eOnly, Subject(category: "qa-e2e")).Matched);
     }
 
     [Fact]
-    public void Tag_WithoutPhrasesOrPatterns_AppliesToEveryWorkstreamInScope()
+    public void Tag_WithoutPhrasesOrPatterns_AppliesToEveryWorkItemInScope()
     {
-        var everyAgentPlugin = FullGate with { Phrases = Array.Empty<string>() };
-
-        var m = RuleTagMatcher.Match(everyAgentPlugin, Subject("nothing relevant"));
+        var m = RuleTagMatcher.Match(FullGate with { Phrases = Array.Empty<string>() }, Subject("nothing relevant"));
 
         Assert.True(m.Matched);
         Assert.Equal("every workstream in agent-plugin", m.Reason);
     }
 
     [Fact]
-    public void Tag_WithNoHit_DoesNotApply()
+    public void Pattern_MatchesQuotesTheHit_AndAnInvalidOneIsReportedAndSkipped()
     {
-        Assert.False(RuleTagMatcher.Match(FullGate, Subject("Add a field to the Spec struct.")).Matched);
-    }
-
-    [Fact]
-    public void Pattern_MatchesAndQuotesTheHit()
-    {
-        var tag = FullGate with { Phrases = Array.Empty<string>(), Patterns = new[] { @"harness-gate/\w+" } };
-
-        var m = RuleTagMatcher.Match(tag, Subject());
-
+        var m = RuleTagMatcher.Match(FullGate with { Phrases = Array.Empty<string>(), Patterns = new[] { @"harness-gate/\w+" } }, Subject());
         Assert.True(m.Matched);
         Assert.Contains("harness-gate/analyzers", m.Reason);
-    }
 
-    [Fact]
-    public void InvalidPattern_IsReportedOnSave_AndSkippedWhenMatching()
-    {
         Assert.NotNull(RuleTagMatcher.ValidatePattern("(unclosed"));
-        Assert.Null(RuleTagMatcher.ValidatePattern(@"lanes/(win|wsl)"));
-
-        var tag = FullGate with { Phrases = Array.Empty<string>(), Patterns = new[] { "(unclosed" } };
-        Assert.False(RuleTagMatcher.Match(tag, Subject()).Matched);
+        Assert.False(RuleTagMatcher.Match(FullGate with { Phrases = Array.Empty<string>(), Patterns = new[] { "(unclosed" } }, Subject()).Matched);
     }
 
     [Fact]
-    public void Resolve_AttachesTheRulesOfAppliedTags()
+    public void TaggedPolicy_BringsAllItsRules_InPolicyOrder()
     {
-        var rules = new[]
-        {
-            new RuleSpec("r1", "Long-running checks", "Never run the full gate in an iteration.", new[] { "t-gate" }, true),
-            new RuleSpec("r2", "Disabled rule", "x", new[] { "t-gate" }, false),
-            new RuleSpec("r3", "Other tag", "y", new[] { "t-other" }, true),
-        };
+        var r = Resolve();
 
-        var r = RuleCatalogResolver.Resolve(Subject(), "harness", new[] { FullGate }, new Dictionary<string, bool>(), rules);
-
-        var rule = Assert.Single(r.Rules);
-        Assert.Equal("r1", rule.Id);
-        Assert.Equal(new[] { "full harness gate" }, rule.Via);
-        Assert.Equal("matched", Assert.Single(r.Tags).Source);
+        Assert.Equal(new[] { "r-long", "r-vet" }, r.Rules.Select(x => x.Id));
+        Assert.All(r.Rules, x => Assert.Equal(new[] { "Harness gate" }, x.Via));
+        var gate = r.Policies.Single(p => p.Id == "p-gate");
+        Assert.True(gate.Applied);
+        Assert.Equal("tag", gate.Source);
+        Assert.Equal(new[] { "full harness gate" }, gate.Via);
+        Assert.Equal("none", r.Policies.Single(p => p.Id == "p-lab").Source);
     }
 
     [Fact]
-    public void Override_RemovesAMatchedTag_AndItsRules()
+    public void NoTagMatch_NoPolicy_NoRule()
     {
-        var rules = new[] { new RuleSpec("r1", "Long-running checks", "text", new[] { "t-gate" }, true) };
-
-        var r = RuleCatalogResolver.Resolve(
-            Subject(), "harness", new[] { FullGate }, new Dictionary<string, bool> { ["t-gate"] = false }, rules);
+        var r = Resolve(Subject("Add a field to the Spec struct."));
 
         Assert.Empty(r.Rules);
-        var tag = Assert.Single(r.Tags);
-        Assert.False(tag.Applied);
-        Assert.Equal("operator-removed", tag.Source);
+        Assert.All(r.Policies, p => Assert.False(p.Applied));
     }
 
     [Fact]
-    public void Override_AddsATagNothingMatched()
+    public void AttachedPolicy_AppliesWithoutATag_AndARuleInTwoPoliciesAppearsOnce()
     {
-        var rules = new[] { new RuleSpec("r1", "Long-running checks", "text", new[] { "t-gate" }, true) };
+        var r = Resolve(policyOverrides: new() { ["p-lab"] = true });
 
-        var r = RuleCatalogResolver.Resolve(
-            Subject("unrelated", repo: "forge"), "harness", new[] { FullGate }, new Dictionary<string, bool> { ["t-gate"] = true }, rules);
-
-        Assert.Single(r.Rules);
-        Assert.Equal("operator-added", Assert.Single(r.Tags).Source);
+        Assert.Equal(new[] { "r-long", "r-vet" }, r.Rules.Select(x => x.Id));
+        Assert.Equal(new[] { "Harness gate", "Lab E2E" }, r.Rules.Single(x => x.Id == "r-long").Via);
+        Assert.Equal("attached", r.Policies.Single(p => p.Id == "p-lab").Source);
     }
 
     [Fact]
-    public void AttachedRule_ReachesTheItem_WithoutAnyTag()
+    public void DetachedPolicy_StaysOut_EvenWhenItsTagApplies()
     {
-        var rules = new[] { new RuleSpec("r9", "Picked by hand", "Use the fake spawner.", new[] { "t-other" }, true) };
-
-        var r = RuleCatalogResolver.Resolve(
-            Subject("unrelated"), "harness", new[] { FullGate }, new Dictionary<string, bool>(), rules,
-            new Dictionary<string, bool> { ["r9"] = true });
-
-        var rule = Assert.Single(r.Rules);
-        Assert.True(rule.Attached);
-        Assert.Equal("attached", Assert.Single(r.Choices).Source);
-        Assert.Contains("[attached by the operator]", RuleCatalogResolver.RenderPromptBlock(r));
-    }
-
-    [Fact]
-    public void DetachedRule_StaysOut_EvenWhenItsTagApplies()
-    {
-        var rules = new[] { new RuleSpec("r1", "Long-running checks", "text", new[] { "t-gate" }, true) };
-
-        var r = RuleCatalogResolver.Resolve(
-            Subject(), "harness", new[] { FullGate }, new Dictionary<string, bool>(), rules,
-            new Dictionary<string, bool> { ["r1"] = false });
+        var r = Resolve(policyOverrides: new() { ["p-gate"] = false });
 
         Assert.Empty(r.Rules);
-        var choice = Assert.Single(r.Choices);
-        Assert.Equal("detached", choice.Source);
-        Assert.Equal(new[] { "full harness gate" }, choice.Via);
+        Assert.Equal("detached", r.Policies.Single(p => p.Id == "p-gate").Source);
     }
 
     [Fact]
-    public void Choices_ListEveryRule_WithWhyItDoesOrDoesNotApply()
+    public void SingleRule_CanBeAttachedAlone_OrKeptOutOfAnAppliedPolicy()
     {
-        var rules = new[]
-        {
-            new RuleSpec("a", "A via tag", "x", new[] { "t-gate" }, true),
-            new RuleSpec("b", "B no tag applies", "x", new[] { "t-other" }, true),
-            new RuleSpec("c", "C disabled", "x", new[] { "t-gate" }, false),
-        };
+        var r = Resolve(ruleOverrides: new() { ["r-fake"] = true, ["r-vet"] = false });
 
-        var r = RuleCatalogResolver.Resolve(
-            Subject(), "harness", new[] { FullGate }, new Dictionary<string, bool>(), rules,
-            new Dictionary<string, bool> { ["c"] = true });
+        Assert.Equal(new[] { "r-long", "r-fake" }, r.Rules.Select(x => x.Id));
+        Assert.True(r.Rules.Single(x => x.Id == "r-fake").Attached);
+        var vet = r.Choices.Single(c => c.Id == "r-vet");
+        Assert.Equal("detached", vet.Source);
+        Assert.Equal(new[] { "Harness gate" }, vet.Policies);
+    }
 
-        Assert.Equal(new[] { "tag", "none", "disabled" }, r.Choices.Select(c => c.Source));
-        Assert.Equal(new[] { "a" }, r.Rules.Select(x => x.Id));
+    [Fact]
+    public void Disabled_PolicyOrRule_ReachesNothing_EvenWhenAttached()
+    {
+        var r = Resolve(
+            policies: new[] { HarnessGate with { Enabled = false } },
+            rules: new[] { LongChecks, ScopedVet, FakeSpawner with { Enabled = false } },
+            ruleOverrides: new() { ["r-fake"] = true });
+
+        Assert.Empty(r.Rules);
+        Assert.Equal("disabled", r.Policies.Single().Source);
+        Assert.Equal("disabled", r.Choices.Single(c => c.Id == "r-fake").Source);
+    }
+
+    [Fact]
+    public void TagOverride_RemovesTheTag_AndWithItThePolicy()
+    {
+        var r = Resolve(tagOverrides: new() { ["t-gate"] = false });
+
+        Assert.Empty(r.Rules);
+        Assert.Equal("operator-removed", Assert.Single(r.Tags).Source);
     }
 
     [Fact]
     public void PromptBlock_NamesEachRuleAndWhyItApplies()
     {
-        var rules = new[] { new RuleSpec("r1", "Long-running checks", "Never run the full gate in an iteration.", new[] { "t-gate" }, true) };
-        var r = RuleCatalogResolver.Resolve(Subject(), "harness", new[] { FullGate }, new Dictionary<string, bool>(), rules);
-
-        var block = RuleCatalogResolver.RenderPromptBlock(r);
+        var block = RuleCatalogResolver.RenderPromptBlock(Resolve(ruleOverrides: new() { ["r-fake"] = true }));
 
         Assert.Contains("STANDING RULES", block);
-        Assert.Contains("1. Long-running checks  [tag full harness gate: matched", block);
+        Assert.Contains("1. Long-running checks  [policy Harness gate (tag full harness gate)]", block);
         Assert.Contains("Never run the full gate in an iteration.", block);
-        Assert.Equal(string.Empty, RuleCatalogResolver.RenderPromptBlock(r with { Rules = Array.Empty<AppliedRule>() }));
+        Assert.Contains("3. Use the fake spawner  [attached by the operator]", block);
         Assert.Equal(string.Empty, RuleCatalogResolver.RenderPromptBlock(null));
+        Assert.Equal(string.Empty, RuleCatalogResolver.RenderPromptBlock(Resolve(Subject("unrelated"))));
     }
 
     [Fact]
-    public void Validation_RejectsBadTagsAndRules()
+    public void Validation_RejectsBadRulesPoliciesAndTags()
     {
         Assert.NotNull(RuleCatalogEndpoints.ValidateTag(new("", null, null, null, null, null)));
         Assert.NotNull(RuleCatalogEndpoints.ValidateTag(new("t", null, null, new() { "docs" }, null, null)));
         Assert.NotNull(RuleCatalogEndpoints.ValidateTag(new("t", null, null, null, null, new() { "(bad" })));
         Assert.Null(RuleCatalogEndpoints.ValidateTag(new("full harness gate", null, new() { "agent-plugin" }, new() { "impl" }, new() { "both lanes" }, new() { "lanes/(win|wsl)" })));
 
-        var known = new[] { "t-gate" };
-        Assert.Null(RuleCatalogEndpoints.ValidateRule(new("title", "text", new(), true), known));
-        Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", "text", new() { "t-missing" }, true), known));
-        Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", " ", new() { "t-gate" }, true), known));
-        Assert.Null(RuleCatalogEndpoints.ValidateRule(new("title", "text", new() { "t-gate" }, null), known));
+        var policies = new[] { "p-gate" };
+        Assert.Null(RuleCatalogEndpoints.ValidateRule(new("title", "text", null, true), policies));
+        Assert.Null(RuleCatalogEndpoints.ValidateRule(new("title", "text", new() { "p-gate" }, null), policies));
+        Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", "text", new() { "p-missing" }, true), policies));
+        Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", " ", null, true), policies));
+
+        var rules = new[] { "r-long" };
+        var tags = new[] { "t-gate" };
+        Assert.Null(RuleCatalogEndpoints.ValidatePolicy(new("Harness gate", null, new() { "r-long" }, new() { "t-gate" }, true), rules, tags));
+        Assert.NotNull(RuleCatalogEndpoints.ValidatePolicy(new(" ", null, null, null, null), rules, tags));
+        Assert.NotNull(RuleCatalogEndpoints.ValidatePolicy(new("p", null, new() { "r-missing" }, null, null), rules, tags));
+        Assert.NotNull(RuleCatalogEndpoints.ValidatePolicy(new("p", null, null, new() { "t-missing" }, null), rules, tags));
     }
 
     [Fact]
@@ -251,22 +230,24 @@ public sealed class RuleCatalogTests
         await Phase108Migration.ApplyAsync(control, db);
 
         db.RuleTags.Add(new RuleTagRow { ProductId = "harness", Name = "full harness gate" });
-        db.CatalogRules.Add(new CatalogRuleRow { ProductId = "harness", Title = "t", Text = "x", TagIdsJson = "[\"a\"]" });
+        db.CatalogRules.Add(new CatalogRuleRow { ProductId = "harness", Title = "t", Text = "x" });
+        db.RulePolicies.Add(new RulePolicyRow { ProductId = "harness", Name = "Harness gate", RuleIdsJson = "[\"r\"]" });
         db.WorkstreamTagOverrides.Add(new WorkstreamTagOverrideRow { WorkstreamId = "ws", TagId = "a", On = true });
         db.WorkItemRules.Add(new WorkItemRuleRow { WorkItemId = "wi", RuleId = "r", On = false });
+        db.WorkItemPolicies.Add(new WorkItemPolicyRow { WorkItemId = "wi", PolicyId = "p", On = true });
         await db.SaveChangesAsync();
 
         Assert.Equal(1, await db.RuleTags.CountAsync());
-        Assert.True((await db.CatalogRules.SingleAsync()).Enabled);
-        Assert.True((await db.WorkstreamTagOverrides.SingleAsync()).On);
+        Assert.True((await db.RulePolicies.SingleAsync()).Enabled);
+        Assert.True((await db.WorkItemPolicies.SingleAsync()).On);
         Assert.False((await db.WorkItemRules.SingleAsync()).On);
 
-        db.RuleTags.Add(new RuleTagRow { ProductId = "harness", Name = "full harness gate" });
+        db.RulePolicies.Add(new RulePolicyRow { ProductId = "harness", Name = "Harness gate" });
         await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
     }
 
     [Fact]
-    public async Task ResolveAsync_ReadsTheWorkstreamItsWorkItemAndTheProductCatalog()
+    public async Task ResolveAsync_ServesWorkstreamsAndStandaloneWorkItems_FromTheProductCatalog()
     {
         await using var conn = new SqliteConnection("Data Source=:memory:");
         await conn.OpenAsync();
@@ -276,63 +257,27 @@ public sealed class RuleCatalogTests
         db.Repos.Add(new RepoRow { Id = "agent-plugin", ProductId = "harness" });
         db.Workstreams.Add(new WorkstreamRow { Id = "ws-3-2", RepoId = "agent-plugin", Name = "Launch Plan", Category = "impl" });
         db.WorkItems.Add(new WorkItemRow { Id = "ws-3-2", Title = "Launch Plan Required for Every Command", DescriptionMd = Stage32Text });
-        var tag = new RuleTagRow
-        {
-            ProductId = "harness",
-            Name = "full harness gate",
-            RepoIdsJson = "[\"agent-plugin\"]",
-            PhrasesJson = "[\"both lanes\"]",
-        };
+        db.WorkItems.Add(new WorkItemRow { Id = "WI-42", RepoId = "agent-plugin", Title = "Fix flaky test", DescriptionMd = "flake", TagsJson = "[\"harness-gate\"]" });
+        var tag = new RuleTagRow { ProductId = "harness", Name = "full harness gate", RepoIdsJson = "[\"agent-plugin\"]", PhrasesJson = "[\"both lanes\", \"harness-gate\"]" };
+        var rule = new CatalogRuleRow { ProductId = "harness", Title = "Long-running checks", Text = "Never run the full gate." };
+        var picked = new CatalogRuleRow { ProductId = "harness", Title = "Picked", Text = "b" };
         db.RuleTags.Add(tag);
-        db.RuleTags.Add(new RuleTagRow { ProductId = "other", Name = "full harness gate" });
-        db.CatalogRules.Add(new CatalogRuleRow
-        {
-            ProductId = "harness",
-            Title = "Long-running checks",
-            Text = "Never run the full gate in an iteration.",
-            TagIdsJson = $"[\"{tag.Id}\"]",
-        });
-        await db.SaveChangesAsync();
-
-        var r = await RuleCatalogResolver.ResolveAsync(db, "ws-3-2", default);
-
-        Assert.NotNull(r);
-        Assert.Equal("harness", r!.ProductId);
-        Assert.Equal("Long-running checks", Assert.Single(r.Rules).Title);
-        Assert.Single(r.Tags);
-        Assert.Null(await RuleCatalogResolver.ResolveAsync(db, "plan-doc:spawn-x:tech-spec.md", default));
-    }
-
-    [Fact]
-    public async Task ResolveAsync_ServesAStandaloneWorkItem_MatchingItsTagsAndAttachedRules()
-    {
-        await using var conn = new SqliteConnection("Data Source=:memory:");
-        await conn.OpenAsync();
-        await using var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseSqlite(conn).Options);
-        await db.Database.EnsureCreatedAsync();
-
-        db.Repos.Add(new RepoRow { Id = "agent-plugin", ProductId = "harness" });
-        db.WorkItems.Add(new WorkItemRow
-        {
-            Id = "WI-42",
-            RepoId = "agent-plugin",
-            Title = "Fix flaky budget store test",
-            DescriptionMd = "TestBudgetStoreAppend fails on Windows.",
-            TagsJson = "[\"harness-gate\"]",
-        });
-        var tag = new RuleTagRow { ProductId = "harness", Name = "gate work", PhrasesJson = "[\"harness-gate\"]" };
-        db.RuleTags.Add(tag);
-        var viaTag = new CatalogRuleRow { ProductId = "harness", Title = "Via tag", Text = "a", TagIdsJson = $"[\"{tag.Id}\"]" };
-        var picked = new CatalogRuleRow { ProductId = "harness", Title = "Picked", Text = "b", TagIdsJson = "[\"none\"]" };
-        db.CatalogRules.AddRange(viaTag, picked);
+        db.CatalogRules.AddRange(rule, picked);
+        db.RulePolicies.Add(new RulePolicyRow { ProductId = "harness", Name = "Harness gate", RuleIdsJson = $"[\"{rule.Id}\"]", TagIdsJson = $"[\"{tag.Id}\"]" });
+        db.RulePolicies.Add(new RulePolicyRow { ProductId = "other", Name = "Harness gate" });
         db.WorkItemRules.Add(new WorkItemRuleRow { WorkItemId = "WI-42", RuleId = picked.Id, On = true });
         await db.SaveChangesAsync();
 
-        var r = await RuleCatalogResolver.ResolveAsync(db, "WI-42", default);
+        var ws = await RuleCatalogResolver.ResolveAsync(db, "ws-3-2", default);
+        Assert.NotNull(ws);
+        Assert.Equal("harness", ws!.ProductId);
+        Assert.Equal("Long-running checks", Assert.Single(ws.Rules).Title);
+        Assert.Single(ws.Policies);
 
-        Assert.NotNull(r);
-        Assert.Equal(new[] { "Picked", "Via tag" }, r!.Rules.Select(x => x.Title));
-        Assert.True(r.Rules.Single(x => x.Title == "Picked").Attached);
-        Assert.Equal("matched", Assert.Single(r.Tags).Source);
+        var item = await RuleCatalogResolver.ResolveAsync(db, "WI-42", default);
+        Assert.Equal(new[] { "Long-running checks", "Picked" }, item!.Rules.Select(x => x.Title));
+        Assert.True(item.Rules.Single(x => x.Title == "Picked").Attached);
+
+        Assert.Null(await RuleCatalogResolver.ResolveAsync(db, "plan-doc:spawn-x:tech-spec.md", default));
     }
 }

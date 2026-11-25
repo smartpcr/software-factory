@@ -1,56 +1,71 @@
-// Phase 108 — the Rules & guardrails page renders the real rule catalog:
-// rule cards say how a rule is attached and where it is ticked by hand; tag
-// cards say what they match and which rules ride on them.
+// Phase 108 — the Rules & guardrails page: policy cards list their rules and
+// how they apply; rule cards say which policies contain them; tag cards say
+// what they match and which policies they apply.
 
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { RuleCatalog } from '@/api/forgeApi';
-import { RuleCard, TagCard } from './PoliciesView';
+import { PolicyCard, RuleCard, TagCard } from './PoliciesView';
 
 const at = '2026-11-25T12:00:00Z';
+const meta = { createdAt: at, createdBy: 'u', updatedAt: at };
 const catalog: RuleCatalog = {
   productId: 'harness',
   tags: [{
     id: 't-gate', name: 'full harness gate', description: 'Needs the full gate or a lane run',
-    repoIds: ['agent-plugin'], categories: [], phrases: ['both lanes'], patterns: ['lanes/(win|wsl)'],
-    createdAt: at, createdBy: 'u', updatedAt: at,
+    repoIds: ['agent-plugin'], categories: [], phrases: ['both lanes'], patterns: ['lanes/(win|wsl)'], ...meta,
   }],
   rules: [
-    { id: 'r1', title: 'Long-running checks', text: 'Never run the full gate in an iteration.', tagIds: ['t-gate'], enabled: true, createdAt: at, createdBy: 'u', updatedAt: at },
-    { id: 'r2', title: 'Use the fake spawner', text: 'x', tagIds: [], enabled: false, createdAt: at, createdBy: 'u', updatedAt: at },
+    { id: 'r-long', title: 'Long-running checks', text: 'Never run the full gate in an iteration.', enabled: true, ...meta },
+    { id: 'r-vet', title: 'Scoped vet', text: 'Vet only changed packages.', enabled: false, ...meta },
+    { id: 'r-fake', title: 'Use the fake spawner', text: 'x', enabled: true, ...meta },
   ],
-  usage: { r2: { attached: 3, detached: 0 }, r1: { attached: 0, detached: 2 } },
+  policies: [
+    { id: 'p-gate', name: 'Harness gate', description: 'Gate work', ruleIds: ['r-long', 'r-vet'], tagIds: ['t-gate'], enabled: true, ...meta },
+    { id: 'p-lab', name: 'Lab E2E', description: '', ruleIds: ['r-long'], tagIds: [], enabled: false, ...meta },
+  ],
+  ruleUsage: { 'r-fake': { attached: 3, detached: 0 } },
+  policyUsage: { 'p-gate': { attached: 1, detached: 2 } },
 };
 
-describe('RuleCard', () => {
-  it('shows a tagged rule as automatic, with its tag and hand overrides', () => {
-    const out = renderToStaticMarkup(<RuleCard rule={catalog.rules[0]} catalog={catalog} onToggle={() => undefined} onEdit={() => undefined} />);
-    expect(out).toContain('data-kind="tagged"');
-    expect(out).toContain('auto');
-    expect(out).toContain('tag full harness gate matches');
-    expect(out).toContain('unticked on <span class="num">2</span>');
-    expect(out).toContain('aria-pressed="true"');
-    expect(out).toContain('Long-running checks: enabled, click to disable');
+describe('PolicyCard', () => {
+  it('lists the policy rules in order and how it applies', () => {
+    const out = renderToStaticMarkup(<PolicyCard policy={catalog.policies[0]} catalog={catalog} onToggle={() => undefined} />);
+    expect(out).toContain('Harness gate');
+    expect(out).toContain('<li>Long-running checks</li>');
+    expect(out).toContain('Scoped vet<span class="policy-card-off"> (off)</span>');
+    expect(out).toContain('where tag full harness gate matches, or where picked');
+    expect(out).toContain('picked on <span class="num">1</span> work item');
+    expect(out).toContain('removed on <span class="num">2</span>');
+    expect(out).toContain('Harness gate: on, click to turn off');
   });
 
-  it('shows a hand-picked rule, disabled, with where it is ticked', () => {
-    const out = renderToStaticMarkup(<RuleCard rule={catalog.rules[1]} catalog={catalog} onToggle={() => undefined} />);
-    expect(out).toContain('data-kind="manual"');
+  it('shows a hand-only policy that is off', () => {
+    const out = renderToStaticMarkup(<PolicyCard policy={catalog.policies[1]} catalog={catalog} onToggle={() => undefined} />);
     expect(out).toContain('by hand');
-    expect(out).toContain('ticked on a work item');
-    expect(out).toContain('ticked on <span class="num">3</span>');
-    expect(out).toContain('disabled');
+    expect(out).toContain('where picked on a work item');
     expect(out).toContain('aria-pressed="false"');
   });
 });
 
+describe('RuleCard', () => {
+  it('names the policies that contain the rule', () => {
+    expect(renderToStaticMarkup(<RuleCard rule={catalog.rules[0]} catalog={catalog} />)).toContain('in Harness gate, Lab E2E');
+  });
+
+  it('shows a rule in no policy and where it is picked on its own', () => {
+    const out = renderToStaticMarkup(<RuleCard rule={catalog.rules[2]} catalog={catalog} />);
+    expect(out).toContain('in no policy');
+    expect(out).toContain('picked on <span class="num">3</span> work items');
+  });
+});
+
 describe('TagCard', () => {
-  it('shows scope, matchers and the rules on the tag', () => {
+  it('shows scope, matchers and the policies it applies', () => {
     const out = renderToStaticMarkup(<TagCard tag={catalog.tags[0]} catalog={catalog} onCheck={() => undefined} />);
     expect(out).toContain('agent-plugin · every workstream');
-    expect(out).toContain('text has &quot;both lanes&quot; | /lanes/(win|wsl)/');
-    expect(out).toContain('1 rule: Long-running checks');
-    expect(out).toContain('Check matches');
+    expect(out).toContain('text has &quot;both lanes&quot; or /lanes/(win|wsl)/');
+    expect(out).toContain('applies Harness gate');
   });
 
   it('lists the workstreams a checked tag matches', () => {
