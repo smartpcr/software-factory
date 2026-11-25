@@ -200,7 +200,14 @@ public sealed record AgentEvent(
     /// model/backend didn't emit reasoning (non-reasoning model, BYOM
     /// Anthropic/OpenAI, CLI/Claude paths).
     /// </summary>
-    string? ReasoningText = null);
+    string? ReasoningText = null,
+    /// <summary>
+    /// True on a <see cref="AgentEventKind.Finished"/> event when the
+    /// <see cref="WaitOnlyGuard"/> ended the turn because the agent was only
+    /// waiting on background work. The work is graded like any finished turn,
+    /// but an iteration that ended this way is not a "no progress" iteration.
+    /// </summary>
+    bool EndedWhileWaiting = false);
 
 /// <summary>
 /// Phase 11.1 — handle returned by <see cref="IAgentRunner.StartAsync"/>.

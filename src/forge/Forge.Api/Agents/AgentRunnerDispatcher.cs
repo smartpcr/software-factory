@@ -1385,6 +1385,13 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         string? lastToolName = null;
         var wasStuckOnTool = false;
 
+        // Wait-only guard: ends the turn once it has done nothing but wait on
+        // background work for Forge:Agents:WaitOnlyTimeout, so the iteration
+        // finishes and is graded instead of hitting the hard timeout.
+        var waitGuard = new WaitOnlyGuard(this.options.Value.WaitOnlyTimeout, DateTimeOffset.UtcNow);
+        var endedWhileWaiting = false;
+        var waitedBeforeEnd = TimeSpan.Zero;
+
         // 2026-05-20 — runaway-output guard shared by both assistant-content
         // cases in the event subscription below. Trips at most once: sets the
         // flag + failReason and signals completion so the consumer loop drains
@@ -1769,13 +1776,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             {
                                 toolStartTicks[tStart.Data.ToolCallId!] = DateTimeOffset.UtcNow.Ticks;
                             }
+                            var toolArgsJson = tStart.Data.Arguments is null
+                                ? null
+                                : JsonSerializer.Serialize(tStart.Data.Arguments);
+                            waitGuard.OnToolStart(tStart.Data.ToolCallId, tStart.Data.ToolName, toolArgsJson, DateTimeOffset.UtcNow);
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolCall,
                                 DateTimeOffset.UtcNow,
                                 ToolName: tStart.Data.ToolName,
-                                ToolPayload: tStart.Data.Arguments is null
-                                    ? null
-                                    : JsonSerializer.Serialize(tStart.Data.Arguments),
+                                ToolPayload: toolArgsJson,
                                 ToolCallId: tStart.Data.ToolCallId,
                                 ParentToolCallId: tStart.Data.ParentToolCallId,
                                 McpServerName: tStart.Data.McpServerName));
@@ -1786,6 +1795,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             // Phase 64 — clear the per-tool watchdog stamp now
                             // that the tool returned.
                             Interlocked.Exchange(ref lastToolStartTicks, 0);
+                            waitGuard.OnToolComplete(tEnd.Data.ToolCallId, DateTimeOffset.UtcNow);
                             turnCount++;
                             // 2026-05-16 — Phase 72: compute durationMs from
                             // matching start tick, and extract a typed exit
@@ -1961,6 +1971,38 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
                         var now = DateTimeOffset.UtcNow;
 
+                        // Wait-only guard. The turn has done nothing but wait on
+                        // background work it started (a test lane, a long build)
+                        // for WaitOnlyTimeout. Abort the turn so the session goes
+                        // idle — the background processes are left running — and
+                        // finish the invocation normally, so the iteration is
+                        // committed and graded rather than timing out. Without
+                        // the abort the pooled session keeps running the old
+                        // turn and the next iteration's prompt queues behind it.
+                        if (waitGuard.ShouldEnd(now, out var waited))
+                        {
+                            this.log.LogWarning(
+                                "Copilot SDK turn only waited for {Waited} (limit {Limit}) — ending the turn so the iteration is graded",
+                                waited, waitGuard.Limit);
+                            waitedBeforeEnd = waited;
+                            endedWhileWaiting = true;
+                            if (session is { } waitingSession)
+                            {
+                                try
+                                {
+                                    using var abortCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                                    await waitingSession.AbortAsync(abortCts.Token);
+                                }
+                                catch (Exception abortEx)
+                                {
+                                    this.log.LogWarning(abortEx, "Copilot SDK AbortAsync failed after the wait-only guard tripped");
+                                }
+                            }
+
+                            done.TrySetResult();
+                            return;
+                        }
+
                         // Phase 64 — per-tool-call check first. A long-running
                         // tool subprocess (e.g. a hung `dotnet build`) keeps
                         // ToolExecutionStartEvent in flight without a matching
@@ -2097,6 +2139,36 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                     try { await client.DisposeAsync(); } catch { /* best-effort */ }
                 }
             }
+        }
+
+        // Checked first: the abort can surface as a session error, and a
+        // hard timeout racing the guard must not discard the work either.
+        // Neither is a failure here — the turn was ended on purpose.
+        var waitEndNote = endedWhileWaiting
+            ? $"\n\n[Forge] This iteration was ended after {waitedBeforeEnd.TotalMinutes:0} min in which the agent only waited on "
+                + "background work. Background processes keep running. In the next iteration, read their output from the log "
+                + "files they write instead of waiting inside the iteration."
+            : null;
+        if (waitEndNote is not null)
+        {
+            yield return new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: waitEndNote);
+            if (outputTokens == 0) outputTokens = Math.Max(1, contentBuilder.Length / 4);
+            if (inputTokens == 0) inputTokens = Math.Max(1, prompt.Length / 4);
+            var waitModelInfo = this.models.Find(context.Model);
+            yield return new AgentEvent(
+                AgentEventKind.Finished,
+                DateTimeOffset.UtcNow,
+                InputTokens: inputTokens,
+                OutputTokens: outputTokens,
+                CostUsd: ComputeCost(waitModelInfo, inputTokens, outputTokens),
+                SessionId: capturedSessionId,
+                CacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : null,
+                CacheWriteTokens: cacheWriteTokens > 0 ? cacheWriteTokens : null,
+                ReasoningTokens: reasoningTokens > 0 ? reasoningTokens : null,
+                ConversationTokens: conversationTokensLatest > 0 ? conversationTokensLatest : null,
+                ReasoningText: reasoningBuilder.Length > 0 ? reasoningBuilder.ToString() : null,
+                EndedWhileWaiting: true);
+            yield break;
         }
 
         if (wasStuckOnTool)

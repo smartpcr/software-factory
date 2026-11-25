@@ -8115,6 +8115,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // assigned to a qa-e2e workstream) where the model
             // self-vetoes via its soul prompt.
             long toolCallCount = 0;
+            // Set when the runner's wait-only guard ended the turn: the agent
+            // was only waiting on background work it started. The iteration is
+            // graded normally but does not count toward the no-progress stall.
+            var endedWhileWaiting = false;
             // Phase 54 -- capture per-AssistantUsageEvent samples so the
             // per-invocation row on agent_usage retains the sub-invocation
             // curve for richer UI later. Cleared on each invocation; null
@@ -8180,6 +8184,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 {
                     failureReason = evt.Error;
                 }
+                if (evt.Kind == AgentEventKind.Finished && evt.EndedWhileWaiting)
+                {
+                    endedWhileWaiting = true;
+                }
                 // Phase 88 — tool-call counter for the DeliverableLoop refusal guard.
                 if (evt.Kind == AgentEventKind.ToolCall)
                 {
@@ -8199,6 +8207,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         atUtc = evt.At,
                     });
                 }
+            }
+
+            if (endedWhileWaiting)
+            {
+                await this.taskChannel.EmitAsync(workItemId, "task.generator.ended-waiting", new
+                {
+                    iter,
+                    invocationId = invocation.InvocationId,
+                    note = "The agent only waited on background work it started, so Forge ended the turn and is grading the iteration instead of letting it time out.",
+                }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
             }
 
             // 2026-05-13 root-cause fix -- when the dispatcher emitted a
@@ -8446,7 +8464,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     changedCount = -1;
                 }
 
-                if (changedCount == 0)
+                // A turn the wait-only guard ended was waiting on background
+                // work, not stuck: it neither extends nor resets the streak.
+                if (changedCount == 0 && !endedWhileWaiting)
                 {
                     consecutiveNoChange++;
                     await this.taskChannel.EmitAsync(workItemId, "task.no-progress.detected", new

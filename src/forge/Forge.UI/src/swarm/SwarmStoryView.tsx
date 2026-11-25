@@ -13,6 +13,7 @@ import { SwarmDetailPanel, type DetailTab } from './SwarmDetailPanel';
 import { ChromeCollapseButton } from '@/shell/ChromeCollapseButton';
 import { Toaster } from '@/board/Toaster';
 import { ChatRowControl } from './plugins/ChatRowControl';
+import { StoryRulesButton } from './StoryRulesButton';
 
 /** Map the StorySpawn lifecycle phase to one of the three swarm-control modes. */
 function modeForPhase(p: StorySpawnPhase): SwarmMode {
@@ -418,6 +419,7 @@ export function SwarmStoryView() {
                   {detail.spawn.phase === 'paused' ? '▶ RESUME' : '⏸ PAUSE'}
                 </button>
               )}
+              <StoryRulesButton storyId={storyId} />
             </div>
           </div>
           {(() => {

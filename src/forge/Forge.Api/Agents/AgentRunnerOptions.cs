@@ -54,6 +54,19 @@ public sealed class AgentRunnerOptions
     /// </summary>
     public TimeSpan PerTurnTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
+    /// <summary>
+    /// Copilot SDK wait-only guard (<see cref="WaitOnlyGuard"/>). When a
+    /// generator turn has done nothing but wait on background work it started
+    /// (for example 10-minute <c>read_powershell</c> polls on a test lane) for
+    /// this long, the dispatcher aborts the turn and finishes the invocation
+    /// normally, so the iteration is committed and graded instead of burning
+    /// its wall-clock budget and failing with a hard timeout. The background
+    /// processes keep running; the next iteration reads their logs.
+    /// <para>Default 15 min. Zero disables the guard. Bind via
+    /// <c>Forge:Agents:WaitOnlyTimeout</c>.</para>
+    /// </summary>
+    public TimeSpan WaitOnlyTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
     /// <summary>Max retries on 429 / 503 / 529.</summary>
     public int MaxRetries { get; set; } = 3;
 
