@@ -134,6 +134,13 @@ public class ProductDbContext : DbContext
 
     public DbSet<WorkstreamDepRow> WorkstreamDeps => this.Set<WorkstreamDepRow>();
 
+    // Phase 108 — product rule catalog.
+    public DbSet<RuleTagRow> RuleTags => this.Set<RuleTagRow>();
+
+    public DbSet<CatalogRuleRow> CatalogRules => this.Set<CatalogRuleRow>();
+
+    public DbSet<WorkstreamTagOverrideRow> WorkstreamTagOverrides => this.Set<WorkstreamTagOverrideRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         // Phase G — product entities only. Control entities (users, crews,

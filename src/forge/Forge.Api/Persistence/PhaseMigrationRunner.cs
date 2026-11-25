@@ -135,6 +135,8 @@ public sealed class PhaseMigrationRunner
         98,
         99,
         100, 101, 102, 103, 104, 105, 106,
+        // Phase 108 — product rule catalog. New tables; no ordering dependency.
+        108,
     };
 
     private readonly IServiceScopeFactory scopeFactory;

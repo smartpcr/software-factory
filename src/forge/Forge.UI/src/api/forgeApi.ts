@@ -99,6 +99,80 @@ export interface OperatorPrompt {
   dismissedAt: string | null;
 }
 
+/** Phase 108 — a tag in a product's rule catalog and the workstreams it applies to. */
+export interface RuleTagInput {
+  name: string;
+  description: string;
+  /** Empty = every repo of the product. */
+  repoIds: string[];
+  /** `impl`, `qa-e2e`; empty = both. */
+  categories: string[];
+  /** Case-insensitive phrases over the stage text; any one is enough. */
+  phrases: string[];
+  /** Case-insensitive regular expressions over the stage text; any one is enough. */
+  patterns: string[];
+}
+
+export interface RuleTag extends RuleTagInput {
+  id: string;
+  createdAt: string;
+  createdBy: string | null;
+  updatedAt: string;
+}
+
+/** Phase 108 — a standing rule; it reaches every workstream one of its tags applies to. */
+export interface CatalogRuleInput {
+  title: string;
+  text: string;
+  tagIds: string[];
+  enabled: boolean;
+}
+
+export interface CatalogRule extends CatalogRuleInput {
+  id: string;
+  createdAt: string;
+  createdBy: string | null;
+  updatedAt: string;
+}
+
+export interface RuleCatalog {
+  productId: string;
+  tags: RuleTag[];
+  rules: CatalogRule[];
+}
+
+/** `matched` / `no-match` when the tag's matchers decided; `operator-added` / `operator-removed` when an override did. */
+export type AppliedTagSource = 'matched' | 'no-match' | 'operator-added' | 'operator-removed';
+
+export interface AppliedTag {
+  tagId: string;
+  name: string;
+  applied: boolean;
+  source: AppliedTagSource;
+  reason: string;
+}
+
+export interface WorkstreamRules {
+  workstreamId: string;
+  productId: string;
+  tags: AppliedTag[];
+  rules: Array<{ id: string; title: string; text: string; via: string[] }>;
+}
+
+export interface RuleTagMatch {
+  workstreamId: string;
+  name: string;
+  category: string;
+  status: string;
+  applied: boolean;
+  source: AppliedTagSource;
+  reason: string;
+}
+
+function ruleCatalogPath(productId: string, rest = ''): string {
+  return `/api/products/${encodeURIComponent(productId)}/rule-catalog${rest}`;
+}
+
 export interface StorySpawn {
   id: string;
   /** Explicit ownership from the list response, including the all-products view. */
@@ -1597,6 +1671,75 @@ export const forgeApi = {
     return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/pins/${encodeURIComponent(pinId)}`, {
       method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  // ── Phase 108 — product rule catalog ───────────────────────────────────
+  // Tags say which workstreams they apply to; rules attached to a tag go into
+  // the generator prompt of every workstream the tag applies to.
+
+  async getRuleCatalog(productId: string): Promise<RuleCatalog> {
+    return fetchJson(ruleCatalogPath(productId));
+  },
+
+  async addRuleTag(productId: string, tag: RuleTagInput): Promise<RuleTag> {
+    return fetchJson(ruleCatalogPath(productId, '/tags'), {
+      method: 'POST', body: JSON.stringify(tag), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async updateRuleTag(productId: string, tagId: string, tag: RuleTagInput): Promise<RuleTag> {
+    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}`), {
+      method: 'PUT', body: JSON.stringify(tag), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async deleteRuleTag(productId: string, tagId: string): Promise<RuleCatalog> {
+    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}`), {
+      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** How one tag stands on every workstream of the product, or of one story. */
+  async listRuleTagMatches(productId: string, tagId: string, storyId?: string): Promise<RuleTagMatch[]> {
+    const q = storyId ? `?storyId=${encodeURIComponent(storyId)}` : '';
+    return fetchJson(ruleCatalogPath(productId, `/tags/${encodeURIComponent(tagId)}/matches${q}`));
+  },
+
+  async addCatalogRule(productId: string, rule: CatalogRuleInput): Promise<CatalogRule> {
+    return fetchJson(ruleCatalogPath(productId, '/rules'), {
+      method: 'POST', body: JSON.stringify(rule), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async updateCatalogRule(productId: string, ruleId: string, rule: CatalogRuleInput): Promise<CatalogRule> {
+    return fetchJson(ruleCatalogPath(productId, `/rules/${encodeURIComponent(ruleId)}`), {
+      method: 'PUT', body: JSON.stringify(rule), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async deleteCatalogRule(productId: string, ruleId: string): Promise<void> {
+    await fetchJson(ruleCatalogPath(productId, `/rules/${encodeURIComponent(ruleId)}`), {
+      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** Every catalog tag's standing on one workstream, and the rules that reach it. */
+  async getWorkstreamRules(productId: string, workstreamId: string): Promise<WorkstreamRules> {
+    return fetchJson(ruleCatalogPath(productId, `/workstreams/${encodeURIComponent(workstreamId)}`));
+  },
+
+  /** `on: true` adds the tag to the workstream, `false` removes it; either wins over the tag's matchers. */
+  async setWorkstreamTag(productId: string, workstreamId: string, tagId: string, on: boolean): Promise<WorkstreamRules> {
+    return fetchJson(ruleCatalogPath(productId, `/workstreams/${encodeURIComponent(workstreamId)}/tags/${encodeURIComponent(tagId)}`), {
+      method: 'PUT', body: JSON.stringify({ on }), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** Drops the operator's decision on a tag, so its matchers decide again. */
+  async clearWorkstreamTag(productId: string, workstreamId: string, tagId: string): Promise<WorkstreamRules> {
+    return fetchJson(ruleCatalogPath(productId, `/workstreams/${encodeURIComponent(workstreamId)}/tags/${encodeURIComponent(tagId)}`), {
+      method: 'DELETE', headers: { 'X-Forge-User': writerHeader() },
     });
   },
 

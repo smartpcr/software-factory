@@ -419,7 +419,7 @@ export function SwarmStoryView() {
                   {detail.spawn.phase === 'paused' ? '▶ RESUME' : '⏸ PAUSE'}
                 </button>
               )}
-              <StoryRulesButton storyId={storyId} />
+              <StoryRulesButton storyId={storyId} productId={detail.spawn.productId || activeProductId || null} />
             </div>
           </div>
           {(() => {

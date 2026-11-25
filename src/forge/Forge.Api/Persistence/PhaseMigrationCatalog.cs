@@ -368,6 +368,11 @@ public static class PhaseMigrationCatalog
         // Phase 107 — per-workstream chat conversations + All-products connections.
         new PhaseMigrationSpec(107, PhaseMigrationKind.Control,
             ControlTables: new[] { "chat_connections", "chat_subscriptions", "chat_conversation_bindings" }, ProductTables: Array.Empty<string>()),
+        // Phase 108 — product rule catalog: tags, rules, per-workstream tag
+        // overrides. Product-only, new tables, no ordering dependency.
+        new PhaseMigrationSpec(108, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "catalog_rules", "rule_tags", "workstream_tag_overrides" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

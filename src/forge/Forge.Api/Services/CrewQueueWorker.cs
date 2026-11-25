@@ -1579,7 +1579,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 try
                 {
                     var pinsBlock = await Forge.Api.Services.Stories.CrewStoryArtifactStrategy
-                        .BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt);
+                        .BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt, this.logger);
                     var notesBlock = string.IsNullOrEmpty(worktreePath)
                         ? string.Empty
                         : await Forge.Api.Services.Stories.CrewStoryArtifactStrategy

@@ -169,6 +169,22 @@ public static class DbModelProduct
             .HasIndex(x => new { x.WorkstreamId, x.DismissedAt })
             .HasDatabaseName("IX_operator_prompts_ws_dismissed");
 
+        // Phase 108 — product rule catalog (tags, rules, per-workstream tag overrides).
+        mb.Entity<RuleTagRow>().ToTable("rule_tags").HasKey(x => x.Id);
+        mb.Entity<RuleTagRow>()
+            .HasIndex(x => new { x.ProductId, x.Name })
+            .IsUnique()
+            .HasDatabaseName("IX_rule_tags_product_name");
+        mb.Entity<CatalogRuleRow>().ToTable("catalog_rules").HasKey(x => x.Id);
+        mb.Entity<CatalogRuleRow>()
+            .HasIndex(x => x.ProductId)
+            .HasDatabaseName("IX_catalog_rules_product");
+        mb.Entity<WorkstreamTagOverrideRow>().ToTable("workstream_tag_overrides").HasKey(x => x.Id);
+        mb.Entity<WorkstreamTagOverrideRow>()
+            .HasIndex(x => new { x.WorkstreamId, x.TagId })
+            .IsUnique()
+            .HasDatabaseName("IX_workstream_tag_overrides_ws_tag");
+
         // Phase 17.1 — persistent task queue + per-row history.
         mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);
         mb.Entity<TaskQueueRow>().HasIndex(x => new { x.TargetKind, x.TargetId, x.State, x.PriorityRank, x.EnqueuedAt });

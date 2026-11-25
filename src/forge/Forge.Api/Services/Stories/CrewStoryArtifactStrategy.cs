@@ -686,7 +686,41 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return park;
     }
 
-    internal static async Task<string> BuildDecisionPinsBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
+    /// <summary>
+    /// The operator's binding directives for one iteration of
+    /// <paramref name="workItemId"/>: the story spawn's decision pins, then
+    /// (for a workstream) the rules its tags attach from the product rule
+    /// catalog (Phase 108, <see cref="Forge.Api.Services.Rules.RuleCatalogResolver"/>).
+    /// Read fresh on every iteration, so a rule or tag change reaches each
+    /// workstream on its next iteration. A catalog failure is logged and the
+    /// prompt goes on without catalog rules; it never fails the iteration.
+    /// </summary>
+    internal static async Task<string> BuildDecisionPinsBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct, ILogger? logger = null)
+    {
+        var pins = await BuildSpawnPinsBlockAsync(scopeFactory, workItemId, ct);
+        var rules = string.Empty;
+        if (!string.IsNullOrEmpty(workItemId) && !workItemId.StartsWith("plan-doc:", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var resolved = await Forge.Api.Services.Rules.RuleCatalogResolver.ResolveAsync(db, workItemId, ct);
+                rules = Forge.Api.Services.Rules.RuleCatalogResolver.RenderPromptBlock(resolved);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger?.LogWarning(ex,
+                    "Rule catalog could not be resolved for {WorkItemId}; this iteration's prompt has no catalog rules.",
+                    workItemId);
+            }
+        }
+
+        if (pins.Length == 0) return rules;
+        return rules.Length == 0 ? pins : pins + Environment.NewLine + rules;
+    }
+
+    private static async Task<string> BuildSpawnPinsBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(workItemId)) return string.Empty;
 
@@ -7691,7 +7725,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             // generator turn. Cheap query -- one row read + JSON parse.
             // Filtered to pins scoped to this work item (workItemId match)
             // OR globally-scoped pins (workItemId == null).
-            var decisionPinsBlock = await BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt);
+            var decisionPinsBlock = await BuildDecisionPinsBlockAsync(this.scopeFactory, workItemId, iterCt, this.logger);
 
             // Phase 55 (docs/forge/sloppy_guard.md Phase A) -- read the
             // agent's own working notes from the prior iteration. Each

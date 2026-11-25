@@ -20,9 +20,11 @@ import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
 import { OpenQuestionsWizard } from './OpenQuestionsWizard';
 import { WorktreePane } from './WorktreePane';
+import { WorkstreamRulesSection } from './WorkstreamRulesSection';
 import { useTaskLive, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { useProductsStore } from '@/state/useProductsStore';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useChromeCollapseStore } from '@/state/useChromeCollapseStore';
 import { ChromeCollapseButton } from '@/shell/ChromeCollapseButton';
@@ -1200,6 +1202,8 @@ interface AgentOverviewProps {
 function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps) {
   const showToast = useToastStore((s) => s.show);
   const isWorkstream = selection.kind === 'phase';
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const rulesProductId = detail.spawn.productId || activeProductId;
 
   // ── Doc-specific state (loaded from artifact iterations API) ──
   const [docGen, setDocGen] = useState<{ agentId: string; name: string; model: string | null } | null>(null);
@@ -1450,6 +1454,11 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
           </span>
         )}
       </div>
+
+      {/* Phase 108 — the workstream's tags and the catalog rules they bring. */}
+      {isWorkstream && selection.id && rulesProductId && (
+        <WorkstreamRulesSection productId={rulesProductId} workstreamId={selection.id} />
+      )}
 
       {/* Prompt role switcher */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 8, borderBottom: '1px solid var(--sc-border)' }}>

@@ -166,6 +166,9 @@ public static class DbBoundary
         new DbTableSpec("product_area_paths", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         new DbTableSpec("product_iterations", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         new DbTableSpec("product_saved_prefixes", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
+        // Phase 108 — product rule catalog.
+        new DbTableSpec("rule_tags", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
+        new DbTableSpec("catalog_rules", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         new DbTableSpec("product_stories", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         // epics has nullable ProductId; orphan rows (NULL) get routed to the
         // default product by the apply step.
@@ -209,6 +212,8 @@ public static class DbBoundary
         // Phase 92 — human operator steering prompts, one row per directive,
         // scoped to a single workstream (WorkstreamId == workstream/work-item id).
         new DbTableSpec("operator_prompts", DbKind.Product, PartitionStrategy.ViaWorkstreamId, "WorkstreamId"),
+        // Phase 108 — the operator's tag decision for one workstream.
+        new DbTableSpec("workstream_tag_overrides", DbKind.Product, PartitionStrategy.ViaWorkstreamId, "WorkstreamId"),
 
         // ── Product DB — via PrId chain ──────────────────────────────────
         new DbTableSpec("pr_comments", DbKind.Product, PartitionStrategy.ViaPrId, "PrId"),

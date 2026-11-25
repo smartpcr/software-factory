@@ -1138,6 +1138,8 @@ app.MapTimelineEndpoints();
 app.MapWorkstreamsEndpoints();
 // forge_implementation.md Phase 28 — story-driven spawn endpoints.
 app.MapStoriesEndpoints();
+// Phase 108 — product rule catalog (tags, rules, per-workstream tag overrides).
+app.MapRuleCatalogEndpoints();
 app.MapPrsEndpoints();
 app.MapProvidersEndpoints();
 app.MapWebhooksEndpoints();
