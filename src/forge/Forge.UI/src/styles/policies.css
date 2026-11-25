@@ -229,3 +229,107 @@
 @media (max-width: 1100px) {
   .policies-wrap { grid-template-columns: 1fr; }
 }
+
+/* Phase 108 — the real rule catalog on this page. Small informative text uses
+   --text-secondary: --text-tertiary is about 3.3:1 on both themes, under the
+   4.5:1 WCAG AA minimum. Disabled cards stay readable (no fading). */
+.policies-lane-title { margin: 0; }
+.policies-lane-title .num,
+.policies-lane-add,
+.policy-card-eyebrow,
+.policy-card-eyebrow .sep,
+.policy-card-trigger .key,
+.policy-card-foot { color: var(--text-secondary); }
+.policy-card-eyebrow .sep { opacity: 1; }
+.policies-lane-title .num,
+.policies-lane-add { font-size: 11px; }
+.policy-card-eyebrow { font-size: 10.5px; }
+.policy-card-foot { font-size: 11px; gap: 8px; flex-wrap: wrap; }
+.policy-card-trigger { font-size: 11.5px; }
+.policy-card-body { font-size: 12.5px; color: var(--text-primary); }
+.policy-card-title { margin: 0; }
+.policy-card { cursor: default; }
+.policy-card:hover { transform: none; }
+.policy-card[data-disabled='true'] {
+  opacity: 1;
+  background: var(--bg-base);
+  border-style: dashed;
+}
+.policy-card[data-kind='tagged']::before { background: var(--info); }
+.policy-card[data-kind='manual']::before { background: var(--warning); }
+.policy-card[data-kind='tag']::before { background: var(--text-secondary); }
+.policy-toggle:focus-visible,
+.policy-card-actions button:focus-visible,
+.policy-card-more:focus-visible,
+.policies-lane-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.policy-toggle:disabled { cursor: default; }
+
+.policies-lane-sub {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.policies-howto {
+  margin: 0 28px 14px;
+  padding: 10px 14px 10px 32px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.policies-note,
+.policies-error,
+.policies-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.policies-note { margin: 0 28px 14px; }
+.policies-error { margin: 0 28px 14px; color: var(--danger); }
+
+.policy-card-body--rule {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.policy-card-body--rule.is-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.policy-card-more {
+  align-self: flex-start;
+  margin: -4px 0 0 6px;
+  padding: 0;
+  font-size: 11px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.policy-card-actions { display: inline-flex; gap: 6px; margin-left: auto; }
+.policy-card-actions button {
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.policy-card-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.policy-card-actions button.danger { color: var(--danger); }
+.policy-card-actions button:disabled { opacity: 0.6; cursor: default; }
+.policy-card-matches {
+  margin-left: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.policy-card-matches ul { margin: 4px 0 0; padding-left: 16px; max-height: 220px; overflow: auto; }
+.policy-card-matches strong { color: var(--text-primary); font-weight: 600; }

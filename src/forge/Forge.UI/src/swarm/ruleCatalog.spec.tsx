@@ -153,6 +153,6 @@ describe('WorkItemRulesView', () => {
   });
 
   it('points to the Rules page when the catalog is empty', () => {
-    expect(render({ ...rules, tags: [], rules: [], choices: [] })).toContain('href="/rules"');
+    expect(render({ ...rules, tags: [], rules: [], choices: [] })).toContain('href="/policies"');
   });
 });

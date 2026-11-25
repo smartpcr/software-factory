@@ -125,7 +125,7 @@ export function RuleList({ catalog, busy, onEdit, onDelete, onToggle }: {
   );
 }
 
-function TagEditor({ initial, busy, onSave, onCancel }: {
+export function TagEditor({ initial, busy, onSave, onCancel }: {
   initial: RuleTagInput;
   busy: boolean;
   onSave: (tag: RuleTagInput) => void;
@@ -176,7 +176,7 @@ function TagEditor({ initial, busy, onSave, onCancel }: {
   );
 }
 
-function RuleEditor({ initial, tags, busy, onSave, onCancel }: {
+export function RuleEditor({ initial, tags, busy, onSave, onCancel }: {
   initial: CatalogRuleInput;
   tags: RuleTag[];
   busy: boolean;

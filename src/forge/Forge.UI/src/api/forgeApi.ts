@@ -143,6 +143,8 @@ export interface RuleCatalog {
   productId: string;
   tags: RuleTag[];
   rules: CatalogRule[];
+  /** Per rule id: work items the operator attached it to / detached it from. Missing = none. */
+  usage?: Record<string, { attached: number; detached: number }>;
 }
 
 /** `matched` / `no-match` when the tag's matchers decided; `operator-added` / `operator-removed` when an override did. */

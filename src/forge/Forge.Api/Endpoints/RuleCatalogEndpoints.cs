@@ -81,7 +81,14 @@ public static class RuleCatalogEndpoints
         string? CreatedBy,
         DateTimeOffset UpdatedAt);
 
-    public sealed record CatalogDto(string ProductId, IReadOnlyList<TagDto> Tags, IReadOnlyList<RuleDto> Rules);
+    /// <summary>How many work items an operator attached a rule to, or detached it from.</summary>
+    public sealed record RuleUsageDto(int Attached, int Detached);
+
+    public sealed record CatalogDto(
+        string ProductId,
+        IReadOnlyList<TagDto> Tags,
+        IReadOnlyList<RuleDto> Rules,
+        IReadOnlyDictionary<string, RuleUsageDto> Usage);
 
     public sealed record TagMatchDto(string WorkstreamId, string Name, string Category, string Status, bool Applied, string Source, string Reason);
 
@@ -123,10 +130,19 @@ public static class RuleCatalogEndpoints
     {
         var tags = await db.RuleTags.AsNoTracking().Where(t => t.ProductId == productId).ToListAsync();
         var rules = await db.CatalogRules.AsNoTracking().Where(r => r.ProductId == productId).ToListAsync();
+        var ruleIds = rules.Select(r => r.Id).ToList();
+        var picks = await db.WorkItemRules.AsNoTracking()
+            .Where(o => ruleIds.Contains(o.RuleId))
+            .Select(o => new { o.RuleId, o.On })
+            .ToListAsync();
+        var usage = picks
+            .GroupBy(p => p.RuleId)
+            .ToDictionary(g => g.Key, g => new RuleUsageDto(g.Count(p => p.On), g.Count(p => !p.On)));
         return new CatalogDto(
             productId,
             tags.OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase).Select(ToDto).ToList(),
-            rules.OrderBy(r => r.Title, StringComparer.OrdinalIgnoreCase).Select(ToDto).ToList());
+            rules.OrderBy(r => r.Title, StringComparer.OrdinalIgnoreCase).Select(ToDto).ToList(),
+            usage);
     }
 
     /// <summary>Null when <paramref name="req"/> is a valid tag, else the reason it is not.</summary>

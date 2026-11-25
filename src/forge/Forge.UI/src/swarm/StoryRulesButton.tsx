@@ -205,7 +205,7 @@ function StoryRulesPanel({ storyId, productId, pins, reload, onClose }: {
         {tab === 'catalog' && (
           <div className="sc-rules__body" role="tabpanel">
             <p className="sc-rc__dim sc-rc__page-link">
-              The same catalog is on the <Link to="/rules" onClick={onClose}>Rules page</Link>. Attach a rule to one
+              The same catalog is on the <Link to="/policies" onClick={onClose}>Policies page</Link>. Attach a rule to one
               workstream from its Overview tab.
             </p>
             {productId

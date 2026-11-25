@@ -1,240 +1,112 @@
-import { useMemo, useState } from 'react';
+// Phase 108 — Rules & guardrails: the product rule catalog.
+//
+// A rule is a standing directive that goes into an agent's generator prompt
+// on every iteration of the work items it reaches. It reaches a work item in
+// one of two ways:
+//   - tagged: one of its tags matches the work item's repo and text, so it is
+//     added automatically (lane 01);
+//   - hand-picked: the operator ticks it under "Rules for this work item" on
+//     the work item's execution page or a workstream's Overview (lane 02).
+// Tags (lane 03) are the matchers. Data: /api/products/{id}/rule-catalog.
 
-// Mocked policy catalogue. Eventually these flow from
-// Forge.Api/Domain/DragPolicy.cs + a future PolicyEndpoints.cs;
-// for now we render them statically so the view has shape.
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import {
+  forgeApi,
+  type CatalogRule,
+  type CatalogRuleInput,
+  type RuleCatalog,
+  type RuleTag,
+  type RuleTagInput,
+  type RuleTagMatch,
+} from '@/api/forgeApi';
+import { useConfirmStore } from '@/state/useConfirmStore';
+import { useProductsStore } from '@/state/useProductsStore';
+import { RuleEditor, TagEditor } from '@/swarm/RuleCatalogView';
+import { emptyTag, rulesUsingTag, tagMatchers, tagNames, tagScope } from '@/swarm/ruleCatalogText';
 
-type Severity = 'info' | 'warn' | 'block';
-type Lane = 'drag' | 'gate' | 'merge';
+type Editor =
+  | { kind: 'rule'; id: string | null; value: CatalogRuleInput }
+  | { kind: 'tag'; id: string | null; value: RuleTagInput };
 
-interface Policy {
-  id: string;
-  lane: Lane;
-  title: string;
-  scope: string;       // human eyebrow line
-  severity: Severity;
-  trigger: string;     // condition body, mono-rendered
-  description: string; // what happens when it fires
-  enabled: boolean;
-  fired24h: number;
-  lastFired: string;   // relative
-}
-
-const POLICIES: Policy[] = [
-  // ── Lane 1 — Drag policy (board moves) ──────────────────────────
-  {
-    id: 'pol-skip-design',
-    lane: 'drag',
-    title: 'Skip-phase confirm',
-    scope: 'Board · drag move',
-    severity: 'warn',
-    trigger: "card.from === 'backlog' && card.to === 'build'",
-    description:
-      'Warn before dragging a card past the Design column. Forces a quick confirm so half-baked stories do not sneak into Build.',
-    enabled: true,
-    fired24h: 4,
-    lastFired: '23m ago',
-  },
-  {
-    id: 'pol-reopen-done',
-    lane: 'drag',
-    title: 'Re-open Done card',
-    scope: 'Board · drag move',
-    severity: 'warn',
-    trigger: "card.from === 'done' && card.to !== 'done'",
-    description:
-      'Re-opening a shipped card requires explicit confirm. Logs an audit entry with the dragger\'s identity.',
-    enabled: true,
-    fired24h: 1,
-    lastFired: '4h ago',
-  },
-  {
-    id: 'pol-human-gate-pull',
-    lane: 'drag',
-    title: 'Pull from human-gate column',
-    scope: 'Board · drag move',
-    severity: 'block',
-    trigger: 'card.humanGate && actor.role !== "human"',
-    description:
-      'AI agents cannot drag cards out of a human-gated column. The card stays put; a toast surfaces who can release the gate.',
-    enabled: true,
-    fired24h: 2,
-    lastFired: '1h ago',
-  },
-  {
-    id: 'pol-wip-limit',
-    lane: 'drag',
-    title: 'WIP-limit overflow',
-    scope: 'Board · drag move',
-    severity: 'info',
-    trigger: 'column.cards.length >= column.wipLimit',
-    description:
-      'Soft toast when a column is already at WIP. Does not block; just nudges the team to unblock first.',
-    enabled: false,
-    fired24h: 0,
-    lastFired: 'never',
-  },
-
-  // ── Lane 2 — Human gates (block auto-merge) ─────────────────────
-  {
-    id: 'pol-security-paths',
-    lane: 'gate',
-    title: 'Security path human gate',
-    scope: 'PR · file paths',
-    severity: 'block',
-    trigger: 'pr.files.match("/security/**") || pr.files.match("/auth/**")',
-    description:
-      'Any PR that touches /security/ or /auth/ is held for human approval, regardless of CI green or reviewer verdict.',
-    enabled: true,
-    fired24h: 2,
-    lastFired: '12m ago',
-  },
-  {
-    id: 'pol-schema-migration',
-    lane: 'gate',
-    title: 'Schema migration gate',
-    scope: 'PR · file paths',
-    severity: 'block',
-    trigger: 'pr.files.match("/db/migrations/**")',
-    description:
-      'Holds DDL changes for human review. Prevents an agent merging a destructive ALTER without a second pair of eyes.',
-    enabled: true,
-    fired24h: 1,
-    lastFired: '6h ago',
-  },
-  {
-    id: 'pol-large-pr',
-    lane: 'gate',
-    title: 'Large diff threshold',
-    scope: 'PR · diff size',
-    severity: 'warn',
-    trigger: 'pr.additions + pr.deletions > 800',
-    description:
-      'PRs over 800 changed lines surface a warning chip and request a second reviewer. Does not block merge on its own.',
-    enabled: true,
-    fired24h: 0,
-    lastFired: '2d ago',
-  },
-  {
-    id: 'pol-touches-pipeline',
-    lane: 'gate',
-    title: 'CI / pipeline files',
-    scope: 'PR · file paths',
-    severity: 'warn',
-    trigger: 'pr.files.match(".github/**") || pr.files.match("/azure-pipelines.yml")',
-    description:
-      'Edits to pipeline definitions ping the platform team and require their LGTM before auto-merge.',
-    enabled: true,
-    fired24h: 0,
-    lastFired: '3d ago',
-  },
-
-  // ── Lane 3 — Auto-merge & branch protection ─────────────────────
-  {
-    id: 'pol-required-checks',
-    lane: 'merge',
-    title: 'Required checks',
-    scope: 'Branch · main',
-    severity: 'block',
-    trigger: '["build","unit-tests","integration-tests"].every(c => c.passing)',
-    description:
-      'main is locked unless these three checks all pass. Auto-merge waits for the slowest one.',
-    enabled: true,
-    fired24h: 6,
-    lastFired: '8m ago',
-  },
-  {
-    id: 'pol-required-reviewers',
-    lane: 'merge',
-    title: 'One approving review',
-    scope: 'Branch · main',
-    severity: 'block',
-    trigger: 'pr.approvedBy.length >= 1 && !pr.changesRequested',
-    description:
-      'At least one approving review on main, with no outstanding "changes requested". Reviewer can be agent or human.',
-    enabled: true,
-    fired24h: 9,
-    lastFired: '4m ago',
-  },
-  {
-    id: 'pol-auto-merge',
-    lane: 'merge',
-    title: 'Auto-merge on green',
-    scope: 'PR · arm-ed by author',
-    severity: 'info',
-    trigger: 'pr.autoMerge && checks.passing && reviewers.approved',
-    description:
-      'When the author arms auto-merge, the watcher merges as soon as gates pass. Server-side enforced — UI toggle is just the signal.',
-    enabled: true,
-    fired24h: 3,
-    lastFired: '47m ago',
-  },
-  {
-    id: 'pol-freeze',
-    lane: 'merge',
-    title: 'Sprint freeze window',
-    scope: 'Branch · main',
-    severity: 'block',
-    trigger: 'now > sprint.endsAt - 24h && pr.label !== "hotfix"',
-    description:
-      'Last 24h of the sprint, only hotfixes merge. Everything else queues until the new sprint cuts.',
-    enabled: false,
-    fired24h: 0,
-    lastFired: 'never',
-  },
-];
-
-const LANES: Array<{ key: Lane; num: string; title: string; sub: string }> = [
-  {
-    key: 'drag',
-    num: '01',
-    title: 'Drag policy',
-    sub: 'Board moves — when to confirm, when to block',
-  },
-  {
-    key: 'gate',
-    num: '02',
-    title: 'Human gates',
-    sub: 'Path / size / label rules that hold a PR for a human',
-  },
-  {
-    key: 'merge',
-    num: '03',
-    title: 'Auto-merge & branch protection',
-    sub: 'What must be green before main accepts a commit',
-  },
-];
-
-const SEVERITY_LABEL: Record<Severity, string> = {
-  info: 'info',
-  warn: 'warn',
-  block: 'block',
-};
+const newRule = (tagIds: string[] = []): CatalogRuleInput => ({ title: '', text: '', tagIds, enabled: true });
 
 export function PoliciesView() {
-  const [policies, setPolicies] = useState<Policy[]>(POLICIES);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const productId = activeProductId && activeProductId !== 'all' ? activeProductId : null;
+  const [catalog, setCatalog] = useState<RuleCatalog | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [matches, setMatches] = useState<{ tagId: string; rows: RuleTagMatch[] } | null>(null);
+
+  const load = useCallback(async () => {
+    if (!productId) return;
+    try {
+      setCatalog(await forgeApi.getRuleCatalog(productId));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Loading the rules failed');
+    }
+  }, [productId]);
+  useEffect(() => { setCatalog(null); void load(); }, [load]);
+
+  async function run(action: () => Promise<unknown>, after?: () => void) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      after?.();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The change failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const ask = (title: string, body: string) =>
+    useConfirmStore.getState().ask({ title, body, tone: 'warn', confirmLabel: 'Delete', cancelLabel: 'Keep' });
 
   const counts = useMemo(() => {
-    const total = policies.length;
-    const enabled = policies.filter((p) => p.enabled).length;
-    const fired = policies.reduce((s, p) => s + p.fired24h, 0);
-    const blocking = policies.filter((p) => p.enabled && p.severity === 'block').length;
-    return { total, enabled, fired, blocking };
-  }, [policies]);
+    const rules = catalog?.rules ?? [];
+    const attached = Object.values(catalog?.usage ?? {}).reduce((s, u) => s + u.attached, 0);
+    return {
+      total: rules.length,
+      enabled: rules.filter((r) => r.enabled).length,
+      tagged: rules.filter((r) => r.tagIds.length > 0).length,
+      handPicked: rules.filter((r) => r.tagIds.length === 0).length,
+      tags: catalog?.tags.length ?? 0,
+      attached,
+    };
+  }, [catalog]);
 
-  const byLane = useMemo(() => {
-    const map = new Map<Lane, Policy[]>();
-    for (const p of policies) {
-      const list = map.get(p.lane) ?? [];
-      list.push(p);
-      map.set(p.lane, list);
-    }
-    return map;
-  }, [policies]);
-
-  function toggle(id: string) {
-    setPolicies((prev) => prev.map((p) => (p.id === id ? { ...p, enabled: !p.enabled } : p)));
+  function exportCatalog() {
+    if (!catalog) return;
+    const blob = new Blob([JSON.stringify({ productId: catalog.productId, tags: catalog.tags, rules: catalog.rules }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rules-${catalog.productId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
+
+  function saveEditor(value: CatalogRuleInput | RuleTagInput) {
+    if (!productId || !editor) return;
+    const ed = editor;
+    void run(() => {
+      if (ed.kind === 'rule') {
+        const v = value as CatalogRuleInput;
+        return ed.id ? forgeApi.updateCatalogRule(productId, ed.id, v) : forgeApi.addCatalogRule(productId, v);
+      }
+      const v = value as RuleTagInput;
+      return ed.id ? forgeApi.updateRuleTag(productId, ed.id, v) : forgeApi.addRuleTag(productId, v);
+    }, () => { setEditor(null); setMatches(null); });
+  }
+
+  const tagged = catalog?.rules.filter((r) => r.tagIds.length > 0) ?? [];
+  const handPicked = catalog?.rules.filter((r) => r.tagIds.length === 0) ?? [];
 
   return (
     <section className="view active" id="view-policies">
@@ -243,19 +115,20 @@ export function PoliciesView() {
           <div className="page-eyebrow">
             <span><span className="num">08</span>&nbsp;Policies</span>
             <span className="sep">/</span>
-            <span>{counts.enabled}/{counts.total} enabled · {counts.blocking} hard gates</span>
+            <span>{counts.enabled}/{counts.total} rules enabled · {counts.tags} tags</span>
             <span className="sep">/</span>
-            <span><span className="live-dot" />{counts.fired} fires today</span>
+            <span>product {productId ?? '—'}</span>
           </div>
           <h1 className="page-title">
             <span className="mark" />
-            Rules & guardrails
+            Rules &amp; guardrails
           </h1>
         </div>
         <div className="page-head-right">
-          <button className="btn btn-secondary">Export YAML</button>
-          <button className="btn btn-primary">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <button type="button" className="btn btn-secondary" disabled={!catalog} onClick={exportCatalog}>Export JSON</button>
+          <button type="button" className="btn btn-primary" disabled={!catalog || busy}
+            onClick={() => setEditor({ kind: 'rule', id: null, value: newRule() })}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
             New rule
@@ -263,88 +136,257 @@ export function PoliciesView() {
         </div>
       </div>
 
-      <div className="workstreams-stats" style={{ margin: '0 28px 16px' }}>
-        <div className="stat-cell">
-          <div className="stat-cell-label">Active rules</div>
-          <div className="stat-cell-val">{counts.enabled}<span className="unit">of {counts.total}</span></div>
-          <div className="stat-cell-trend">{counts.total - counts.enabled} disabled</div>
-        </div>
-        <div className="stat-cell">
-          <div className="stat-cell-label">Hard gates</div>
-          <div className="stat-cell-val">{counts.blocking}</div>
-          <div className="stat-cell-trend">block merge until satisfied</div>
-        </div>
-        <div className="stat-cell">
-          <div className="stat-cell-label">Fired (24h)</div>
-          <div className="stat-cell-val">{counts.fired}</div>
-          <div className="stat-cell-trend"><span className="up">+3</span> vs daily avg</div>
-        </div>
-        <div className="stat-cell">
-          <div className="stat-cell-label">Bypassed (24h)</div>
-          <div className="stat-cell-val">0</div>
-          <div className="stat-cell-trend">no policy was overridden</div>
-        </div>
-      </div>
+      {!productId && <p className="policies-note">Choose a product in the top bar to see its rules.</p>}
+      {error && <p className="policies-error" role="alert">{error}</p>}
 
-      <div className="policies-wrap">
-        {LANES.map((lane) => {
-          const list = byLane.get(lane.key) ?? [];
-          return (
-            <div className="policies-lane" key={lane.key}>
-              <div className="policies-lane-head">
-                <div className="policies-lane-title">
-                  <span className="num">{lane.num}</span>
-                  <span>{lane.title}</span>
-                </div>
-                <span className="policies-lane-count">{list.length}</span>
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>{lane.sub}</div>
-              {list.map((p) => (
-                <PolicyCard key={p.id} p={p} onToggle={() => toggle(p.id)} />
-              ))}
-              <button className="policies-lane-add">+ new {lane.title.toLowerCase()} rule</button>
+      {catalog && (
+        <>
+          <div className="workstreams-stats" style={{ margin: '0 28px 12px' }}>
+            <div className="stat-cell">
+              <div className="stat-cell-label">Active rules</div>
+              <div className="stat-cell-val">{counts.enabled}<span className="unit">of {counts.total}</span></div>
+              <div className="stat-cell-trend">{counts.total - counts.enabled} disabled</div>
             </div>
-          );
-        })}
-      </div>
+            <div className="stat-cell">
+              <div className="stat-cell-label">Tagged</div>
+              <div className="stat-cell-val">{counts.tagged}</div>
+              <div className="stat-cell-trend">added automatically where a tag matches</div>
+            </div>
+            <div className="stat-cell">
+              <div className="stat-cell-label">Hand-picked</div>
+              <div className="stat-cell-val">{counts.handPicked}</div>
+              <div className="stat-cell-trend">added only where you tick them</div>
+            </div>
+            <div className="stat-cell">
+              <div className="stat-cell-label">Attached by hand</div>
+              <div className="stat-cell-val">{counts.attached}</div>
+              <div className="stat-cell-trend">work items with a rule ticked</div>
+            </div>
+          </div>
+
+          <ol className="policies-howto">
+            <li><strong>Write a rule</strong> once: what the agent must do. It goes into the generator prompt from each work item&apos;s next iteration.</li>
+            <li><strong>Attach it by hand</strong>: open a work item&apos;s execution page or a workstream&apos;s Overview and tick it under <em>Rules for this work item</em>.</li>
+            <li><strong>Or give it a tag</strong> to add it automatically to every work item whose repo and text the tag matches.</li>
+          </ol>
+
+          <div className="policies-wrap">
+            <Lane num="01" title="Tagged rules" sub="Added automatically to every work item one of their tags matches"
+              count={tagged.length} addLabel="+ new tagged rule"
+              onAdd={() => setEditor({ kind: 'rule', id: null, value: newRule(catalog.tags[0] ? [catalog.tags[0].id] : []) })}>
+              {tagged.length === 0 && <p className="policies-empty">No tagged rules. Give a rule a tag to add it automatically.</p>}
+              {tagged.map((r) => (
+                <RuleCard key={r.id} rule={r} catalog={catalog} busy={busy}
+                  onToggle={() => void run(() => forgeApi.updateCatalogRule(productId!, r.id, { ...r, enabled: !r.enabled }))}
+                  onEdit={() => setEditor({ kind: 'rule', id: r.id, value: r })}
+                  onDelete={() => void (async () => {
+                    if (await ask('DELETE THIS RULE?', `${r.title} — it leaves every work item it reaches, from their next iteration.`)) {
+                      await run(() => forgeApi.deleteCatalogRule(productId!, r.id));
+                    }
+                  })()} />
+              ))}
+            </Lane>
+
+            <Lane num="02" title="Hand-picked rules" sub="Added only to the work items you tick them on"
+              count={handPicked.length} addLabel="+ new hand-picked rule"
+              onAdd={() => setEditor({ kind: 'rule', id: null, value: newRule() })}>
+              {handPicked.length === 0 && <p className="policies-empty">No hand-picked rules yet.</p>}
+              {handPicked.map((r) => (
+                <RuleCard key={r.id} rule={r} catalog={catalog} busy={busy}
+                  onToggle={() => void run(() => forgeApi.updateCatalogRule(productId!, r.id, { ...r, enabled: !r.enabled }))}
+                  onEdit={() => setEditor({ kind: 'rule', id: r.id, value: r })}
+                  onDelete={() => void (async () => {
+                    if (await ask('DELETE THIS RULE?', `${r.title} — it leaves every work item it is ticked on, from their next iteration.`)) {
+                      await run(() => forgeApi.deleteCatalogRule(productId!, r.id));
+                    }
+                  })()} />
+              ))}
+            </Lane>
+
+            <Lane num="03" title="Tags" sub="Match work items by repo and text; rules on a tag follow it"
+              count={catalog.tags.length} addLabel="+ new tag"
+              onAdd={() => setEditor({ kind: 'tag', id: null, value: emptyTag })}>
+              {catalog.tags.length === 0 && <p className="policies-empty">No tags yet. A tag is optional; it attaches rules automatically.</p>}
+              {catalog.tags.map((t) => (
+                <TagCard key={t.id} tag={t} catalog={catalog} busy={busy}
+                  matches={matches?.tagId === t.id ? matches.rows : null}
+                  onCheck={() => void run(async () => setMatches({ tagId: t.id, rows: await forgeApi.listRuleTagMatches(productId!, t.id) }))}
+                  onEdit={() => setEditor({ kind: 'tag', id: t.id, value: t })}
+                  onDelete={() => void (async () => {
+                    const used = rulesUsingTag(catalog.rules, t.id).length;
+                    if (await ask('DELETE THIS TAG?', `${t.name} — ${used} rule(s) lose it and stop reaching the work items it matched, unless ticked there by hand.`)) {
+                      await run(() => forgeApi.deleteRuleTag(productId!, t.id), () => setMatches(null));
+                    }
+                  })()} />
+              ))}
+            </Lane>
+          </div>
+        </>
+      )}
+
+      {editor && catalog && (
+        <EditorDialog title={`${editor.id ? 'EDIT' : 'NEW'} ${editor.kind === 'rule' ? 'RULE' : 'TAG'}`} error={error} onClose={() => setEditor(null)}>
+          {editor.kind === 'rule'
+            ? <RuleEditor initial={editor.value} tags={catalog.tags} busy={busy} onCancel={() => setEditor(null)} onSave={saveEditor} />
+            : <TagEditor initial={editor.value} busy={busy} onCancel={() => setEditor(null)} onSave={saveEditor} />}
+        </EditorDialog>
+      )}
     </section>
   );
 }
 
-function PolicyCard({ p, onToggle }: { p: Policy; onToggle: () => void }) {
+function Lane({ num, title, sub, count, addLabel, onAdd, children }: {
+  num: string; title: string; sub: string; count: number; addLabel: string; onAdd: () => void; children: ReactNode;
+}) {
   return (
-    <div className="policy-card" data-disabled={!p.enabled || undefined} data-severity={p.severity}>
+    <div className="policies-lane">
+      <div className="policies-lane-head">
+        <h2 className="policies-lane-title">
+          <span className="num">{num}</span>
+          <span>{title}</span>
+        </h2>
+        <span className="policies-lane-count">{count}</span>
+      </div>
+      <p className="policies-lane-sub">{sub}</p>
+      {children}
+      <button type="button" className="policies-lane-add" onClick={onAdd}>{addLabel}</button>
+    </div>
+  );
+}
+
+/** A rule as a policy card: kind, title, text, what attaches it, and where it is ticked by hand. */
+export function RuleCard({ rule, catalog, busy, onToggle, onEdit, onDelete }: {
+  rule: CatalogRule;
+  catalog: RuleCatalog;
+  busy?: boolean;
+  onToggle?: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const tagged = rule.tagIds.length > 0;
+  const usage = catalog.usage?.[rule.id] ?? { attached: 0, detached: 0 };
+  const long = rule.text.length > 280 || rule.text.split('\n').length > 5;
+  return (
+    <article className="policy-card" data-disabled={!rule.enabled || undefined} data-kind={tagged ? 'tagged' : 'manual'}>
       <div className="policy-card-head">
         <div style={{ minWidth: 0 }}>
           <div className="policy-card-eyebrow">
-            <span>{p.scope}</span>
+            <span>Rule</span>
             <span className="sep">·</span>
-            <span className={`severity ${p.severity}`}>{SEVERITY_LABEL[p.severity]}</span>
+            <span className={`severity ${tagged ? 'info' : 'warn'}`}>{tagged ? 'auto' : 'by hand'}</span>
+            {!rule.enabled && <><span className="sep">·</span><span>disabled</span></>}
           </div>
-          <div className="policy-card-title">{p.title}</div>
+          <h3 className="policy-card-title">{rule.title}</h3>
         </div>
-        <button
-          className="policy-toggle"
-          data-on={p.enabled || undefined}
-          aria-pressed={p.enabled}
-          aria-label={p.enabled ? 'Disable rule' : 'Enable rule'}
-          onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        />
+        {onToggle && (
+          <button type="button" className="policy-toggle" data-on={rule.enabled || undefined} disabled={busy}
+            aria-pressed={rule.enabled} aria-label={`${rule.title}: ${rule.enabled ? 'enabled, click to disable' : 'disabled, click to enable'}`}
+            onClick={onToggle} />
+        )}
       </div>
 
-      <div className="policy-card-body">{p.description}</div>
+      <div className={`policy-card-body policy-card-body--rule${open || !long ? '' : ' is-clamped'}`}>{rule.text}</div>
+      {long && (
+        <button type="button" className="policy-card-more" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? 'Show less' : 'Show all'}
+        </button>
+      )}
 
       <div className="policy-card-trigger">
-        <span className="key">when</span> <span className="op">{p.trigger}</span>
+        <span className="key">when</span>{' '}
+        <span className="op">{tagged ? `tag ${tagNames(catalog.tags, rule.tagIds).join(' or ')} matches` : 'ticked on a work item'}</span>
       </div>
 
       <div className="policy-card-foot">
-        <span className="fired">
-          {p.fired24h > 0 && <span className="pulse-dot" />}
-          fired <span className="num">{p.fired24h}×</span> · 24h
+        <span>
+          ticked on <span className="num">{usage.attached}</span>
+          {usage.detached > 0 && <> · unticked on <span className="num">{usage.detached}</span></>}
         </span>
-        <span>last {p.lastFired}</span>
+        <span className="policy-card-actions">
+          {onEdit && <button type="button" disabled={busy} onClick={onEdit}>Edit</button>}
+          {onDelete && <button type="button" className="danger" disabled={busy} onClick={onDelete}>Delete</button>}
+        </span>
       </div>
-    </div>
+    </article>
+  );
+}
+
+/** A tag as a policy card: scope, matchers, rules on it, and (once checked) the work items it matches. */
+export function TagCard({ tag, catalog, busy, matches, onCheck, onEdit, onDelete }: {
+  tag: RuleTag;
+  catalog: RuleCatalog;
+  busy?: boolean;
+  matches?: RuleTagMatch[] | null;
+  onCheck?: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+}) {
+  const used = rulesUsingTag(catalog.rules, tag.id);
+  const hits = matches?.filter((m) => m.applied) ?? [];
+  const terms = [...tag.phrases.map((p) => `"${p}"`), ...tag.patterns.map((p) => `/${p}/`)];
+  return (
+    <article className="policy-card" data-kind="tag">
+      <div className="policy-card-eyebrow">
+        <span>Tag</span>
+        <span className="sep">·</span>
+        <span>{tagScope(tag)}</span>
+      </div>
+      <h3 className="policy-card-title">{tag.name}</h3>
+      {tag.description && <div className="policy-card-body">{tag.description}</div>}
+      <div className="policy-card-trigger">
+        <span className="key">when</span>{' '}
+        <span className="op">{terms.length > 0 ? `text has ${terms.join(' | ')}` : tagMatchers(tag)}</span>
+      </div>
+      <div className="policy-card-foot">
+        <span>{used.length} rule{used.length === 1 ? '' : 's'}{used.length > 0 ? `: ${used.map((r) => r.title).join(', ')}` : ''}</span>
+        <span className="policy-card-actions">
+          {onCheck && <button type="button" disabled={busy} onClick={onCheck}>Check matches</button>}
+          {onEdit && <button type="button" disabled={busy} onClick={onEdit}>Edit</button>}
+          {onDelete && <button type="button" className="danger" disabled={busy} onClick={onDelete}>Delete</button>}
+        </span>
+      </div>
+      {matches && (
+        <div className="policy-card-matches">
+          <div>Matches {hits.length} of {matches.length} workstreams in this product</div>
+          {hits.length > 0 && (
+            <ul>
+              {hits.slice(0, 50).map((m) => (
+                <li key={m.workstreamId} title={m.workstreamId}>
+                  <strong>{m.name}</strong> · {m.category} · {m.status} · {m.reason}
+                </li>
+              ))}
+              {hits.length > 50 && <li>and {hits.length - 50} more</li>}
+            </ul>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function EditorDialog({ title, error, onClose, children }: {
+  title: string; error: string | null; onClose: () => void; children: ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  // The layer carries `swarm-ctrl` for the editor's theme tokens.
+  return createPortal(
+    <div className="swarm-ctrl sc-rules-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="sc-rules" role="dialog" aria-modal="true" aria-label={title}>
+        <header className="sc-rules__head">
+          <h2 className="sc-rules__title">{title}</h2>
+          <button type="button" className="sc-rules__close" aria-label="Close" onClick={onClose}>✕</button>
+        </header>
+        <div className="sc-rules__body">
+          {error && <p className="sc-rules__error" role="alert">{error}</p>}
+          {children}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

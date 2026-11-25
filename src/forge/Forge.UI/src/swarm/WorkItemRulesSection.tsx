@@ -28,7 +28,7 @@ export function WorkItemRulesView({ rules, busy, onRule, onResetRule, onTag }: {
   if (rules.choices.length === 0) {
     return (
       <p className="sc-wr__empty">
-        The product rule catalog is empty. Add rules on the <Link to="/rules">Rules page</Link>.
+        The product rule catalog is empty. Add rules on the <Link to="/policies">Policies page</Link>.
       </p>
     );
   }
@@ -140,7 +140,7 @@ export function WorkItemRulesSection({ productId, workItemId }: { productId: str
       <div className="sc-wr__head">
         <span>RULES FOR THIS WORK ITEM</span>
         <span className="sc-wr__count">
-          {inPrompt} in the next prompt · <Link to="/rules">Manage rules</Link>
+          {inPrompt} in the next prompt · <Link to="/policies">Manage rules</Link>
         </span>
       </div>
       {error && <p className="sc-wr__error" role="alert">{error}</p>}
