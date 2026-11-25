@@ -20,7 +20,7 @@ import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
 import { OpenQuestionsWizard } from './OpenQuestionsWizard';
 import { WorktreePane } from './WorktreePane';
-import { WorkstreamRulesSection } from './WorkstreamRulesSection';
+import { WorkItemRulesSection } from './WorkItemRulesSection';
 import { useTaskLive, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useSpawnStore } from '@/state/useSpawnStore';
@@ -1455,9 +1455,9 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
         )}
       </div>
 
-      {/* Phase 108 — the workstream's tags and the catalog rules they bring. */}
+      {/* Phase 108 — pick the catalog rules this workstream's prompt carries. */}
       {isWorkstream && selection.id && rulesProductId && (
-        <WorkstreamRulesSection productId={rulesProductId} workstreamId={selection.id} />
+        <WorkItemRulesSection productId={rulesProductId} workItemId={selection.id} />
       )}
 
       {/* Prompt role switcher */}

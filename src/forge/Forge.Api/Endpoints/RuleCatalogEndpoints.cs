@@ -37,9 +37,13 @@ public static class RuleCatalogEndpoints
         grp.MapPost("/rules", AddRule).WithName("AddCatalogRule");
         grp.MapPut("/rules/{ruleId}", UpdateRule).WithName("UpdateCatalogRule");
         grp.MapDelete("/rules/{ruleId}", DeleteRule).WithName("DeleteCatalogRule");
-        grp.MapGet("/workstreams/{workstreamId}", WorkstreamRulesFor).WithName("GetWorkstreamRules");
-        grp.MapPut("/workstreams/{workstreamId}/tags/{tagId}", SetWorkstreamTag).WithName("SetWorkstreamTag");
-        grp.MapDelete("/workstreams/{workstreamId}/tags/{tagId}", ClearWorkstreamTag).WithName("ClearWorkstreamTag");
+        // A workstream's id is its work item id, so one set of routes serves
+        // work item executions and story workstreams alike.
+        grp.MapGet("/work-items/{workItemId}", WorkItemRulesFor).WithName("GetWorkItemRules");
+        grp.MapPut("/work-items/{workItemId}/rules/{ruleId}", SetWorkItemRule).WithName("SetWorkItemRule");
+        grp.MapDelete("/work-items/{workItemId}/rules/{ruleId}", ClearWorkItemRule).WithName("ClearWorkItemRule");
+        grp.MapPut("/work-items/{workItemId}/tags/{tagId}", SetWorkItemTag).WithName("SetWorkItemTag");
+        grp.MapDelete("/work-items/{workItemId}/tags/{tagId}", ClearWorkItemTag).WithName("ClearWorkItemTag");
         return app;
     }
 
@@ -53,7 +57,7 @@ public static class RuleCatalogEndpoints
 
     public sealed record RuleRequest(string? Title, string? Text, List<string>? TagIds, bool? Enabled);
 
-    public sealed record WorkstreamTagRequest(bool On);
+    public sealed record OnRequest(bool On);
 
     public sealed record TagDto(
         string Id,
@@ -287,8 +291,9 @@ public static class RuleCatalogEndpoints
         if (req.Title.Trim().Length > MaxTitleLength) return $"title is longer than {MaxTitleLength} characters";
         if (string.IsNullOrWhiteSpace(req.Text)) return "text is required";
         if (req.Text.Trim().Length > MaxTextLength) return $"text is longer than {MaxTextLength} characters";
+        // Tags are optional: a rule with none reaches only the work items the
+        // operator attaches it to.
         var tagIds = (req.TagIds ?? new List<string>()).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
-        if (tagIds.Count == 0) return "a rule needs at least one tag; it reaches the workstreams its tags apply to";
         var unknown = tagIds.FirstOrDefault(t => !knownTagIds.Contains(t));
         return unknown is null ? null : $"tag '{unknown}' is not in this product's catalog";
     }
@@ -346,54 +351,94 @@ public static class RuleCatalogEndpoints
 
         var row = await db.CatalogRules.FirstOrDefaultAsync(r => r.Id == ruleId && r.ProductId == product.Id);
         if (row is null) return Results.NotFound();
+        db.WorkItemRules.RemoveRange(await db.WorkItemRules.Where(o => o.RuleId == ruleId).ToListAsync());
         db.CatalogRules.Remove(row);
         await db.SaveChangesAsync();
         return Results.NoContent();
     }
 
-    private static async Task<IResult> WorkstreamRulesFor(
-        string productId, string workstreamId, ControlDbContext control, IProductDbContextFactory factory)
+    private static async Task<IResult> WorkItemRulesFor(
+        string productId, string workItemId, ControlDbContext control, IProductDbContextFactory factory)
     {
         var (product, db) = await ResolveProductAsync(productId, control, factory);
         if (product is null || db is null) return NoProduct(productId);
-        return await ResolvedOrNotFoundAsync(db, product.Id, workstreamId);
+        return await ResolvedOrNotFoundAsync(db, product.Id, workItemId);
     }
 
-    private static async Task<IResult> ResolvedOrNotFoundAsync(ProductDbContext db, string productId, string workstreamId)
+    private static async Task<IResult> ResolvedOrNotFoundAsync(ProductDbContext db, string productId, string workItemId)
     {
-        var resolved = await RuleCatalogResolver.ResolveAsync(db, workstreamId, CancellationToken.None);
-        if (resolved is null || resolved.ProductId != productId)
+        var resolved = await RuleCatalogResolver.ResolveAsync(db, workItemId, CancellationToken.None);
+        return resolved is null || resolved.ProductId != productId ? NotInProduct(workItemId, productId) : Results.Ok(resolved);
+    }
+
+    private static IResult NotInProduct(string workItemId, string productId) =>
+        Results.Problem(title: $"Work item {workItemId} is not in product {productId}", statusCode: 404);
+
+    private static async Task<bool> InProductAsync(ProductDbContext db, string productId, string workItemId)
+    {
+        var subject = await RuleCatalogResolver.LoadSubjectAsync(db, workItemId, CancellationToken.None);
+        return subject is not null && subject.Value.ProductId == productId;
+    }
+
+    /// <summary>Attaches (<c>on: true</c>) or detaches (<c>on: false</c>) one rule on one work item, over the rule's tags.</summary>
+    private static async Task<IResult> SetWorkItemRule(
+        HttpContext ctx, string productId, string workItemId, string ruleId, [FromBody] OnRequest req,
+        ControlDbContext control, IProductDbContextFactory factory)
+    {
+        if (ForgeUser.RequireWriter(ctx) is { } auth) return auth;
+        var (product, db) = await ResolveProductAsync(productId, control, factory);
+        if (product is null || db is null) return NoProduct(productId);
+        if (!await db.CatalogRules.AsNoTracking().AnyAsync(r => r.Id == ruleId && r.ProductId == product.Id)) return Results.NotFound();
+        if (!await InProductAsync(db, product.Id, workItemId)) return NotInProduct(workItemId, product.Id);
+
+        var row = await db.WorkItemRules.FirstOrDefaultAsync(o => o.WorkItemId == workItemId && o.RuleId == ruleId);
+        if (row is null)
         {
-            return Results.Problem(title: $"Workstream {workstreamId} is not in product {productId}", statusCode: 404);
+            row = new WorkItemRuleRow { WorkItemId = workItemId, RuleId = ruleId };
+            db.WorkItemRules.Add(row);
         }
 
-        return Results.Ok(resolved);
+        row.On = req.On;
+        row.CreatedAt = DateTimeOffset.UtcNow;
+        row.CreatedBy = ForgeUser.UserId(ctx);
+        await db.SaveChangesAsync();
+        return await ResolvedOrNotFoundAsync(db, product.Id, workItemId);
     }
 
-    /// <summary>Adds (<c>on: true</c>) or removes (<c>on: false</c>) a tag on one workstream, over its matchers.</summary>
-    private static async Task<IResult> SetWorkstreamTag(
-        HttpContext ctx,
-        string productId,
-        string workstreamId,
-        string tagId,
-        [FromBody] WorkstreamTagRequest req,
-        ControlDbContext control,
-        IProductDbContextFactory factory)
+    /// <summary>Drops the operator's choice on a rule, so its tags decide again.</summary>
+    private static async Task<IResult> ClearWorkItemRule(
+        HttpContext ctx, string productId, string workItemId, string ruleId, ControlDbContext control, IProductDbContextFactory factory)
+    {
+        if (ForgeUser.RequireWriter(ctx) is { } auth) return auth;
+        var (product, db) = await ResolveProductAsync(productId, control, factory);
+        if (product is null || db is null) return NoProduct(productId);
+        if (!await InProductAsync(db, product.Id, workItemId)) return NotInProduct(workItemId, product.Id);
+
+        var row = await db.WorkItemRules.FirstOrDefaultAsync(o => o.WorkItemId == workItemId && o.RuleId == ruleId);
+        if (row is not null)
+        {
+            db.WorkItemRules.Remove(row);
+            await db.SaveChangesAsync();
+        }
+
+        return await ResolvedOrNotFoundAsync(db, product.Id, workItemId);
+    }
+
+    /// <summary>Adds (<c>on: true</c>) or removes (<c>on: false</c>) a tag on one work item, over the tag's matchers.</summary>
+    private static async Task<IResult> SetWorkItemTag(
+        HttpContext ctx, string productId, string workItemId, string tagId, [FromBody] OnRequest req,
+        ControlDbContext control, IProductDbContextFactory factory)
     {
         if (ForgeUser.RequireWriter(ctx) is { } auth) return auth;
         var (product, db) = await ResolveProductAsync(productId, control, factory);
         if (product is null || db is null) return NoProduct(productId);
         if (!await db.RuleTags.AsNoTracking().AnyAsync(t => t.Id == tagId && t.ProductId == product.Id)) return Results.NotFound();
-        var subject = await RuleCatalogResolver.LoadSubjectAsync(db, workstreamId, CancellationToken.None);
-        if (subject is null || subject.Value.ProductId != product.Id)
-        {
-            return Results.Problem(title: $"Workstream {workstreamId} is not in product {product.Id}", statusCode: 404);
-        }
+        if (!await InProductAsync(db, product.Id, workItemId)) return NotInProduct(workItemId, product.Id);
 
-        var row = await db.WorkstreamTagOverrides.FirstOrDefaultAsync(o => o.WorkstreamId == workstreamId && o.TagId == tagId);
+        var row = await db.WorkstreamTagOverrides.FirstOrDefaultAsync(o => o.WorkstreamId == workItemId && o.TagId == tagId);
         if (row is null)
         {
-            row = new WorkstreamTagOverrideRow { WorkstreamId = workstreamId, TagId = tagId };
+            row = new WorkstreamTagOverrideRow { WorkstreamId = workItemId, TagId = tagId };
             db.WorkstreamTagOverrides.Add(row);
         }
 
@@ -401,24 +446,25 @@ public static class RuleCatalogEndpoints
         row.CreatedAt = DateTimeOffset.UtcNow;
         row.CreatedBy = ForgeUser.UserId(ctx);
         await db.SaveChangesAsync();
-        return await ResolvedOrNotFoundAsync(db, product.Id, workstreamId);
+        return await ResolvedOrNotFoundAsync(db, product.Id, workItemId);
     }
 
     /// <summary>Drops the operator's decision on a tag, so its matchers decide again.</summary>
-    private static async Task<IResult> ClearWorkstreamTag(
-        HttpContext ctx, string productId, string workstreamId, string tagId, ControlDbContext control, IProductDbContextFactory factory)
+    private static async Task<IResult> ClearWorkItemTag(
+        HttpContext ctx, string productId, string workItemId, string tagId, ControlDbContext control, IProductDbContextFactory factory)
     {
         if (ForgeUser.RequireWriter(ctx) is { } auth) return auth;
         var (product, db) = await ResolveProductAsync(productId, control, factory);
         if (product is null || db is null) return NoProduct(productId);
+        if (!await InProductAsync(db, product.Id, workItemId)) return NotInProduct(workItemId, product.Id);
 
-        var row = await db.WorkstreamTagOverrides.FirstOrDefaultAsync(o => o.WorkstreamId == workstreamId && o.TagId == tagId);
+        var row = await db.WorkstreamTagOverrides.FirstOrDefaultAsync(o => o.WorkstreamId == workItemId && o.TagId == tagId);
         if (row is not null)
         {
             db.WorkstreamTagOverrides.Remove(row);
             await db.SaveChangesAsync();
         }
 
-        return await ResolvedOrNotFoundAsync(db, product.Id, workstreamId);
+        return await ResolvedOrNotFoundAsync(db, product.Id, workItemId);
     }
 }

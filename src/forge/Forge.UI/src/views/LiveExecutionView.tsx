@@ -10,6 +10,8 @@ import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeS
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { BuildPane } from '@/swarm/BuildPane';
+import { WorkItemRulesSection } from '@/swarm/WorkItemRulesSection';
+import { useProductsStore } from '@/state/useProductsStore';
 import {
   type FilterKey,
   FILTERS,
@@ -27,6 +29,8 @@ type RailTab = 'worktree' | 'tokens' | 'progress' | 'comments' | 'builds';
 export function LiveExecutionView(): JSX.Element {
   const params = useParams<{ id: string }>();
   const workItemId = params.id ?? null;
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const rulesProductId = activeProductId && activeProductId !== 'all' ? activeProductId : null;
   const entry = useTaskLive(workItemId);
   const [filter, setFilter] = useState<FilterKey>('all');
   const [tab, setTab]       = useState<RailTab>('worktree');
@@ -538,6 +542,13 @@ export function LiveExecutionView(): JSX.Element {
             </button>
           </div>
         </section>
+      )}
+
+      {/* Phase 108 — pick the catalog rules this execution's prompt carries. */}
+      {rulesProductId && workItemId && (
+        <div className="swarm-ctrl sc-embed">
+          <WorkItemRulesSection productId={rulesProductId} workItemId={workItemId} />
+        </div>
       )}
 
       {latestPrompt && (latestPrompt.systemPrompt || latestPrompt.userPrompt) && (

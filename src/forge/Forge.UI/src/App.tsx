@@ -12,6 +12,7 @@ import { SettingsView } from '@/views/SettingsView';
 import { AuditView } from '@/views/AuditView';
 import { SwarmView } from '@/views/SwarmView';
 import { PoliciesView } from '@/views/PoliciesView';
+import { RulesView } from '@/views/RulesView';
 import { CostView } from '@/views/CostView';
 import { PerformanceView } from '@/views/PerformanceView';
 import { ProductsView } from '@/views/ProductsView';
@@ -47,6 +48,7 @@ function ForgeApp() {
           <Route path="/workstreams/:storyId" element={<SwarmStoryView />} />
           <Route path="/prs" element={<PrsView />} />
           <Route path="/swarm" element={<SwarmView />} />
+          <Route path="/rules" element={<RulesView />} />
           <Route path="/policies" element={<PoliciesView />} />
           <Route path="/cost" element={<CostView />} />
           <Route path="/performance" element={<PerformanceView />} />

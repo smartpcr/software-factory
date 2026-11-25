@@ -20,10 +20,12 @@ import { emptyTag, items, lines, rulesUsingTag, tagMatchers, tagNames, tagScope 
 type Matches = { tagId: string; rows: RuleTagMatch[] } | null;
 
 /** The catalog's tags, each with its scope, matchers and (once checked) the workstreams it applies to. */
-export function TagList({ catalog, busy, matches, onCheck, onEdit, onDelete }: {
+export function TagList({ catalog, busy, matches, scope = 'this story', onCheck, onEdit, onDelete }: {
   catalog: RuleCatalog;
   busy?: boolean;
   matches?: Matches;
+  /** Where "Check" looks: "this story" or "this product". */
+  scope?: string;
   onCheck?: (tag: RuleTag) => void;
   onEdit?: (tag: RuleTag) => void;
   onDelete?: (tag: RuleTag) => void;
@@ -54,14 +56,14 @@ export function TagList({ catalog, busy, matches, onCheck, onEdit, onDelete }: {
             )}
             {(onCheck || onEdit || onDelete) && (
               <div className="sc-rules__pin-meta">
-                {onCheck && <button type="button" className="sc-rc__btn" disabled={busy} onClick={() => onCheck(tag)}>Check this story</button>}
+                {onCheck && <button type="button" className="sc-rc__btn" disabled={busy} onClick={() => onCheck(tag)}>Check {scope}</button>}
                 {onEdit && <button type="button" className="sc-rc__btn" disabled={busy} onClick={() => onEdit(tag)}>Edit</button>}
                 {onDelete && <button type="button" className="sc-rules__remove" disabled={busy} onClick={() => onDelete(tag)}>Delete</button>}
               </div>
             )}
             {shown && (
               <div className="sc-rc__matches">
-                <div className="sc-rc__dim">Applies to {hits.length} of {shown.length} workstreams in this story</div>
+                <div className="sc-rc__dim">Applies to {hits.length} of {shown.length} workstreams in {scope}</div>
                 {hits.length > 0 && (
                   <ul className="sc-rc__match-list">
                     {hits.map((m) => (
@@ -101,7 +103,9 @@ export function RuleList({ catalog, busy, onEdit, onDelete, onToggle }: {
             {!rule.enabled && <span className="sc-rc__dim">disabled</span>}
           </div>
           <div className="sc-rc__chips">
-            {tagNames(catalog.tags, rule.tagIds).map((n) => <span key={n} className="sc-rc__chip sc-rc__chip--tag">{n}</span>)}
+            {rule.tagIds.length === 0
+              ? <span className="sc-rc__dim">No tags: reaches only the work items it is attached to</span>
+              : tagNames(catalog.tags, rule.tagIds).map((n) => <span key={n} className="sc-rc__chip sc-rc__chip--tag">{n}</span>)}
           </div>
           <div className="sc-rules__pin-text sc-rc__text">{rule.text}</div>
           {(onEdit || onDelete || onToggle) && (
@@ -185,7 +189,7 @@ function RuleEditor({ initial, tags, busy, onSave, onCancel }: {
   const [tagIds, setTagIds] = useState<string[]>(initial.tagIds);
   const [enabled, setEnabled] = useState(initial.enabled);
   const toggle = (t: string) => setTagIds((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
-  const ready = !!title.trim() && !!text.trim() && tagIds.length > 0;
+  const ready = !!title.trim() && !!text.trim();
   return (
     <div className="sc-rc__editor">
       <label className="sc-rules__label" htmlFor={`${id}-title`}>Rule title</label>
@@ -195,13 +199,19 @@ function RuleEditor({ initial, tags, busy, onSave, onCancel }: {
       <textarea id={`${id}-text`} className="sc-rules__input" rows={8} maxLength={8000} value={text}
         onChange={(e) => setText(e.target.value)} />
       <fieldset className="sc-rc__fieldset">
-        <legend className="sc-rules__label">Reaches workstreams tagged (at least one)</legend>
+        <legend className="sc-rules__label">Attach automatically to work items tagged (optional)</legend>
+        {tags.length === 0 && <span className="sc-rc__dim">No tags in the catalog yet.</span>}
         {tags.map((t) => (
           <label key={t.id} className="sc-rc__check">
             <input type="checkbox" checked={tagIds.includes(t.id)} onChange={() => toggle(t.id)} /> {t.name}
           </label>
         ))}
       </fieldset>
+      <p className="sc-rc__dim">
+        {tagIds.length === 0
+          ? 'With no tag, the rule reaches only the work items and workstreams you attach it to.'
+          : 'You can still attach or detach it on any one work item or workstream.'}
+      </p>
       <label className="sc-rc__check">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enabled
       </label>
@@ -216,7 +226,12 @@ function RuleEditor({ initial, tags, busy, onSave, onCancel }: {
   );
 }
 
-export function RuleCatalogView({ productId, storyId }: { productId: string; storyId: string }) {
+/**
+ * The catalog editor. With `storyId` (the story RULES panel) a tag's "Check"
+ * looks at that story's workstreams; without it (the Rules page), at every
+ * workstream of the product.
+ */
+export function RuleCatalogView({ productId, storyId }: { productId: string; storyId?: string }) {
   const [catalog, setCatalog] = useState<RuleCatalog | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -255,49 +270,12 @@ export function RuleCatalogView({ productId, storyId }: { productId: string; sto
     return error ? <p className="sc-rules__error" role="alert">{error}</p> : <p className="sc-rules__empty">Loading…</p>;
   }
 
-  return (
-    <div className="sc-rc">
-      <p className="sc-rules__help sc-rc__help">
-        Rules for product <strong>{catalog.productId}</strong>. A rule reaches every workstream, in every story,
-        that one of its tags applies to, from that workstream&apos;s next iteration. Open a workstream&apos;s Overview
-        to see its tags, or to add or remove one by hand.
-      </p>
-      {error && <p className="sc-rules__error" role="alert">{error}</p>}
-
-      <div className="sc-rc__head">
-        <h3 className="sc-rules__group">Tags · {catalog.tags.length}</h3>
-        <button type="button" className="sc-rc__btn" disabled={busy || !!tagDraft}
-          onClick={() => setTagDraft({ id: null, value: emptyTag })}>+ New tag</button>
-      </div>
-      {tagDraft && (
-        <TagEditor
-          key={tagDraft.id ?? 'new'}
-          initial={tagDraft.value}
-          busy={busy}
-          onCancel={() => setTagDraft(null)}
-          onSave={(value) => void run(
-            () => (tagDraft.id ? forgeApi.updateRuleTag(productId, tagDraft.id, value) : forgeApi.addRuleTag(productId, value)),
-            () => { setTagDraft(null); setMatches(null); },
-          )}
-        />
-      )}
-      <TagList
-        catalog={catalog}
-        busy={busy}
-        matches={matches}
-        onCheck={(tag) => void run(async () => setMatches({ tagId: tag.id, rows: await forgeApi.listRuleTagMatches(productId, tag.id, storyId) }))}
-        onEdit={(tag) => setTagDraft({ id: tag.id, value: tag })}
-        onDelete={(tag) => void (async () => {
-          const used = rulesUsingTag(catalog.rules, tag.id).length;
-          if (!await confirmDelete('DELETE THIS TAG?', `${tag.name} — ${used} rule(s) lose this tag; a rule left with no tag reaches no workstream.`)) return;
-          await run(() => forgeApi.deleteRuleTag(productId, tag.id), () => setMatches(null));
-        })()}
-      />
-
+  const scope = storyId ? 'this story' : 'this product';
+  const ruleSection = (
+    <>
       <div className="sc-rc__head">
         <h3 className="sc-rules__group">Rules · {catalog.rules.length}</h3>
-        <button type="button" className="sc-rc__btn" disabled={busy || !!ruleDraft || catalog.tags.length === 0}
-          title={catalog.tags.length === 0 ? 'Add a tag first: a rule reaches the workstreams its tags apply to' : undefined}
+        <button type="button" className="sc-rc__btn" disabled={busy || !!ruleDraft}
           onClick={() => setRuleDraft({ id: null, value: { title: '', text: '', tagIds: [], enabled: true } })}>+ New rule</button>
       </div>
       {ruleDraft && (
@@ -319,8 +297,53 @@ export function RuleCatalogView({ productId, storyId }: { productId: string; sto
         onEdit={(rule) => setRuleDraft({ id: rule.id, value: rule })}
         onToggle={(rule) => void run(() => forgeApi.updateCatalogRule(productId, rule.id, { ...rule, enabled: !rule.enabled }))}
         onDelete={(rule) => void (async () => {
-          if (!await confirmDelete('DELETE THIS RULE?', rule.title)) return;
+          if (!await confirmDelete('DELETE THIS RULE?', `${rule.title} — it leaves every work item it reaches, from their next iteration.`)) return;
           await run(() => forgeApi.deleteCatalogRule(productId, rule.id));
+        })()}
+      />
+    </>
+  );
+
+  return (
+    <div className="sc-rc">
+      <p className="sc-rules__help sc-rc__help">
+        Rules for product <strong>{catalog.productId}</strong>. A rule goes into a work item&apos;s or
+        workstream&apos;s generator prompt from its next iteration when you attach it there (in the work
+        item&apos;s <em>Rules for this work item</em> list) or when one of its tags applies there automatically.
+      </p>
+      {error && <p className="sc-rules__error" role="alert">{error}</p>}
+
+      {ruleSection}
+
+      <div className="sc-rc__head">
+        <h3 className="sc-rules__group">Tags · {catalog.tags.length}</h3>
+        <button type="button" className="sc-rc__btn" disabled={busy || !!tagDraft}
+          onClick={() => setTagDraft({ id: null, value: emptyTag })}>+ New tag</button>
+      </div>
+      <p className="sc-rc__dim">Optional. A tag attaches its rules automatically to every work item whose repo and text it matches.</p>
+      {tagDraft && (
+        <TagEditor
+          key={tagDraft.id ?? 'new'}
+          initial={tagDraft.value}
+          busy={busy}
+          onCancel={() => setTagDraft(null)}
+          onSave={(value) => void run(
+            () => (tagDraft.id ? forgeApi.updateRuleTag(productId, tagDraft.id, value) : forgeApi.addRuleTag(productId, value)),
+            () => { setTagDraft(null); setMatches(null); },
+          )}
+        />
+      )}
+      <TagList
+        catalog={catalog}
+        busy={busy}
+        matches={matches}
+        scope={scope}
+        onCheck={(tag) => void run(async () => setMatches({ tagId: tag.id, rows: await forgeApi.listRuleTagMatches(productId, tag.id, storyId) }))}
+        onEdit={(tag) => setTagDraft({ id: tag.id, value: tag })}
+        onDelete={(tag) => void (async () => {
+          const used = rulesUsingTag(catalog.rules, tag.id).length;
+          if (!await confirmDelete('DELETE THIS TAG?', `${tag.name} — ${used} rule(s) lose this tag and stop reaching the work items it matched, unless attached there directly.`)) return;
+          await run(() => forgeApi.deleteRuleTag(productId, tag.id), () => setMatches(null));
         })()}
       />
     </div>

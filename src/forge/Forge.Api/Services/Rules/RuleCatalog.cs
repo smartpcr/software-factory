@@ -38,11 +38,11 @@ public sealed record RuleSpec(string Id, string Title, string Text, IReadOnlyLis
 }
 
 /// <summary>
-/// What a tag is matched against: the workstream's repo and category, and its
-/// stage text (the work item title and description, which carry the plan
-/// stage's steps and test scenarios).
+/// What a tag is matched against: the work item's repo and category, and its
+/// text (title and description, which for a workstream carry the plan stage's
+/// steps and test scenarios, plus a standalone work item's own tags).
 /// </summary>
-public sealed record RuleSubject(string WorkstreamId, string? RepoId, string Category, string Text);
+public sealed record RuleSubject(string WorkItemId, string? RepoId, string Category, string Text);
 
 /// <summary>The matcher's verdict on one tag, with a reason the operator can read.</summary>
 public sealed record TagMatch(bool Matched, string Reason);
@@ -54,11 +54,28 @@ public sealed record TagMatch(bool Matched, string Reason);
 /// </summary>
 public sealed record AppliedTag(string TagId, string Name, bool Applied, string Source, string Reason);
 
-/// <summary>A rule that reaches a workstream, with the names of the tags that brought it.</summary>
-public sealed record AppliedRule(string Id, string Title, string Text, IReadOnlyList<string> Via);
+/// <summary>
+/// A rule that reaches a work item: <see cref="Attached"/> when the operator
+/// attached it to this item, else <see cref="Via"/> names the applied tags
+/// that brought it.
+/// </summary>
+public sealed record AppliedRule(string Id, string Title, string Text, IReadOnlyList<string> Via, bool Attached);
 
-/// <summary>Every catalog tag's standing on a workstream, and the rules that reach it.</summary>
-public sealed record WorkstreamRules(string WorkstreamId, string ProductId, IReadOnlyList<AppliedTag> Tags, IReadOnlyList<AppliedRule> Rules);
+/// <summary>
+/// How one catalog rule stands on a work item, for the operator's picker.
+/// <see cref="Source"/> is <c>tag</c> (one of its tags applies),
+/// <c>attached</c> / <c>detached</c> (the operator's choice for this item),
+/// <c>none</c> (no tag applies) or <c>disabled</c> (switched off in the catalog).
+/// </summary>
+public sealed record RuleChoice(string Id, string Title, string Text, bool Enabled, bool Applied, string Source, IReadOnlyList<string> Via);
+
+/// <summary>Every catalog tag's and rule's standing on a work item, and the rules that reach its prompt.</summary>
+public sealed record WorkItemRules(
+    string WorkItemId,
+    string ProductId,
+    IReadOnlyList<AppliedTag> Tags,
+    IReadOnlyList<AppliedRule> Rules,
+    IReadOnlyList<RuleChoice> Choices);
 
 /// <summary>Decides whether a catalog tag applies to a workstream.</summary>
 public static class RuleTagMatcher
@@ -144,23 +161,32 @@ public static class RuleTagMatcher
 }
 
 /// <summary>
-/// Resolves which catalog tags and rules reach a workstream, and renders the
-/// rules as the prompt block the generator sees on every iteration.
+/// Resolves which catalog tags and rules reach a work item execution or a
+/// workstream, and renders the rules as the prompt block the generator sees
+/// on every iteration.
 /// </summary>
 public static class RuleCatalogResolver
 {
-    /// <summary>Pure resolution: overrides win over matchers; enabled rules with an applied tag reach the workstream.</summary>
-    public static WorkstreamRules Resolve(
+    private static readonly IReadOnlyDictionary<string, bool> NoOverrides = new Dictionary<string, bool>();
+
+    /// <summary>
+    /// Pure resolution. A tag override wins over the tag's matchers; a rule
+    /// override (attached / detached) wins over the rule's tags; a disabled
+    /// rule reaches nothing.
+    /// </summary>
+    public static WorkItemRules Resolve(
         RuleSubject subject,
         string productId,
         IEnumerable<RuleTagSpec> tags,
-        IReadOnlyDictionary<string, bool> overrides,
-        IEnumerable<RuleSpec> rules)
+        IReadOnlyDictionary<string, bool> tagOverrides,
+        IEnumerable<RuleSpec> rules,
+        IReadOnlyDictionary<string, bool>? ruleOverrides = null)
     {
+        ruleOverrides ??= NoOverrides;
         var applied = new List<AppliedTag>();
         foreach (var tag in tags.OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase))
         {
-            if (overrides.TryGetValue(tag.Id, out var on))
+            if (tagOverrides.TryGetValue(tag.Id, out var on))
             {
                 applied.Add(on
                     ? new AppliedTag(tag.Id, tag.Name, true, "operator-added", "added by the operator")
@@ -173,70 +199,107 @@ public static class RuleCatalogResolver
         }
 
         var appliedNames = applied.Where(a => a.Applied).ToDictionary(a => a.TagId, a => a.Name, StringComparer.Ordinal);
+        var choices = new List<RuleChoice>();
         var reaching = new List<AppliedRule>();
-        foreach (var rule in rules.Where(r => r.Enabled))
+        foreach (var rule in rules.OrderBy(r => r.Title, StringComparer.OrdinalIgnoreCase))
         {
             var via = rule.TagIds.Where(appliedNames.ContainsKey).Select(id => appliedNames[id]).Distinct().ToList();
-            if (via.Count > 0) reaching.Add(new AppliedRule(rule.Id, rule.Title, rule.Text, via));
+            string source;
+            bool reaches;
+            if (!rule.Enabled)
+            {
+                (source, reaches) = ("disabled", false);
+            }
+            else if (ruleOverrides.TryGetValue(rule.Id, out var attached))
+            {
+                (source, reaches) = attached ? ("attached", true) : ("detached", false);
+            }
+            else
+            {
+                (source, reaches) = via.Count > 0 ? ("tag", true) : ("none", false);
+            }
+
+            choices.Add(new RuleChoice(rule.Id, rule.Title, rule.Text, rule.Enabled, reaches, source, via));
+            if (reaches) reaching.Add(new AppliedRule(rule.Id, rule.Title, rule.Text, via, source == "attached"));
         }
 
-        return new WorkstreamRules(subject.WorkstreamId, productId, applied, reaching.OrderBy(r => r.Title, StringComparer.OrdinalIgnoreCase).ToList());
+        return new WorkItemRules(subject.WorkItemId, productId, applied, reaching, choices);
     }
 
     /// <summary>
-    /// The subject for <paramref name="workstreamId"/>: repo, category, and the
-    /// work item's title and description (falling back to the workstream's
-    /// name and summary). Null when the workstream does not exist.
+    /// The subject for <paramref name="workItemId"/>. A workstream gives its
+    /// repo, category and stage text (its work item's title and description,
+    /// falling back to its name and summary). A standalone work item gives its
+    /// repo, the <c>impl</c> category, and its title, description and tags.
+    /// Null when neither exists; the product id is null when the repo is unknown.
     /// </summary>
-    public static async Task<(RuleSubject Subject, string? ProductId)?> LoadSubjectAsync(ProductDbContext db, string workstreamId, CancellationToken ct)
+    public static async Task<(RuleSubject Subject, string? ProductId)?> LoadSubjectAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
         var ws = await db.Workstreams.AsNoTracking()
-            .Where(w => w.Id == workstreamId)
+            .Where(w => w.Id == workItemId)
             .Select(w => new { w.Id, w.RepoId, w.Category, w.Name, w.Summary })
             .FirstOrDefaultAsync(ct);
-        if (ws is null) return null;
-
         var wi = await db.WorkItems.AsNoTracking()
-            .Where(w => w.Id == workstreamId)
-            .Select(w => new { w.Title, w.DescriptionMd })
+            .Where(w => w.Id == workItemId)
+            .Select(w => new { w.RepoId, w.Title, w.DescriptionMd, w.TagsJson })
             .FirstOrDefaultAsync(ct);
-        var text = $"{wi?.Title ?? ws.Name}\n{(string.IsNullOrEmpty(wi?.DescriptionMd) ? ws.Summary : wi!.DescriptionMd)}";
+        if (ws is null && wi is null) return null;
+
+        RuleSubject subject;
+        if (ws is not null)
+        {
+            var text = $"{wi?.Title ?? ws.Name}\n{(string.IsNullOrEmpty(wi?.DescriptionMd) ? ws.Summary : wi!.DescriptionMd)}";
+            subject = new RuleSubject(ws.Id, ws.RepoId, string.IsNullOrEmpty(ws.Category) ? "impl" : ws.Category, text);
+        }
+        else
+        {
+            var itemTags = RuleCatalogJson.ReadList(wi!.TagsJson);
+            var text = $"{wi.Title}\n{wi.DescriptionMd}" + (itemTags.Count > 0 ? $"\nTags: {string.Join(", ", itemTags)}" : string.Empty);
+            subject = new RuleSubject(workItemId, wi.RepoId, "impl", text);
+        }
 
         string? productId = null;
-        if (!string.IsNullOrEmpty(ws.RepoId))
+        if (!string.IsNullOrEmpty(subject.RepoId))
         {
             productId = await db.Repos.AsNoTracking()
-                .Where(r => r.Id == ws.RepoId)
+                .Where(r => r.Id == subject.RepoId)
                 .Select(r => r.ProductId)
                 .FirstOrDefaultAsync(ct);
         }
 
-        return (new RuleSubject(ws.Id, ws.RepoId, string.IsNullOrEmpty(ws.Category) ? "impl" : ws.Category, text), productId);
+        return (subject, productId);
     }
 
     /// <summary>
-    /// Resolves the catalog for <paramref name="workstreamId"/>. Null when the
-    /// work item is not a workstream (a plan doc) or its product is unknown.
+    /// Resolves the catalog for a work item execution or workstream. Null when
+    /// <paramref name="workItemId"/> is neither (e.g. a plan doc) or its
+    /// product is unknown.
     /// </summary>
-    public static async Task<WorkstreamRules?> ResolveAsync(ProductDbContext db, string workstreamId, CancellationToken ct)
+    public static async Task<WorkItemRules?> ResolveAsync(ProductDbContext db, string workItemId, CancellationToken ct)
     {
-        var loaded = await LoadSubjectAsync(db, workstreamId, ct);
+        var loaded = await LoadSubjectAsync(db, workItemId, ct);
         if (loaded is not { ProductId: { Length: > 0 } productId } found) return null;
 
+        var rules = (await db.CatalogRules.AsNoTracking().Where(r => r.ProductId == productId).ToListAsync(ct))
+            .Select(RuleSpec.FromRow).ToList();
         var tags = (await db.RuleTags.AsNoTracking().Where(t => t.ProductId == productId).ToListAsync(ct))
             .Select(RuleTagSpec.FromRow).ToList();
-        if (tags.Count == 0) return new WorkstreamRules(workstreamId, productId, Array.Empty<AppliedTag>(), Array.Empty<AppliedRule>());
+        if (rules.Count == 0 && tags.Count == 0)
+        {
+            return new WorkItemRules(workItemId, productId, Array.Empty<AppliedTag>(), Array.Empty<AppliedRule>(), Array.Empty<RuleChoice>());
+        }
 
-        var overrides = await db.WorkstreamTagOverrides.AsNoTracking()
-            .Where(o => o.WorkstreamId == workstreamId)
+        var tagOverrides = await db.WorkstreamTagOverrides.AsNoTracking()
+            .Where(o => o.WorkstreamId == workItemId)
             .ToDictionaryAsync(o => o.TagId, o => o.On, ct);
-        var rules = (await db.CatalogRules.AsNoTracking().Where(r => r.ProductId == productId).ToListAsync(ct))
-            .Select(RuleSpec.FromRow);
-        return Resolve(found.Subject, productId, tags, overrides, rules);
+        var ruleOverrides = await db.WorkItemRules.AsNoTracking()
+            .Where(o => o.WorkItemId == workItemId)
+            .ToDictionaryAsync(o => o.RuleId, o => o.On, ct);
+        return Resolve(found.Subject, productId, tags, tagOverrides, rules, ruleOverrides);
     }
 
-    /// <summary>The prompt block for the rules reaching a workstream; empty when none do.</summary>
-    public static string RenderPromptBlock(WorkstreamRules? resolved)
+    /// <summary>The prompt block for the rules reaching a work item; empty when none do.</summary>
+    public static string RenderPromptBlock(WorkItemRules? resolved)
     {
         if (resolved is null || resolved.Rules.Count == 0) return string.Empty;
 
@@ -246,15 +309,17 @@ public static class RuleCatalogResolver
         sb.AppendLine("║  STANDING RULES -- PRODUCT RULE CATALOG, BINDING         ║");
         sb.AppendLine("╚══════════════════════════════════════════════════════════╝");
         sb.AppendLine();
-        sb.AppendLine("The operator's rule catalog attaches these rules to this workstream");
-        sb.AppendLine("through its tags. Follow each one on every iteration; it overrides");
-        sb.AppendLine("the plan, the evaluator and your own habits.");
+        sb.AppendLine("The operator attached these rules from the product rule catalog,");
+        sb.AppendLine("directly or through this work item's tags. Follow each one on every");
+        sb.AppendLine("iteration; it overrides the plan, the evaluator and your own habits.");
         sb.AppendLine();
         for (var i = 0; i < resolved.Rules.Count; i++)
         {
             var rule = resolved.Rules[i];
-            var why = string.Join("; ", rule.Via.Select(v => reasons.TryGetValue(v, out var r) ? $"{v}: {r}" : v));
-            sb.AppendLine($"{i + 1}. {rule.Title}  [tag {why}]");
+            var why = rule.Attached
+                ? "attached by the operator"
+                : "tag " + string.Join("; ", rule.Via.Select(v => reasons.TryGetValue(v, out var r) ? $"{v}: {r}" : v));
+            sb.AppendLine($"{i + 1}. {rule.Title}  [{why}]");
             sb.AppendLine(rule.Text.Trim());
             sb.AppendLine();
         }

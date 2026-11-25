@@ -1,7 +1,7 @@
 // Phase 108 — pure helpers for the product rule catalog UI: parsing the
 // editor's text fields into lists and describing a tag's scope and matchers.
 
-import type { AppliedTag, CatalogRule, RuleTag, RuleTagInput } from '@/api/forgeApi';
+import type { AppliedTag, CatalogRule, RuleChoice, RuleTag, RuleTagInput } from '@/api/forgeApi';
 
 /** One entry per non-empty line (phrases and patterns may contain commas). */
 export function lines(text: string): string[] {
@@ -43,6 +43,29 @@ export function tagChoice(tag: AppliedTag): TagChoice {
   if (tag.source === 'operator-added') return 'on';
   if (tag.source === 'operator-removed') return 'off';
   return 'auto';
+}
+
+/**
+ * The request that makes a rule's checkbox read `checked` on a work item:
+ * attach (`on`), detach (`off`), or drop the override (`clear`) when the
+ * rule's tags would already give that answer.
+ */
+export function ruleAction(choice: RuleChoice, checked: boolean): 'on' | 'off' | 'clear' {
+  const byTags = choice.via.length > 0;
+  if (checked) return byTags ? 'clear' : 'on';
+  return byTags ? 'off' : 'clear';
+}
+
+/** Why a rule does or does not reach the work item, in words. */
+export function ruleStatus(choice: RuleChoice): string {
+  const tags = choice.via.join(', ');
+  switch (choice.source) {
+    case 'tag': return `via tag ${tags}`;
+    case 'attached': return 'attached to this work item';
+    case 'detached': return `detached from this work item${tags ? ` (tag ${tags} applies)` : ''}`;
+    case 'disabled': return 'disabled in the catalog';
+    default: return 'not attached';
+  }
 }
 
 export const emptyTag: RuleTagInput = { name: '', description: '', repoIds: [], categories: [], phrases: [], patterns: [] };

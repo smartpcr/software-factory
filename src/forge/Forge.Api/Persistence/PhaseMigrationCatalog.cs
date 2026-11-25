@@ -372,7 +372,7 @@ public static class PhaseMigrationCatalog
         // overrides. Product-only, new tables, no ordering dependency.
         new PhaseMigrationSpec(108, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
-            ProductTables: new[] { "catalog_rules", "rule_tags", "workstream_tag_overrides" }),
+            ProductTables: new[] { "catalog_rules", "rule_tags", "work_item_rules", "workstream_tag_overrides" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

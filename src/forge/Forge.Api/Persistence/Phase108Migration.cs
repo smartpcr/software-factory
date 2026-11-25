@@ -12,9 +12,9 @@ using Microsoft.EntityFrameworkCore;
 
 /// <summary>
 /// Phase 108 — the product rule catalog: <c>rule_tags</c>,
-/// <c>catalog_rules</c> and <c>workstream_tag_overrides</c>
-/// (<see cref="RuleTagRow"/>, <see cref="CatalogRuleRow"/>,
-/// <see cref="WorkstreamTagOverrideRow"/>).
+/// <c>catalog_rules</c>, <c>workstream_tag_overrides</c> and
+/// <c>work_item_rules</c> (<see cref="RuleTagRow"/>, <see cref="CatalogRuleRow"/>,
+/// <see cref="WorkstreamTagOverrideRow"/>, <see cref="WorkItemRuleRow"/>).
 ///
 /// <para>Product-only, so <see cref="PhaseMigrationRunner"/> applies it to
 /// every per-product <c>{slug}.db</c>. New tables only; no migration queries
@@ -66,6 +66,17 @@ public static class Phase108Migration
         )
         """,
         "CREATE UNIQUE INDEX IF NOT EXISTS IX_workstream_tag_overrides_ws_tag ON workstream_tag_overrides (WorkstreamId, TagId)",
+        """
+        CREATE TABLE IF NOT EXISTS work_item_rules (
+            Id         TEXT NOT NULL PRIMARY KEY,
+            WorkItemId TEXT NOT NULL,
+            RuleId     TEXT NOT NULL,
+            "On"       INTEGER NOT NULL,
+            CreatedAt  TEXT NOT NULL,
+            CreatedBy  TEXT NULL
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS IX_work_item_rules_item_rule ON work_item_rules (WorkItemId, RuleId)",
     };
 
     public static async Task ApplyAsync(ControlDbContext control, ProductDbContext db, CancellationToken ct = default)

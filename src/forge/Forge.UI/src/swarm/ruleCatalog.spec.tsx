@@ -3,10 +3,11 @@
 
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { RuleCatalog, WorkstreamRules } from '@/api/forgeApi';
-import { items, lines, tagChoice, tagMatchers, tagScope } from './ruleCatalogText';
+import { MemoryRouter } from 'react-router-dom';
+import type { RuleCatalog, RuleChoice, WorkItemRules } from '@/api/forgeApi';
+import { items, lines, ruleAction, ruleStatus, tagChoice, tagMatchers, tagScope } from './ruleCatalogText';
 import { RuleList, TagList } from './RuleCatalogView';
-import { WorkstreamRulesView } from './WorkstreamRulesSection';
+import { WorkItemRulesView } from './WorkItemRulesSection';
 
 const at = '2026-11-25T12:00:00Z';
 const catalog: RuleCatalog = {
@@ -69,6 +70,7 @@ describe('TagList', () => {
       />,
     );
     expect(out).toContain('Applies to 1 of 2 workstreams in this story');
+    expect(out).toContain('Check this story');
     expect(out).toContain('Launch Plan');
     expect(out).not.toContain('Docs only');
   });
@@ -89,28 +91,68 @@ describe('RuleList', () => {
   });
 });
 
-describe('WorkstreamRulesView', () => {
-  const rules: WorkstreamRules = {
-    workstreamId: 'ws-1',
+const choice = (source: RuleChoice['source'], via: string[] = [], applied = false): RuleChoice =>
+  ({ id: `r-${source}`, title: `Rule ${source}`, text: `text ${source}`, enabled: source !== 'disabled', applied, source, via });
+
+describe('ruleAction', () => {
+  it('attaches a rule no tag brings, and detaches one a tag brings', () => {
+    expect(ruleAction(choice('none'), true)).toBe('on');
+    expect(ruleAction(choice('tag', ['gate'], true), false)).toBe('off');
+  });
+
+  it('drops the override when the tags already give the wanted answer', () => {
+    expect(ruleAction(choice('detached', ['gate']), true)).toBe('clear');
+    expect(ruleAction(choice('attached', [], true), false)).toBe('clear');
+  });
+
+  it('describes each standing', () => {
+    expect(ruleStatus(choice('tag', ['full harness gate'], true))).toBe('via tag full harness gate');
+    expect(ruleStatus(choice('detached', ['full harness gate']))).toBe('detached from this work item (tag full harness gate applies)');
+    expect(ruleStatus(choice('none'))).toBe('not attached');
+  });
+});
+
+describe('WorkItemRulesView', () => {
+  const rules: WorkItemRules = {
+    workItemId: 'ws-1',
     productId: 'harness',
     tags: [
       { tagId: 't-gate', name: 'full harness gate', applied: true, source: 'matched', reason: 'matched "both lanes"' },
       { tagId: 't-ui', name: 'ui', applied: false, source: 'operator-removed', reason: 'removed by the operator' },
     ],
-    rules: [{ id: 'r1', title: 'Long-running checks', text: 'Never run the full gate.', via: ['full harness gate'] }],
+    rules: [{ id: 'r-tag', title: 'Rule tag', text: 'text tag', via: ['full harness gate'], attached: false }],
+    choices: [
+      choice('tag', ['full harness gate'], true),
+      choice('attached', [], true),
+      choice('none'),
+      choice('disabled'),
+    ],
   };
 
-  it('shows each tag, why, and the rules that reach the workstream', () => {
-    const out = renderToStaticMarkup(<WorkstreamRulesView rules={rules} onChoose={() => undefined} />);
+  const render = (r: WorkItemRules) => renderToStaticMarkup(
+    <MemoryRouter>
+      <WorkItemRulesView rules={r} onRule={() => undefined} onResetRule={() => undefined} onTag={() => undefined} />
+    </MemoryRouter>,
+  );
+
+  it('lists every catalog rule as a checkbox, ticked where it reaches the prompt', () => {
+    const out = render(rules);
+    expect(out.match(/type="checkbox"/g)).toHaveLength(4);
+    expect(out.match(/checked=""/g)).toHaveLength(2);
+    expect(out).toContain('via tag full harness gate');
+    expect(out).toContain('attached to this work item');
+    expect(out).toContain('disabled in the catalog');
+    expect(out.match(/>Reset</g)).toHaveLength(1);
+  });
+
+  it('folds the tags with why each applies', () => {
+    const out = render(rules);
+    expect(out).toContain('Tags · 1 of 2 apply');
     expect(out).toContain('matched &quot;both lanes&quot;');
-    expect(out).toContain('removed by the operator');
-    expect(out).toContain('Long-running checks');
-    expect(out).toContain('via full harness gate');
     expect(out.match(/aria-pressed="true"/g)).toHaveLength(2);
   });
 
-  it('says when the catalog is empty or no rule applies', () => {
-    expect(renderToStaticMarkup(<WorkstreamRulesView rules={{ ...rules, tags: [], rules: [] }} />)).toContain('no tags yet');
-    expect(renderToStaticMarkup(<WorkstreamRulesView rules={{ ...rules, rules: [] }} />)).toContain('No catalog rule reaches this workstream.');
+  it('points to the Rules page when the catalog is empty', () => {
+    expect(render({ ...rules, tags: [], rules: [], choices: [] })).toContain('href="/rules"');
   });
 });

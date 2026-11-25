@@ -184,6 +184,11 @@ public static class DbModelProduct
             .HasIndex(x => new { x.WorkstreamId, x.TagId })
             .IsUnique()
             .HasDatabaseName("IX_workstream_tag_overrides_ws_tag");
+        mb.Entity<WorkItemRuleRow>().ToTable("work_item_rules").HasKey(x => x.Id);
+        mb.Entity<WorkItemRuleRow>()
+            .HasIndex(x => new { x.WorkItemId, x.RuleId })
+            .IsUnique()
+            .HasDatabaseName("IX_work_item_rules_item_rule");
 
         // Phase 17.1 — persistent task queue + per-row history.
         mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);

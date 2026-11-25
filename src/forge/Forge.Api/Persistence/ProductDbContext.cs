@@ -141,6 +141,8 @@ public class ProductDbContext : DbContext
 
     public DbSet<WorkstreamTagOverrideRow> WorkstreamTagOverrides => this.Set<WorkstreamTagOverrideRow>();
 
+    public DbSet<WorkItemRuleRow> WorkItemRules => this.Set<WorkItemRuleRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         // Phase G — product entities only. Control entities (users, crews,

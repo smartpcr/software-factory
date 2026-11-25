@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
 import { forgeApi } from '@/api/forgeApi';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useToastStore } from '@/state/useToastStore';
@@ -203,6 +204,10 @@ function StoryRulesPanel({ storyId, productId, pins, reload, onClose }: {
         </div>
         {tab === 'catalog' && (
           <div className="sc-rules__body" role="tabpanel">
+            <p className="sc-rc__dim sc-rc__page-link">
+              The same catalog is on the <Link to="/rules" onClick={onClose}>Rules page</Link>. Attach a rule to one
+              workstream from its Overview tab.
+            </p>
             {productId
               ? <RuleCatalogView productId={productId} storyId={storyId} />
               : <p className="sc-rules__empty">This story has no product, so it has no rule catalog.</p>}

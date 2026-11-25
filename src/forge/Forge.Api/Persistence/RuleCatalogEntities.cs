@@ -11,9 +11,10 @@ namespace Forge.Api.Persistence;
 /// A tag says which workstreams it applies to: the repos and workstream
 /// categories it is limited to, and the phrases or regular expressions that
 /// must appear in the workstream's stage text. A tag with no phrase and no
-/// pattern applies to every workstream in its repos and categories. Rules are
-/// attached to tags, never to workstreams directly, so a rule written once
-/// reaches every matching workstream of every story in the product.
+/// pattern applies to every workstream in its repos and categories. A rule on
+/// a tag, written once, reaches every matching work item and workstream of
+/// every story in the product; the operator can also attach a rule to one
+/// work item directly (<see cref="WorkItemRuleRow"/>).
 /// </summary>
 public class RuleTagRow
 {
@@ -49,8 +50,10 @@ public class RuleTagRow
 
 /// <summary>
 /// Phase 108 — a standing rule in a product's rule catalog. It goes into the
-/// generator prompt of every iteration of every workstream that carries at
-/// least one of its tags, as a binding operator directive.
+/// generator prompt of every iteration of every work item or workstream that
+/// carries at least one of its tags, or that the operator attached it to, as
+/// a binding operator directive. A rule with no tags reaches only the items it
+/// is attached to.
 /// </summary>
 public class CatalogRuleRow
 {
@@ -79,16 +82,39 @@ public class CatalogRuleRow
 }
 
 /// <summary>
-/// Phase 108 — the operator's decision on one tag for one workstream, which
-/// wins over the tag's matchers: <see cref="On"/> true adds the tag even when
-/// nothing matches, false removes it even when something does. No row means
-/// the matchers decide.
+/// Phase 108 — the operator's decision on one rule for one work item
+/// execution or workstream, which wins over the rule's tags: <see cref="On"/>
+/// true attaches the rule even when none of its tags applies, false detaches
+/// it even when one does. No row means the tags decide.
+/// </summary>
+public class WorkItemRuleRow
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>The work item or workstream (<c>work_items.Id</c> / <c>workstreams.Id</c>).</summary>
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>The rule (<see cref="CatalogRuleRow.Id"/>).</summary>
+    public string RuleId { get; set; } = string.Empty;
+
+    public bool On { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
+/// Phase 108 — the operator's decision on one tag for one work item or
+/// workstream, which wins over the tag's matchers: <see cref="On"/> true adds
+/// the tag even when nothing matches, false removes it even when something
+/// does. No row means the matchers decide.
 /// </summary>
 public class WorkstreamTagOverrideRow
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
-    /// <summary>The workstream (<c>workstreams.Id</c>).</summary>
+    /// <summary>The work item or workstream (<c>work_items.Id</c> / <c>workstreams.Id</c>).</summary>
     public string WorkstreamId { get; set; } = string.Empty;
 
     /// <summary>The tag (<see cref="RuleTagRow.Id"/>).</summary>

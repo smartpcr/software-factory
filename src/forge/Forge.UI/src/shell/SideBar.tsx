@@ -268,6 +268,14 @@ export function SideBar() {
             </div>
             <span className="tooltip">Swarm</span>
           </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/rules">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 2 H 12 V 14 H 4 Z" stroke="currentColor" strokeWidth="1.3" fill="none" /><path d="M6 5.5 H 10 M 6 8 H 10 M 6 10.5 H 8.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
+            <div className="label-block">
+              <span className="label">Rules</span>
+              <span className="sub">Standing rules for agents</span>
+            </div>
+            <span className="tooltip">Rules</span>
+          </NavLink>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/policies">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1 L13 3 V 8 C 13 11 11 13 8 14 C 5 13 3 11 3 8 V 3 Z" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>
             <div className="label-block">

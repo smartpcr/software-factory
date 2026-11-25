@@ -196,6 +196,8 @@ public static class DbBoundary
         // Phase 82 — append-only per-iteration prompt audit, keyed by
         // WorkItemId (one row per generator/evaluator invocation).
         new DbTableSpec("iteration_prompt", DbKind.Product, PartitionStrategy.ViaWorkItemId, "WorkItemId"),
+        // Phase 108 — rules the operator attached to or detached from one work item.
+        new DbTableSpec("work_item_rules", DbKind.Product, PartitionStrategy.ViaWorkItemId, "WorkItemId"),
         new DbTableSpec("task_queue", DbKind.Product, PartitionStrategy.ViaWorkItemId, "WorkItemId"),
         // task_queue_history has QueueId (FK on task_queue); chain through it.
         new DbTableSpec("task_queue_history", DbKind.Product, PartitionStrategy.ViaQueueId, "QueueId"),
