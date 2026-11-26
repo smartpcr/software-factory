@@ -4304,6 +4304,31 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "copy results to a workspace" -- there is no separate workspace.
             Reply `DONE` when finished.
 
+            ## Waiting on long background work
+            When you start work that runs longer than your turn (a harness-gate
+            lane, a long build or test run) and have nothing else to change
+            until it ends, do NOT end turns just to check on it: a turn that
+            changes no file counts toward the no-progress stop. Instead, before
+            `DONE`, write `.forge/waiting.json` naming each job:
+            ```json
+            {
+              "reason": "harness-gate lanes at <sha>",
+              "maxMinutes": 90,
+              "jobs": [
+                { "name": "windows lane", "pid": 32036 },
+                { "name": "wsl lane", "log": "\\\\wsl.localhost\\Ubuntu\\home\\me\\lane.log", "doneWhen": "^exit: \\d+" }
+              ]
+            }
+            ```
+            A job is done when its Windows `pid` has exited, or when its `log`
+            (absolute, or relative to the worktree) has a line matching the
+            `doneWhen` regex. Forge then holds the next iteration until every
+            job is done (at most `maxMinutes`, default 90, capped at 180) and
+            the turn does not count as no progress. Next iteration, read the
+            results and act on them; delete `.forge/waiting.json` once nothing
+            is running. A declaration whose jobs are all done, or one that does
+            not parse, is ignored.
+
             ## Working notes -- REQUIRED before `DONE`
             Before replying `DONE`, write a markdown file at the relative
             path `.forge/iter-notes.md` capturing THIS iteration's
@@ -8500,7 +8525,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
                 // A turn the wait-only guard ended was waiting on background
                 // work, not stuck: it neither extends nor resets the streak.
-                if (changedCount == 0 && !endedWhileWaiting)
+                // Nor does a turn that declared background work still running
+                // in .forge/waiting.json: Forge holds the next iteration until
+                // that work ends (see BackgroundWait).
+                if (changedCount == 0 && !endedWhileWaiting
+                    && !await this.HoldOnDeclaredBackgroundWorkAsync(workItemId, iter, workspace, genAgentId, crew.Id, iterCt))
                 {
                     consecutiveNoChange++;
                     await this.taskChannel.EmitAsync(workItemId, "task.no-progress.detected", new
@@ -10730,6 +10759,78 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         }
         catch { /* enumeration race -- best-effort */ }
     }
+
+    /// <summary>
+    /// For a turn that changed no file: when the generator declared background
+    /// work in <c>.forge/waiting.json</c> that is still running, hold here (no
+    /// agent runs) until it ends, and return true so the turn does not count
+    /// toward the zero-change stall. Returns false (the turn counts) when there
+    /// is no declaration, it does not parse, every job is already done, or the
+    /// hold reaches the declared limit.
+    /// </summary>
+    private async Task<bool> HoldOnDeclaredBackgroundWorkAsync(
+        string workItemId, int iter, string workspace, string? agentId, string crewId, CancellationToken ct)
+    {
+        var wait = BackgroundWait.Read(workspace, out var error);
+        if (wait is null)
+        {
+            if (error is not null)
+            {
+                await this.taskChannel.EmitAsync(workItemId, "task.waiting.invalid", new
+                {
+                    iter,
+                    error,
+                    note = $"{BackgroundWait.RelativePath} was ignored, so this turn counts toward the no-progress stall.",
+                }, agentId: agentId, crewId: crewId, ct: ct);
+            }
+
+            return false;
+        }
+
+        bool IsDone(BackgroundJob j) => BackgroundWait.IsDone(j, BackgroundWait.ProcessAlive, BackgroundWait.ReadLogTail);
+        var running = wait.Jobs.Where(j => !IsDone(j)).Select(j => j.Name).ToList();
+        if (running.Count == 0 || DateTimeOffset.UtcNow >= wait.Deadline)
+        {
+            // Stale: the agent ended a turn with nothing running and nothing changed.
+            return false;
+        }
+
+        await this.taskChannel.EmitAsync(workItemId, "task.waiting.background", new
+        {
+            iter,
+            reason = wait.Reason,
+            running,
+            deadline = wait.Deadline,
+            note = "The agent changed nothing and is waiting on background work it declared, so Forge holds the next iteration until that work ends.",
+        }, agentId: agentId, crewId: crewId, ct: ct);
+
+        var outcome = await wait.HoldAsync(
+            IsDone,
+            () => DateTimeOffset.UtcNow,
+            (d, token) => Task.Delay(d, token),
+            poll: TimeSpan.FromSeconds(30),
+            heartbeat: TimeSpan.FromMinutes(5),
+            onHeartbeat: pending => this.taskChannel.EmitAsync(workItemId, "task.waiting.heartbeat", new
+            {
+                iter,
+                running = pending,
+            }, agentId: agentId, crewId: crewId, ct: ct),
+            ct);
+
+        await this.taskChannel.EmitAsync(workItemId, "task.waiting.finished", new
+        {
+            iter,
+            timedOut = outcome.TimedOut,
+            stillRunning = outcome.Pending,
+            waitedSeconds = (long)outcome.Waited.TotalSeconds,
+        }, agentId: agentId, crewId: crewId, ct: ct);
+
+        this.logger?.LogInformation(
+            "Background wait for {WorkItem} iter {Iter} ended after {Waited:g} (timed out: {TimedOut}).",
+            workItemId, iter, outcome.Waited, outcome.TimedOut);
+        return !outcome.TimedOut;
+    }
+
     /// archived working-notes history so the next iter's prompt sees
     /// every prior iter's reflection, not just the last one. Scans
     /// <c>.forge/notes/iter-*.md</c>, sorts by iter descending (newest
