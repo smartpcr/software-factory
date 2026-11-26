@@ -1,122 +1,178 @@
-// Phase 108 — Rules & guardrails: the product's policies, rules and tags.
+// Phases 108–109 — Rules & guardrails: the product policies, rules and tags.
 //
 // A rule is one directive the agent follows on every iteration of the work
-// items it reaches. A policy groups rules (a rule can be in several). A tag
-// matches work items by repo and text and applies policies to them
-// automatically. On one work item (its execution page, or a workstream's
-// Overview) the operator can pick or remove a whole policy or a single rule.
+// items it reaches. A policy groups rules (a rule can be in several). A
+// policy applies to the whole product, to whole stories, wherever one of its
+// tags matches, or to single work items picked by hand; a rule also applies
+// on its own wherever one of its own tags matches.
+//
+// Layout: a filter bar (products, stories, tags, text; each a multi-select),
+// a tree on the left (product → policies → rules, rules in no policy, tags),
+// and the detail panel on the right for whatever is selected.
 // Data: /api/products/{id}/rule-catalog.
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import {
-  forgeApi,
-  type CatalogRule,
-  type CatalogRuleInput,
-  type RuleCatalog,
-  type RulePolicy,
-  type RulePolicyInput,
-  type RuleTag,
-  type RuleTagInput,
-  type RuleTagMatch,
-} from '@/api/forgeApi';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { forgeApi, type RuleCatalog, type RuleReach, type StoryTarget } from '@/api/forgeApi';
 import { useConfirmStore } from '@/state/useConfirmStore';
 import { useProductsStore } from '@/state/useProductsStore';
-import { emptyTag, namesOf, policiesWithRule, policiesWithTag, tagMatchers, tagScope } from '@/swarm/ruleCatalogText';
-import { Dialog, PolicyForm, RuleForm, TagForm } from './policyEditors';
-
-type Editor =
-  | { kind: 'rule'; id: string | null; value: CatalogRuleInput & { policyIds: string[] } }
-  | { kind: 'policy'; id: string | null; value: RulePolicyInput }
-  | { kind: 'tag'; id: string | null; value: RuleTagInput };
-
-const NEW_RULE = { title: '', text: '', enabled: true, policyIds: [] as string[] };
-const NEW_POLICY: RulePolicyInput = { name: '', description: '', ruleIds: [], tagIds: [], enabled: true };
+import { MultiSelect, PolicyPanel, RulePanel, TagPanel, type PanelContext } from './policyPanels';
+import {
+  buildTree, emptyFilter, isSelected, storiesFor, storyKey, visibleKeys,
+  type ProductCatalog, type Selection, type TreeFilter, type TreeNode,
+} from './policyTree';
 
 export function PoliciesView() {
+  const products = useProductsStore((s) => s.products);
   const activeProductId = useProductsStore((s) => s.activeProductId);
-  const productId = activeProductId && activeProductId !== 'all' ? activeProductId : null;
-  const [catalog, setCatalog] = useState<RuleCatalog | null>(null);
+  const [productIds, setProductIds] = useState<string[]>([]);
+  const [catalogs, setCatalogs] = useState<Record<string, RuleCatalog>>({});
+  const [stories, setStories] = useState<Record<string, StoryTarget[]>>({});
+  const [reach, setReach] = useState<Record<string, RuleReach>>({});
+  const [reachVersion, setReachVersion] = useState(0);
+  const [filter, setFilter] = useState<TreeFilter>(emptyFilter);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editor, setEditor] = useState<Editor | null>(null);
-  const [matches, setMatches] = useState<{ tagId: string; rows: RuleTagMatch[] } | null>(null);
 
-  const load = useCallback(async () => {
-    if (!productId) return;
-    try {
-      setCatalog(await forgeApi.getRuleCatalog(productId));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Loading the policies failed');
-    }
-  }, [productId]);
-  useEffect(() => { setCatalog(null); void load(); }, [load]);
+  // Start on the active product (or every product on "All products"), and
+  // follow it when it changes in the top bar; a store refresh keeps the choice.
+  const startedOn = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (products.length === 0 || startedOn.current === activeProductId) return;
+    startedOn.current = activeProductId;
+    const active = activeProductId && activeProductId !== 'all' && products.some((p) => p.id === activeProductId);
+    setProductIds(active ? [activeProductId!] : products.map((p) => p.id));
+  }, [activeProductId, products]);
 
-  async function run(action: () => Promise<unknown>, after?: () => void) {
+  const loadCatalog = useCallback(async (pid: string) => {
+    const c = await forgeApi.getRuleCatalog(pid);
+    setCatalogs((all) => ({ ...all, [pid]: c }));
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const missing = productIds.filter((pid) => !catalogs[pid]);
+      try {
+        await Promise.all(missing.map(async (pid) => {
+          // The story list only feeds the filter and the story picker; without it the catalog still loads.
+          const [c, t] = await Promise.all([
+            forgeApi.getRuleCatalog(pid),
+            forgeApi.listRuleTargets(pid).catch(() => ({ stories: [], workItems: [] })),
+          ]);
+          if (!live) return;
+          setCatalogs((all) => ({ ...all, [pid]: c }));
+          setStories((all) => ({ ...all, [pid]: t.stories }));
+        }));
+        if (live) setError(null);
+      } catch (e) {
+        if (live) setError(e instanceof Error ? e.message : 'Loading the policies failed');
+      }
+    })();
+    return () => { live = false; };
+    // Only fetch what is missing when the chosen products change.
+  }, [productIds]);
+
+  // How far each policy and rule reaches into the chosen stories.
+  useEffect(() => {
+    if (filter.storyKeys.length === 0) { setReach({}); return undefined; }
+    let live = true;
+    void Promise.all(productIds.map(async (pid) => {
+      const spawnIds = storiesFor(filter, pid);
+      if (spawnIds.length === 0) return [pid, undefined] as const;
+      return [pid, await forgeApi.getRuleReach(pid, spawnIds)] as const;
+    })).then((rows) => {
+      if (!live) return;
+      const next: Record<string, RuleReach> = {};
+      for (const [pid, r] of rows) if (r) next[pid] = r;
+      setReach(next);
+    }).catch((e) => { if (live) setError(e instanceof Error ? e.message : 'Checking the stories failed'); });
+    return () => { live = false; };
+  }, [filter, productIds, reachVersion]);
+
+  const nameOf = useCallback((pid: string) => products.find((p) => p.id === pid)?.name ?? pid, [products]);
+  const shown: ProductCatalog[] = useMemo(
+    () => productIds.filter((pid) => catalogs[pid]).map((pid) => ({ productId: pid, productName: nameOf(pid), catalog: catalogs[pid] })),
+    [productIds, catalogs, nameOf],
+  );
+  const tree = useMemo(() => buildTree(shown, filter, reach), [shown, filter, reach]);
+
+  const run = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+    const pid = selection?.productId;
     setBusy(true);
     setError(null);
     try {
-      await action();
-      after?.();
-      await load();
+      const result = await action();
+      if (pid) await loadCatalog(pid);
+      setReachVersion((v) => v + 1);
+      return result;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The change failed');
+      return undefined;
     } finally {
       setBusy(false);
     }
-  }
+  }, [selection?.productId, loadCatalog]);
 
-  const confirmDelete = (title: string, body: string) =>
-    useConfirmStore.getState().ask({ title, body, tone: 'warn', confirmLabel: 'Delete', cancelLabel: 'Keep' });
+  const confirm = useCallback((title: string, body: string) =>
+    useConfirmStore.getState().ask({ title, body, tone: 'warn', confirmLabel: 'Delete', cancelLabel: 'Keep' }), []);
 
-  const counts = useMemo(() => {
-    const sum = (u: Record<string, { attached: number }> | undefined) => Object.values(u ?? {}).reduce((s, x) => s + x.attached, 0);
-    return {
-      policies: catalog?.policies.length ?? 0,
-      policiesOn: catalog?.policies.filter((p) => p.enabled).length ?? 0,
-      rules: catalog?.rules.length ?? 0,
-      rulesOn: catalog?.rules.filter((r) => r.enabled).length ?? 0,
-      tags: catalog?.tags.length ?? 0,
-      picked: sum(catalog?.policyUsage) + sum(catalog?.ruleUsage),
-    };
-  }, [catalog]);
+  const select = useCallback((sel: Selection | null) => { setSelection(sel); setError(null); }, []);
+  const newIn = selection?.productId ?? productIds[0] ?? null;
+
+  const tagOptions = useMemo(() => {
+    const names = new Map<string, Set<string>>();
+    for (const { productName, catalog } of shown) {
+      for (const t of catalog.tags) {
+        const key = t.name.toLowerCase();
+        if (!names.has(key)) names.set(key, new Set());
+        names.get(key)!.add(productName);
+      }
+    }
+    return [...names.entries()].sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, in_]) => ({ value: name, label: name, hint: shown.length > 1 ? [...in_].join(', ') : undefined }));
+  }, [shown]);
+  const storyOptions = useMemo(() => productIds.flatMap((pid) => (stories[pid] ?? []).map((s) => ({
+    value: storyKey(pid, s.spawnId),
+    label: `${s.storyId} — ${s.title}`,
+    hint: `${s.workstreams} ws · ${s.phase}${productIds.length > 1 ? ` · ${nameOf(pid)}` : ''}`,
+  }))), [productIds, stories, nameOf]);
 
   function exportCatalog() {
-    if (!catalog) return;
-    const { productId: pid, policies, rules, tags } = catalog;
-    const blob = new Blob([JSON.stringify({ productId: pid, policies, rules, tags }, null, 2)], { type: 'application/json' });
+    const data = shown.map(({ productId, catalog }) => ({
+      productId, policies: catalog.policies, rules: catalog.rules, tags: catalog.tags, policyScopes: catalog.policyScopes,
+    }));
+    const blob = new Blob([JSON.stringify(data.length === 1 ? data[0] : data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `policies-${pid}.json`;
+    a.download = `policies-${productIds.join('-') || 'none'}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  function save(value: CatalogRuleInput | RulePolicyInput | RuleTagInput) {
-    if (!productId || !editor) return;
-    const ed = editor;
-    void run(() => {
-      switch (ed.kind) {
-        case 'rule': {
-          const v = value as CatalogRuleInput;
-          return ed.id ? forgeApi.updateCatalogRule(productId, ed.id, v) : forgeApi.addCatalogRule(productId, v);
-        }
-        case 'policy': {
-          const v = value as RulePolicyInput;
-          return ed.id ? forgeApi.updateRulePolicy(productId, ed.id, v) : forgeApi.addRulePolicy(productId, v);
-        }
-        default: {
-          const v = value as RuleTagInput;
-          return ed.id ? forgeApi.updateRuleTag(productId, ed.id, v) : forgeApi.addRuleTag(productId, v);
-        }
-      }
-    }, () => { setEditor(null); setMatches(null); });
-  }
+  const filtering = filter.tagNames.length > 0 || filter.storyKeys.length > 0 || filter.text.trim().length > 0;
+  const counts = useMemo(() => {
+    const all = visibleKeys(tree, new Set());
+    return {
+      policies: all.filter((n) => n.kind === 'policy').length,
+      rules: new Set(all.filter((n) => n.kind === 'rule').map((n) => `${n.productId}:${n.id}`)).size,
+      tags: all.filter((n) => n.kind === 'tag').length,
+    };
+  }, [tree]);
 
-  const editRule = (r: CatalogRule) => catalog && setEditor({
-    kind: 'rule', id: r.id, value: { ...r, policyIds: policiesWithRule(catalog, r.id).map((p) => p.id) },
-  });
+  const selCatalog = selection ? catalogs[selection.productId] : undefined;
+  const ctx: PanelContext | null = selection && selCatalog ? {
+    productId: selection.productId,
+    productName: nameOf(selection.productId),
+    catalog: selCatalog,
+    stories: stories[selection.productId] ?? [],
+    busy,
+    run,
+    select,
+    confirm,
+  } : null;
 
   return (
     <section className="view active" id="view-policies">
@@ -125,9 +181,9 @@ export function PoliciesView() {
           <div className="page-eyebrow">
             <span><span className="num">08</span>&nbsp;Policies</span>
             <span className="sep">/</span>
-            <span>{counts.policiesOn}/{counts.policies} policies · {counts.rulesOn}/{counts.rules} rules enabled</span>
+            <span>{counts.policies} policies · {counts.rules} rules · {counts.tags} tags{filtering ? ' shown' : ''}</span>
             <span className="sep">/</span>
-            <span>product {productId ?? '—'}</span>
+            <span>{productIds.length === 1 ? `product ${nameOf(productIds[0])}` : `${productIds.length} products`}</span>
           </div>
           <h1 className="page-title">
             <span className="mark" />
@@ -135,11 +191,13 @@ export function PoliciesView() {
           </h1>
         </div>
         <div className="page-head-right">
-          <button type="button" className="btn btn-secondary" disabled={!catalog} onClick={exportCatalog}>Export JSON</button>
-          <button type="button" className="btn btn-secondary" disabled={!catalog || busy}
-            onClick={() => setEditor({ kind: 'rule', id: null, value: NEW_RULE })}>New rule</button>
-          <button type="button" className="btn btn-primary" disabled={!catalog || busy}
-            onClick={() => setEditor({ kind: 'policy', id: null, value: NEW_POLICY })}>
+          <button type="button" className="btn btn-secondary" disabled={shown.length === 0} onClick={exportCatalog}>Export JSON</button>
+          <button type="button" className="btn btn-secondary" disabled={!newIn}
+            onClick={() => newIn && select({ productId: newIn, kind: 'tag', id: null })}>New tag</button>
+          <button type="button" className="btn btn-secondary" disabled={!newIn}
+            onClick={() => newIn && select({ productId: newIn, kind: 'rule', id: null })}>New rule</button>
+          <button type="button" className="btn btn-primary" disabled={!newIn}
+            onClick={() => newIn && select({ productId: newIn, kind: 'policy', id: null })}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
@@ -148,267 +206,185 @@ export function PoliciesView() {
         </div>
       </div>
 
-      {!productId && <p className="policies-note">Choose a product in the top bar to see its policies.</p>}
-      {error && !editor && <p className="policies-error" role="alert">{error}</p>}
+      <div className="px-filters rx" role="search" aria-label="Filter policies and rules">
+        <MultiSelect label="Products" allLabel="None" values={productIds}
+          options={products.map((p) => ({ value: p.id, label: p.name }))}
+          onChange={(v) => { setProductIds(v); setFilter((f) => ({ ...f, storyKeys: f.storyKeys.filter((k) => v.some((pid) => k.startsWith(`${pid}|`))) })); }} />
+        <MultiSelect label="Stories" allLabel="Any story" values={filter.storyKeys} options={storyOptions}
+          onChange={(v) => setFilter((f) => ({ ...f, storyKeys: v }))} />
+        <MultiSelect label="Tags" allLabel="Any tag" values={filter.tagNames} options={tagOptions}
+          onChange={(v) => setFilter((f) => ({ ...f, tagNames: v }))} />
+        <input className="rx-input px-filter-text" type="search" value={filter.text} aria-label="Filter by words"
+          placeholder="Words in a name or rule…" onChange={(e) => setFilter((f) => ({ ...f, text: e.target.value }))} />
+        {filtering && <button type="button" className="rx-small-btn" onClick={() => setFilter(emptyFilter)}>Clear filters</button>}
+      </div>
 
-      {catalog && (
-        <>
-          <div className="workstreams-stats" style={{ margin: '0 28px 12px' }}>
-            <div className="stat-cell">
-              <div className="stat-cell-label">Policies</div>
-              <div className="stat-cell-val">{counts.policiesOn}<span className="unit">of {counts.policies} on</span></div>
-              <div className="stat-cell-trend">groups of rules applied together</div>
-            </div>
-            <div className="stat-cell">
-              <div className="stat-cell-label">Rules</div>
-              <div className="stat-cell-val">{counts.rulesOn}<span className="unit">of {counts.rules} on</span></div>
-              <div className="stat-cell-trend">directives the agent follows</div>
-            </div>
-            <div className="stat-cell">
-              <div className="stat-cell-label">Tags</div>
-              <div className="stat-cell-val">{counts.tags}</div>
-              <div className="stat-cell-trend">apply policies automatically</div>
-            </div>
-            <div className="stat-cell">
-              <div className="stat-cell-label">Picked by hand</div>
-              <div className="stat-cell-val">{counts.picked}</div>
-              <div className="stat-cell-trend">policy or rule choices on work items</div>
-            </div>
-          </div>
+      {error && <p className="policies-error" role="alert">{error}</p>}
+      {productIds.length === 0 && products.length > 0 && <p className="policies-note">Choose at least one product.</p>}
 
-          <ol className="policies-howto">
-            <li><strong>Write rules</strong>: each is one directive the agent follows on every iteration.</li>
-            <li><strong>Group them into policies</strong>. A rule can be in several policies.</li>
-            <li><strong>Apply</strong> a whole policy or a single rule on a work item&apos;s execution page or a workstream&apos;s Overview, or give a policy a <strong>tag</strong> so it applies automatically wherever the tag matches.</li>
-          </ol>
-
-          <div className="policies-wrap">
-            <Lane num="01" title="Policies" sub="Groups of rules, applied together" count={catalog.policies.length}
-              addLabel="+ new policy" onAdd={() => setEditor({ kind: 'policy', id: null, value: NEW_POLICY })}>
-              {catalog.policies.length === 0 && <p className="policies-empty">No policies yet. Create rules, then group them into a policy.</p>}
-              {catalog.policies.map((p) => (
-                <PolicyCard key={p.id} policy={p} catalog={catalog} busy={busy}
-                  onToggle={() => void run(() => forgeApi.updateRulePolicy(productId!, p.id, { ...p, enabled: !p.enabled }))}
-                  onEdit={() => setEditor({ kind: 'policy', id: p.id, value: p })}
-                  onDelete={() => void (async () => {
-                    if (await confirmDelete('Delete this policy?', `${p.name} — its rules stay in the catalog; work items that had this policy lose them unless picked on their own.`)) {
-                      await run(() => forgeApi.deleteRulePolicy(productId!, p.id));
-                    }
-                  })()} />
-              ))}
-            </Lane>
-
-            <Lane num="02" title="Rules" sub="Directives; each can be in several policies or none" count={catalog.rules.length}
-              addLabel="+ new rule" onAdd={() => setEditor({ kind: 'rule', id: null, value: NEW_RULE })}>
-              {catalog.rules.length === 0 && <p className="policies-empty">No rules yet.</p>}
-              {catalog.rules.map((r) => (
-                <RuleCard key={r.id} rule={r} catalog={catalog} busy={busy}
-                  onToggle={() => void run(() => forgeApi.updateCatalogRule(productId!, r.id, { title: r.title, text: r.text, enabled: !r.enabled }))}
-                  onEdit={() => editRule(r)}
-                  onDelete={() => void (async () => {
-                    if (await confirmDelete('Delete this rule?', `${r.title} — it is removed from every policy and every work item, from their next iteration.`)) {
-                      await run(() => forgeApi.deleteCatalogRule(productId!, r.id));
-                    }
-                  })()} />
-              ))}
-            </Lane>
-
-            <Lane num="03" title="Tags" sub="Match work items by repo and text; apply policies automatically" count={catalog.tags.length}
-              addLabel="+ new tag" onAdd={() => setEditor({ kind: 'tag', id: null, value: emptyTag })}>
-              {catalog.tags.length === 0 && <p className="policies-empty">No tags yet. Tags are optional.</p>}
-              {catalog.tags.map((t) => (
-                <TagCard key={t.id} tag={t} catalog={catalog} busy={busy}
-                  matches={matches?.tagId === t.id ? matches.rows : null}
-                  onCheck={() => void run(async () => setMatches({ tagId: t.id, rows: await forgeApi.listRuleTagMatches(productId!, t.id) }))}
-                  onEdit={() => setEditor({ kind: 'tag', id: t.id, value: t })}
-                  onDelete={() => void (async () => {
-                    if (await confirmDelete('Delete this tag?', `${t.name} — policies stop applying automatically where it matched; choices made by hand stay.`)) {
-                      await run(() => forgeApi.deleteRuleTag(productId!, t.id), () => setMatches(null));
-                    }
-                  })()} />
-              ))}
-            </Lane>
-          </div>
-        </>
-      )}
-
-      {editor && catalog && (
-        <Dialog
-          title={`${editor.id ? 'Edit' : 'New'} ${editor.kind}`}
-          error={error}
-          onClose={() => { setEditor(null); setError(null); }}
-        >
-          {editor.kind === 'rule' && <RuleForm initial={editor.value} catalog={catalog} busy={busy} onCancel={() => setEditor(null)} onSave={save} />}
-          {editor.kind === 'policy' && <PolicyForm initial={editor.value} catalog={catalog} busy={busy} onCancel={() => setEditor(null)} onSave={save} />}
-          {editor.kind === 'tag' && <TagForm initial={editor.value} busy={busy} onCancel={() => setEditor(null)} onSave={save} />}
-        </Dialog>
-      )}
+      <div className="px-split">
+        <PolicyTree nodes={tree} collapsed={collapsed} selection={selection}
+          loading={productIds.some((pid) => !catalogs[pid])}
+          filtering={filtering}
+          onToggle={(key) => setCollapsed((c) => { const n = new Set(c); if (n.has(key)) n.delete(key); else n.add(key); return n; })}
+          onSelect={(n) => select({ productId: n.productId, kind: n.kind as Selection['kind'], id: n.id })} />
+        <div className="px-detail rx" aria-live="polite">
+          {ctx && selection ? <Detail ctx={ctx} selection={selection} /> : <Help />}
+        </div>
+      </div>
     </section>
   );
 }
 
-function Lane({ num, title, sub, count, addLabel, onAdd, children }: {
-  num: string; title: string; sub: string; count: number; addLabel: string; onAdd: () => void; children: ReactNode;
-}) {
+function Detail({ ctx, selection }: { ctx: PanelContext; selection: Selection }) {
+  const key = `${selection.productId}:${selection.kind}:${selection.id ?? `new-${selection.policyId ?? ''}`}`;
+  switch (selection.kind) {
+    case 'policy': {
+      const p = selection.id ? ctx.catalog.policies.find((x) => x.id === selection.id) : null;
+      if (selection.id && !p) return <Gone />;
+      return <PolicyPanel key={key} ctx={ctx} policy={p ?? null} />;
+    }
+    case 'rule': {
+      const r = selection.id ? ctx.catalog.rules.find((x) => x.id === selection.id) : null;
+      if (selection.id && !r) return <Gone />;
+      return <RulePanel key={key} ctx={ctx} rule={r ?? null} startPolicyId={selection.policyId} />;
+    }
+    default: {
+      const t = selection.id ? ctx.catalog.tags.find((x) => x.id === selection.id) : null;
+      if (selection.id && !t) return <Gone />;
+      return <TagPanel key={key} ctx={ctx} tag={t ?? null} />;
+    }
+  }
+}
+
+function Gone() {
+  return <div className="px-help"><p>This item no longer exists. Pick another in the tree.</p></div>;
+}
+
+function Help() {
   return (
-    <div className="policies-lane">
-      <div className="policies-lane-head">
-        <h2 className="policies-lane-title">
-          <span className="num">{num}</span>
-          <span>{title}</span>
-        </h2>
-        <span className="policies-lane-count">{count}</span>
-      </div>
-      <p className="policies-lane-sub">{sub}</p>
-      {children}
-      <button type="button" className="policies-lane-add" onClick={onAdd}>{addLabel}</button>
+    <div className="px-help">
+      <h2 className="px-help-title">Pick a policy, rule or tag to see and change it</h2>
+      <ol>
+        <li><strong>Rules</strong> are directives the agent follows on every iteration of the work items they reach.</li>
+        <li><strong>Policies</strong> group rules. A policy applies to the whole product, to whole stories, wherever one of its tags matches, or to single workstreams and work items you pick.</li>
+        <li><strong>Tags</strong> match work items by repo and text. A tag on a policy applies the policy; a tag on a rule applies that rule on its own.</li>
+      </ol>
+      <p className="rx-hint">On one work item&apos;s execution page or a workstream&apos;s Overview you can still pick or remove a single policy or rule; that choice wins.</p>
     </div>
   );
 }
 
-function Toggle({ name, on, busy, onToggle }: { name: string; on: boolean; busy?: boolean; onToggle?: () => void }) {
-  if (!onToggle) return null;
-  return (
-    <button type="button" className="policy-toggle" data-on={on || undefined} disabled={busy}
-      aria-pressed={on} aria-label={`${name}: ${on ? 'on, click to turn off' : 'off, click to turn on'}`} onClick={onToggle} />
-  );
-}
+const KIND_LABEL: Record<TreeNode['kind'], string> = { product: 'Product', group: '', policy: 'Policy', rule: 'Rule', tag: 'Tag' };
 
-function Foot({ attached, detached, children }: { attached: number; detached: number; children?: ReactNode }) {
-  return (
-    <div className="policy-card-foot">
-      <span>
-        picked on <span className="num">{attached}</span> work item{attached === 1 ? '' : 's'}
-        {detached > 0 && <> · removed on <span className="num">{detached}</span></>}
-      </span>
-      <span className="policy-card-actions">{children}</span>
-    </div>
-  );
-}
-
-/** A policy: its rules, how it applies (tags or by hand), and where it is picked. */
-export function PolicyCard({ policy, catalog, busy, onToggle, onEdit, onDelete }: {
-  policy: RulePolicy; catalog: RuleCatalog; busy?: boolean;
-  onToggle?: () => void; onEdit?: () => void; onDelete?: () => void;
+/** The tree: arrow keys move, Right/Left open and close, Enter or Space selects. */
+export function PolicyTree({ nodes, collapsed, selection, loading, filtering, onToggle, onSelect }: {
+  nodes: TreeNode[];
+  collapsed: Set<string>;
+  selection: Selection | null;
+  loading?: boolean;
+  filtering?: boolean;
+  onToggle: (key: string) => void;
+  onSelect: (node: TreeNode) => void;
 }) {
-  const auto = policy.tagIds.length > 0;
-  const usage = catalog.policyUsage?.[policy.id] ?? { attached: 0, detached: 0 };
-  const rules = policy.ruleIds.map((id) => catalog.rules.find((r) => r.id === id)).filter((r): r is CatalogRule => !!r);
-  return (
-    <article className="policy-card" data-disabled={!policy.enabled || undefined} data-kind={auto ? 'tagged' : 'manual'}>
-      <div className="policy-card-head">
-        <div style={{ minWidth: 0 }}>
-          <div className="policy-card-eyebrow">
-            <span>Policy</span>
-            <span className="sep">·</span>
-            <span className={`severity ${auto ? 'info' : 'warn'}`}>{auto ? 'auto' : 'by hand'}</span>
-            {!policy.enabled && <><span className="sep">·</span><span>off</span></>}
-          </div>
-          <h3 className="policy-card-title">{policy.name}</h3>
-        </div>
-        <Toggle name={policy.name} on={policy.enabled} busy={busy} onToggle={onToggle} />
-      </div>
-      {policy.description && <div className="policy-card-body">{policy.description}</div>}
-      {rules.length === 0
-        ? <div className="policy-card-body">No rules in this policy yet.</div>
-        : (
-          <ol className="policy-card-rules">
-            {rules.map((r) => <li key={r.id}>{r.title}{!r.enabled && <span className="policy-card-off"> (off)</span>}</li>)}
-          </ol>
-        )}
-      <div className="policy-card-trigger">
-        <span className="key">applies</span>{' '}
-        <span className="op">
-          {auto ? `where tag ${namesOf(catalog.tags, policy.tagIds, (t) => t.name).join(' or ')} matches, or where picked` : 'where picked on a work item'}
-        </span>
-      </div>
-      <Foot attached={usage.attached} detached={usage.detached}>
-        {onEdit && <button type="button" disabled={busy} onClick={onEdit}>Edit</button>}
-        {onDelete && <button type="button" className="danger" disabled={busy} onClick={onDelete}>Delete</button>}
-      </Foot>
-    </article>
-  );
-}
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const visible = useMemo(() => visibleKeys(nodes, collapsed), [nodes, collapsed]);
+  const current = visible.find((n) => n.key === focusKey) ?? visible.find((n) => isSelected(n, selection)) ?? visible[0];
 
-/** A rule: its directive, the policies it is in, and where it is picked on its own. */
-export function RuleCard({ rule, catalog, busy, onToggle, onEdit, onDelete }: {
-  rule: CatalogRule; catalog: RuleCatalog; busy?: boolean;
-  onToggle?: () => void; onEdit?: () => void; onDelete?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const inPolicies = policiesWithRule(catalog, rule.id);
-  const usage = catalog.ruleUsage?.[rule.id] ?? { attached: 0, detached: 0 };
-  const long = rule.text.length > 280 || rule.text.split('\n').length > 5;
-  return (
-    <article className="policy-card" data-disabled={!rule.enabled || undefined} data-kind="rule">
-      <div className="policy-card-head">
-        <div style={{ minWidth: 0 }}>
-          <div className="policy-card-eyebrow">
-            <span>Rule</span>
-            <span className="sep">·</span>
-            <span>{inPolicies.length === 0 ? 'in no policy' : `in ${inPolicies.map((p) => p.name).join(', ')}`}</span>
-            {!rule.enabled && <><span className="sep">·</span><span>off</span></>}
-          </div>
-          <h3 className="policy-card-title">{rule.title}</h3>
-        </div>
-        <Toggle name={rule.title} on={rule.enabled} busy={busy} onToggle={onToggle} />
-      </div>
-      <div className={`policy-card-body policy-card-body--rule${open || !long ? '' : ' is-clamped'}`}>{rule.text}</div>
-      {long && (
-        <button type="button" className="policy-card-more" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? 'Show less' : 'Show all'}
-        </button>
-      )}
-      <Foot attached={usage.attached} detached={usage.detached}>
-        {onEdit && <button type="button" disabled={busy} onClick={onEdit}>Edit</button>}
-        {onDelete && <button type="button" className="danger" disabled={busy} onClick={onDelete}>Delete</button>}
-      </Foot>
-    </article>
-  );
-}
+  const focus = (n: TreeNode | undefined) => {
+    if (!n) return;
+    setFocusKey(n.key);
+    box.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(n.key)}"]`)?.focus();
+  };
+  const parentOf = (key: string): TreeNode | undefined => {
+    const find = (list: TreeNode[], parent?: TreeNode): TreeNode | undefined => {
+      for (const n of list) {
+        if (n.key === key) return parent;
+        const hit = find(n.children, n);
+        if (hit) return hit;
+      }
+      return undefined;
+    };
+    return find(nodes);
+  };
+  const activate = (n: TreeNode) => {
+    if (n.kind === 'product' || n.kind === 'group') onToggle(n.key);
+    else onSelect(n);
+  };
 
-/** A tag: what it matches, the policies it applies, and (once checked) the workstreams it matches. */
-export function TagCard({ tag, catalog, busy, matches, onCheck, onEdit, onDelete }: {
-  tag: RuleTag; catalog: RuleCatalog; busy?: boolean; matches?: RuleTagMatch[] | null;
-  onCheck?: () => void; onEdit?: () => void; onDelete?: () => void;
-}) {
-  const applies = policiesWithTag(catalog, tag.id);
-  const hits = matches?.filter((m) => m.applied) ?? [];
-  return (
-    <article className="policy-card" data-kind="tag">
-      <div className="policy-card-eyebrow">
-        <span>Tag</span>
-        <span className="sep">·</span>
-        <span>{tagScope(tag)}</span>
-      </div>
-      <h3 className="policy-card-title">{tag.name}</h3>
-      {tag.description && <div className="policy-card-body">{tag.description}</div>}
-      <div className="policy-card-trigger">
-        <span className="key">matches</span> <span className="op">{tagMatchers(tag)}</span>
-      </div>
-      <div className="policy-card-foot">
-        <span>{applies.length === 0 ? 'applies no policy yet' : `applies ${applies.map((p) => p.name).join(', ')}`}</span>
-        <span className="policy-card-actions">
-          {onCheck && <button type="button" disabled={busy} onClick={onCheck}>Check matches</button>}
-          {onEdit && <button type="button" disabled={busy} onClick={onEdit}>Edit</button>}
-          {onDelete && <button type="button" className="danger" disabled={busy} onClick={onDelete}>Delete</button>}
-        </span>
-      </div>
-      {matches && (
-        <div className="policy-card-matches">
-          <div>Matches {hits.length} of {matches.length} workstreams in this product</div>
-          {hits.length > 0 && (
-            <ul>
-              {hits.slice(0, 50).map((m) => (
-                <li key={m.workstreamId} title={m.workstreamId}>
-                  <strong>{m.name}</strong> · {m.category} · {m.status} · {m.reason}
-                </li>
-              ))}
-              {hits.length > 50 && <li>and {hits.length - 50} more</li>}
-            </ul>
+  function onKeyDown(e: KeyboardEvent<HTMLUListElement>) {
+    if (!current) return;
+    const i = visible.indexOf(current);
+    const open = current.children.length > 0 && !collapsed.has(current.key);
+    switch (e.key) {
+      case 'ArrowDown': focus(visible[i + 1]); break;
+      case 'ArrowUp': focus(visible[i - 1]); break;
+      case 'Home': focus(visible[0]); break;
+      case 'End': focus(visible[visible.length - 1]); break;
+      case 'ArrowRight':
+        if (current.children.length === 0) return;
+        if (open) focus(current.children[0]); else onToggle(current.key);
+        break;
+      case 'ArrowLeft':
+        if (open) onToggle(current.key); else focus(parentOf(current.key));
+        break;
+      case 'Enter':
+      case ' ':
+        activate(current);
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+  }
+
+  const render = (list: TreeNode[], level: number) => list.map((n) => {
+    const hasKids = n.children.length > 0 || n.kind === 'product' || n.kind === 'group';
+    const open = hasKids && !collapsed.has(n.key);
+    const sel = isSelected(n, selection);
+    return (
+      <li key={n.key} role="none">
+        <div
+          role="treeitem"
+          data-key={n.key}
+          data-kind={n.kind}
+          aria-level={level}
+          aria-expanded={hasKids ? open : undefined}
+          aria-selected={n.kind === 'product' || n.kind === 'group' ? undefined : sel}
+          tabIndex={current?.key === n.key ? 0 : -1}
+          className={`px-node${sel ? ' is-selected' : ''}${n.off ? ' is-off' : ''}`}
+          style={{ paddingLeft: 8 + (level - 1) * 16 }}
+          onClick={() => { setFocusKey(n.key); activate(n); }}
+          onFocus={() => setFocusKey(n.key)}
+        >
+          <span className="px-caret" aria-hidden="true">{hasKids ? (open ? '▾' : '▸') : ''}</span>
+          {KIND_LABEL[n.kind] && <span className="px-kind">{KIND_LABEL[n.kind]}</span>}
+          <span className="px-node-label">{n.label}</span>
+          {n.off && <span className="px-off">off</span>}
+          <span className="px-node-meta">{n.meta.join(' · ')}</span>
+          {n.reachShort && (
+            <span className="px-reach" title={n.reach}>
+              <span aria-hidden="true">{n.reachShort}</span>
+              <span className="px-sr">{n.reach}</span>
+            </span>
           )}
         </div>
+        {hasKids && open && n.children.length > 0 && <ul role="group">{render(n.children, level + 1)}</ul>}
+        {hasKids && open && n.children.length === 0 && n.kind === 'group' && (
+          <p className="px-node-empty" style={{ paddingLeft: 24 + level * 16 }}>{n.id === 'tags' ? 'No tags yet.' : 'No policies yet.'}</p>
+        )}
+      </li>
+    );
+  });
+
+  return (
+    <div className="px-tree rx" ref={box}>
+      {loading && nodes.length === 0 && <p className="rx-empty">Loading…</p>}
+      {!loading && nodes.length === 0 && <p className="rx-empty">{filtering ? 'Nothing matches these filters.' : 'No products chosen.'}</p>}
+      {nodes.length > 0 && (
+        <ul role="tree" aria-label="Policies, rules and tags" onKeyDown={onKeyDown}>{render(nodes, 1)}</ul>
       )}
-    </article>
+    </div>
   );
 }

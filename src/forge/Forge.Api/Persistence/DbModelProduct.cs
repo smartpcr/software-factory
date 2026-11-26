@@ -199,6 +199,11 @@ public static class DbModelProduct
             .HasIndex(x => new { x.WorkItemId, x.PolicyId })
             .IsUnique()
             .HasDatabaseName("IX_work_item_policies_item_policy");
+        mb.Entity<RulePolicyScopeRow>().ToTable("rule_policy_scopes").HasKey(x => x.Id);
+        mb.Entity<RulePolicyScopeRow>()
+            .HasIndex(x => new { x.PolicyId, x.ScopeKind, x.ScopeId })
+            .IsUnique()
+            .HasDatabaseName("IX_rule_policy_scopes_policy_scope");
 
         // Phase 17.1 — persistent task queue + per-row history.
         mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);

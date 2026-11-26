@@ -170,6 +170,8 @@ public static class DbBoundary
         new DbTableSpec("rule_tags", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         new DbTableSpec("catalog_rules", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         new DbTableSpec("rule_policies", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
+        // Phase 109 — policies applied to a whole product or story.
+        new DbTableSpec("rule_policy_scopes", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         new DbTableSpec("product_stories", DbKind.Product, PartitionStrategy.DirectProductId, "ProductId"),
         // epics has nullable ProductId; orphan rows (NULL) get routed to the
         // default product by the apply step.

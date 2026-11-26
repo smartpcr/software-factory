@@ -147,6 +147,8 @@ public class ProductDbContext : DbContext
 
     public DbSet<WorkItemPolicyRow> WorkItemPolicies => this.Set<WorkItemPolicyRow>();
 
+    public DbSet<RulePolicyScopeRow> RulePolicyScopes => this.Set<RulePolicyScopeRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         // Phase G — product entities only. Control entities (users, crews,

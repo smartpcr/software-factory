@@ -69,8 +69,9 @@ public class CatalogRuleRow
     public string Text { get; set; } = string.Empty;
 
     /// <summary>
-    /// Unused since rules are grouped into policies (tags attach policies, not
-    /// rules); always <c>[]</c>. Kept because the column already exists.
+    /// Phase 109 — JSON <c>string[]</c> of <see cref="RuleTagRow.Id"/>: the
+    /// rule applies on its own wherever one of these tags applies, besides
+    /// reaching work items through the policies that contain it.
     /// </summary>
     public string TagIdsJson { get; set; } = "[]";
 
@@ -178,6 +179,35 @@ public class WorkstreamTagOverrideRow
     public string TagId { get; set; } = string.Empty;
 
     public bool On { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
+/// Phase 109 — a policy applied to a whole scope rather than one work item:
+/// <see cref="ScopeKind"/> <c>product</c> (every work item and workstream of
+/// the product; <see cref="ScopeId"/> is the product id) or <c>story</c>
+/// (every workstream of one story spawn; <see cref="ScopeId"/> is
+/// <c>story_spawns.Id</c>). A per-work-item choice
+/// (<see cref="WorkItemPolicyRow"/>) still wins over it.
+/// </summary>
+public class RulePolicyScopeRow
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    /// <summary>Owning product (<c>products.Id</c>).</summary>
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>The policy (<see cref="RulePolicyRow.Id"/>).</summary>
+    public string PolicyId { get; set; } = string.Empty;
+
+    /// <summary><c>product</c> or <c>story</c>.</summary>
+    public string ScopeKind { get; set; } = string.Empty;
+
+    /// <summary>The product id for <c>product</c>; the story spawn id for <c>story</c>.</summary>
+    public string ScopeId { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 

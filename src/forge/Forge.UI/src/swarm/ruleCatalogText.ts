@@ -2,7 +2,7 @@
 // per-work-item checklist): parsing editor fields into lists, and describing
 // tags, policies and rules in words.
 
-import type { AppliedTag, PolicyChoice, RuleCatalog, RuleChoice, RulePolicy, RuleTagInput } from '@/api/forgeApi';
+import type { AppliedTag, CatalogRule, PolicyChoice, RuleCatalog, RuleChoice, RulePolicy, RuleTagInput } from '@/api/forgeApi';
 
 /** One entry per non-empty line (phrases and patterns may contain commas). */
 export function lines(text: string): string[] {
@@ -25,6 +25,28 @@ export function tagScope(tag: Pick<RuleTagInput, 'repoIds' | 'categories'>): str
 export function tagMatchers(tag: Pick<RuleTagInput, 'phrases' | 'patterns'>): string {
   const terms = [...tag.phrases.map((p) => `"${p}"`), ...tag.patterns.map((p) => `/${p}/`)];
   return terms.length === 0 ? 'every work item in scope' : `text has ${terms.join(' or ')}`;
+}
+
+/** The rules no policy contains. */
+export function rulesInNoPolicy(catalog: RuleCatalog): CatalogRule[] {
+  const inSome = new Set(catalog.policies.flatMap((p) => p.ruleIds));
+  return catalog.rules.filter((r) => !inSome.has(r.id));
+}
+
+/** The rules a tag applies on their own. */
+export function rulesWithTag(catalog: RuleCatalog, tagId: string): CatalogRule[] {
+  return catalog.rules.filter((r) => r.tagIds.includes(tagId));
+}
+
+/** How a policy applies automatically, in words; empty when only where picked on a work item. */
+export function policyReach(catalog: RuleCatalog, policy: RulePolicy): string[] {
+  const scopes = catalog.policyScopes[policy.id] ?? [];
+  const out: string[] = [];
+  if (scopes.some((s) => s.kind === 'product')) out.push('the whole product');
+  const stories = scopes.filter((s) => s.kind === 'story');
+  if (stories.length > 0) out.push(stories.length === 1 ? '1 story' : `${stories.length} stories`);
+  if (policy.tagIds.length > 0) out.push(`tag ${namesOf(catalog.tags, policy.tagIds, (t) => t.name).join(', ')}`);
+  return out;
 }
 
 /** The policies that contain a rule, by name. */
@@ -56,19 +78,29 @@ export function tagChoice(tag: AppliedTag): TagChoice {
  * (`clear`) when the automatic choice already gives that answer.
  */
 export function choiceAction(choice: PolicyChoice | RuleChoice, checked: boolean): 'on' | 'off' | 'clear' {
-  const automatic = choice.via.length > 0;
+  const automatic = choice.via.length > 0 || ('viaTags' in choice && choice.viaTags.length > 0);
   if (checked) return automatic ? 'clear' : 'on';
   return automatic ? 'off' : 'clear';
 }
 
-/** Why a policy or rule does or does not reach the work item, in words. */
+/**
+ * Why a policy or rule does or does not reach the work item, in words. A
+ * policy's `via` is already worded ("tag full harness gate", "story
+ * harness:DSH-M2", "the whole product"); a rule's names its policies, and
+ * `viaTags` its own tags.
+ */
 export function choiceStatus(choice: PolicyChoice | RuleChoice): string {
-  const via = choice.via.join(', ');
+  const isRule = 'viaTags' in choice;
+  const tags = isRule && choice.viaTags.length > 0 ? `tag ${choice.viaTags.join(', ')}` : '';
+  const policies = choice.via.length > 0 ? (isRule ? `policy ${choice.via.join(', ')}` : choice.via.join(', ')) : '';
+  const from = [policies, tags].filter(Boolean).join(' and ');
   switch (choice.source) {
-    case 'tag': return `added by tag ${via}`;
-    case 'policy': return `in policy ${via}`;
+    case 'story':
+    case 'product':
+    case 'tag': return isRule ? `added by its ${tags}` : `added by ${from}`;
+    case 'policy': return `in ${policies}${tags ? ` and by its ${tags}` : ''}`;
     case 'attached': return 'added here by hand';
-    case 'detached': return via ? `removed here by hand (would come from ${via})` : 'removed here by hand';
+    case 'detached': return from ? `removed here by hand (would come from ${from})` : 'removed here by hand';
     case 'disabled': return 'disabled on the Policies page';
     default: return 'not applied';
   }

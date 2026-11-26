@@ -12,8 +12,8 @@ import { WorkItemRulesView } from './WorkItemRulesSection';
 const policy = (id: string, source: PolicyChoice['source'], via: string[] = [], applied = false): PolicyChoice =>
   ({ id, name: `Policy ${id}`, enabled: source !== 'disabled', applied, source, via, ruleCount: 2 });
 
-const rule = (id: string, source: RuleChoice['source'], via: string[] = [], applied = false, policies: string[] = via): RuleChoice =>
-  ({ id, title: `Rule ${id}`, text: `text ${id}`, enabled: source !== 'disabled', applied, source, via, policies });
+const rule = (id: string, source: RuleChoice['source'], via: string[] = [], applied = false, policies: string[] = via, viaTags: string[] = []): RuleChoice =>
+  ({ id, title: `Rule ${id}`, text: `text ${id}`, enabled: source !== 'disabled', applied, source, via, policies, viaTags });
 
 describe('ruleCatalogText', () => {
   it('splits phrases by line and repos by comma or line', () => {
@@ -39,12 +39,18 @@ describe('ruleCatalogText', () => {
     expect(choiceAction(policy('a', 'tag', ['gate'], true), false)).toBe('off');
     expect(choiceAction(policy('a', 'detached', ['gate']), true)).toBe('clear');
     expect(choiceAction(rule('r', 'attached', [], true), false)).toBe('clear');
+    expect(choiceAction(rule('r', 'tag', [], true, [], ['gate']), false)).toBe('off');
+    expect(choiceAction(policy('a', 'product', ['the whole product'], true), false)).toBe('off');
   });
 
   it('says why a policy or rule is or is not applied', () => {
-    expect(choiceStatus(policy('a', 'tag', ['full harness gate'], true))).toBe('added by tag full harness gate');
+    expect(choiceStatus(policy('a', 'tag', ['tag full harness gate'], true))).toBe('added by tag full harness gate');
+    expect(choiceStatus(policy('a', 'story', ['story harness:DSH-M2', 'tag gate'], true))).toBe('added by story harness:DSH-M2, tag gate');
+    expect(choiceStatus(policy('a', 'detached', ['the whole product']))).toBe('removed here by hand (would come from the whole product)');
     expect(choiceStatus(rule('r', 'policy', ['Harness gate'], true))).toBe('in policy Harness gate');
-    expect(choiceStatus(rule('r', 'detached', ['Harness gate']))).toBe('removed here by hand (would come from Harness gate)');
+    expect(choiceStatus(rule('r', 'policy', ['Harness gate'], true, ['Harness gate'], ['gate']))).toBe('in policy Harness gate and by its tag gate');
+    expect(choiceStatus(rule('r', 'tag', [], true, [], ['gate']))).toBe('added by its tag gate');
+    expect(choiceStatus(rule('r', 'detached', ['Harness gate']))).toBe('removed here by hand (would come from policy Harness gate)');
     expect(choiceStatus(rule('r', 'attached', [], true))).toBe('added here by hand');
     expect(choiceStatus(rule('r', 'disabled'))).toBe('disabled on the Policies page');
   });
@@ -58,7 +64,7 @@ describe('WorkItemRulesView', () => {
       { tagId: 't-gate', name: 'full harness gate', applied: true, source: 'matched', reason: 'matched "both lanes"' },
       { tagId: 't-ui', name: 'ui', applied: false, source: 'operator-removed', reason: 'removed by the operator' },
     ],
-    policies: [policy('gate', 'tag', ['full harness gate'], true), policy('lab', 'attached', [], true), policy('docs', 'none')],
+    policies: [policy('gate', 'tag', ['tag full harness gate'], true), policy('lab', 'attached', [], true), policy('docs', 'none')],
     choices: [
       rule('long', 'policy', ['Policy gate'], true),
       rule('vet', 'detached', ['Policy gate']),

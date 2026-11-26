@@ -18,9 +18,11 @@ using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 /// <summary>
-/// Phase 108 — the product rule catalog. Tags attach policies automatically;
-/// a policy brings its rules; on one work item the operator can attach or
-/// detach a policy or a single rule, which wins over the automatic choice.
+/// Phases 108 and 109 — the product rule catalog. Tags attach policies (and a
+/// rule's own tags the rule) automatically; a policy applied to a whole
+/// product or story reaches its work items; a policy brings its rules; on one
+/// work item the operator can attach or detach a policy or a single rule,
+/// which wins over the automatic choice.
 /// The stage text below is the work item description of harness:DSH-M2 stage
 /// 3.2 (2026-11-25), whose agent ran the full harness gate inside its
 /// iterations: it never says "full gate", but names tools/harness-gate and
@@ -59,12 +61,13 @@ public sealed class RuleCatalogTests
         IEnumerable<RuleSpec>? rules = null,
         Dictionary<string, bool>? tagOverrides = null,
         Dictionary<string, bool>? policyOverrides = null,
-        Dictionary<string, bool>? ruleOverrides = null) =>
+        Dictionary<string, bool>? ruleOverrides = null,
+        IEnumerable<PolicyReach>? reach = null) =>
         RuleCatalogResolver.Resolve(
             subject ?? Subject(), "harness", new[] { FullGate },
             policies ?? new[] { HarnessGate, LabE2e },
             rules ?? new[] { LongChecks, ScopedVet, FakeSpawner },
-            tagOverrides, policyOverrides, ruleOverrides);
+            tagOverrides, policyOverrides, ruleOverrides, reach);
 
     [Fact]
     public void Tag_MatchesStageText_AndSaysWhy()
@@ -117,7 +120,7 @@ public sealed class RuleCatalogTests
         var gate = r.Policies.Single(p => p.Id == "p-gate");
         Assert.True(gate.Applied);
         Assert.Equal("tag", gate.Source);
-        Assert.Equal(new[] { "full harness gate" }, gate.Via);
+        Assert.Equal(new[] { "tag full harness gate" }, gate.Via);
         Assert.Equal("none", r.Policies.Single(p => p.Id == "p-lab").Source);
     }
 
@@ -197,6 +200,64 @@ public sealed class RuleCatalogTests
     }
 
     [Fact]
+    public void RuleWithItsOwnTag_AppliesWithoutAPolicy_AndSaysWhichTag()
+    {
+        var r = Resolve(rules: new[] { LongChecks, ScopedVet, FakeSpawner with { TagIds = new[] { "t-gate" } } });
+
+        var fake = r.Choices.Single(c => c.Id == "r-fake");
+        Assert.True(fake.Applied);
+        Assert.Equal("tag", fake.Source);
+        Assert.Equal(new[] { "full harness gate" }, fake.ViaTags);
+        Assert.Empty(fake.Via);
+        Assert.Equal(new[] { "r-long", "r-vet", "r-fake" }, r.Rules.Select(x => x.Id));
+        Assert.Contains("3. Use the fake spawner  [tag full harness gate]", RuleCatalogResolver.RenderPromptBlock(r));
+
+        var off = Resolve(Subject("unrelated"), rules: new[] { FakeSpawner with { TagIds = new[] { "t-gate" } } });
+        Assert.Empty(off.Rules);
+        Assert.False(Resolve(rules: new[] { FakeSpawner with { TagIds = new[] { "t-gate" } } }, ruleOverrides: new() { ["r-fake"] = false }).Choices.Single().Applied);
+    }
+
+    [Fact]
+    public void PolicyAppliedToTheProductOrStory_ReachesTheWorkItem_ButTheItemsOwnChoiceWins()
+    {
+        var unrelated = Subject("Add a field to the Spec struct.");
+        var product = Resolve(unrelated, reach: new[] { new PolicyReach("p-lab", PolicyScopes.Product, "the whole product") });
+        var lab = product.Policies.Single(p => p.Id == "p-lab");
+        Assert.True(lab.Applied);
+        Assert.Equal("product", lab.Source);
+        Assert.Equal(new[] { "the whole product" }, lab.Via);
+        Assert.Contains("1. Long-running checks  [policy Lab E2E (the whole product)]", RuleCatalogResolver.RenderPromptBlock(product));
+
+        var both = Resolve(reach: new[]
+        {
+            new PolicyReach("p-gate", PolicyScopes.Product, "the whole product"),
+            new PolicyReach("p-gate", PolicyScopes.Story, "story harness:DSH-M2"),
+        });
+        var gate = both.Policies.Single(p => p.Id == "p-gate");
+        Assert.Equal("story", gate.Source);
+        Assert.Equal(new[] { "story harness:DSH-M2", "the whole product", "tag full harness gate" }, gate.Via);
+
+        var removed = Resolve(unrelated, policyOverrides: new() { ["p-lab"] = false }, reach: new[] { new PolicyReach("p-lab", PolicyScopes.Product, "the whole product") });
+        Assert.Equal("detached", removed.Policies.Single(p => p.Id == "p-lab").Source);
+        Assert.Empty(removed.Rules);
+    }
+
+    [Fact]
+    public void ReachFor_GivesTheProductScopeToEveryone_AndAStoryScopeOnlyToItsWorkstreams()
+    {
+        var scopes = new[]
+        {
+            new RulePolicyScopeRow { PolicyId = "p-all", ScopeKind = PolicyScopes.Product, ScopeId = "harness" },
+            new RulePolicyScopeRow { PolicyId = "p-m2", ScopeKind = PolicyScopes.Story, ScopeId = "spawn-harness-DSH-M2" },
+        };
+        var names = new Dictionary<string, string> { ["spawn-harness-DSH-M2"] = "harness:DSH-M2" };
+
+        var inStory = RuleCatalogResolver.ReachFor(Subject() with { SpawnId = "spawn-harness-DSH-M2" }, scopes, names).ToList();
+        Assert.Equal(new[] { "the whole product", "story harness:DSH-M2" }, inStory.Select(r => r.Label));
+        Assert.Equal(new[] { "p-all" }, RuleCatalogResolver.ReachFor(Subject(), scopes, names).Select(r => r.PolicyId));
+    }
+
+    [Fact]
     public void Validation_RejectsBadRulesPoliciesAndTags()
     {
         Assert.NotNull(RuleCatalogEndpoints.ValidateTag(new("", null, null, null, null, null)));
@@ -209,6 +270,8 @@ public sealed class RuleCatalogTests
         Assert.Null(RuleCatalogEndpoints.ValidateRule(new("title", "text", new() { "p-gate" }, null), policies));
         Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", "text", new() { "p-missing" }, true), policies));
         Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", " ", null, true), policies));
+        Assert.Null(RuleCatalogEndpoints.ValidateRule(new("title", "text", null, true, new() { "t-gate" }), policies, new[] { "t-gate" }));
+        Assert.NotNull(RuleCatalogEndpoints.ValidateRule(new("title", "text", null, true, new() { "t-missing" }), policies, new[] { "t-gate" }));
 
         var rules = new[] { "r-long" };
         var tags = new[] { "t-gate" };
@@ -219,7 +282,7 @@ public sealed class RuleCatalogTests
     }
 
     [Fact]
-    public async Task Migration108_IsIdempotent_AndMatchesTheEfModel()
+    public async Task Migrations108And109_AreIdempotent_AndMatchTheEfModel()
     {
         await using var conn = new SqliteConnection("Data Source=:memory:");
         await conn.OpenAsync();
@@ -228,6 +291,8 @@ public sealed class RuleCatalogTests
 
         await Phase108Migration.ApplyAsync(control, db);
         await Phase108Migration.ApplyAsync(control, db);
+        await Phase109Migration.ApplyAsync(control, db);
+        await Phase109Migration.ApplyAsync(control, db);
 
         db.RuleTags.Add(new RuleTagRow { ProductId = "harness", Name = "full harness gate" });
         db.CatalogRules.Add(new CatalogRuleRow { ProductId = "harness", Title = "t", Text = "x" });
@@ -235,7 +300,12 @@ public sealed class RuleCatalogTests
         db.WorkstreamTagOverrides.Add(new WorkstreamTagOverrideRow { WorkstreamId = "ws", TagId = "a", On = true });
         db.WorkItemRules.Add(new WorkItemRuleRow { WorkItemId = "wi", RuleId = "r", On = false });
         db.WorkItemPolicies.Add(new WorkItemPolicyRow { WorkItemId = "wi", PolicyId = "p", On = true });
+        db.RulePolicyScopes.Add(new RulePolicyScopeRow { ProductId = "harness", PolicyId = "p", ScopeKind = PolicyScopes.Story, ScopeId = "spawn-x" });
         await db.SaveChangesAsync();
+
+        db.RulePolicyScopes.Add(new RulePolicyScopeRow { ProductId = "harness", PolicyId = "p", ScopeKind = PolicyScopes.Story, ScopeId = "spawn-x" });
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        db.ChangeTracker.Clear();
 
         Assert.Equal(1, await db.RuleTags.CountAsync());
         Assert.True((await db.RulePolicies.SingleAsync()).Enabled);
@@ -255,7 +325,8 @@ public sealed class RuleCatalogTests
         await db.Database.EnsureCreatedAsync();
 
         db.Repos.Add(new RepoRow { Id = "agent-plugin", ProductId = "harness" });
-        db.Workstreams.Add(new WorkstreamRow { Id = "ws-3-2", RepoId = "agent-plugin", Name = "Launch Plan", Category = "impl" });
+        db.Workstreams.Add(new WorkstreamRow { Id = "ws-3-2", RepoId = "agent-plugin", Name = "Launch Plan", Category = "impl", StorySpawnId = "spawn-harness-DSH-M2" });
+        db.StorySpawns.Add(new StorySpawnRow { Id = "spawn-harness-DSH-M2", StoryId = "harness:DSH-M2", StoryTitle = "dsh M2", RepoId = "agent-plugin" });
         db.WorkItems.Add(new WorkItemRow { Id = "ws-3-2", Title = "Launch Plan Required for Every Command", DescriptionMd = Stage32Text });
         db.WorkItems.Add(new WorkItemRow { Id = "WI-42", RepoId = "agent-plugin", Title = "Fix flaky test", DescriptionMd = "flake", TagsJson = "[\"harness-gate\"]" });
         var tag = new RuleTagRow { ProductId = "harness", Name = "full harness gate", RepoIdsJson = "[\"agent-plugin\"]", PhrasesJson = "[\"both lanes\", \"harness-gate\"]" };
@@ -265,14 +336,20 @@ public sealed class RuleCatalogTests
         db.CatalogRules.AddRange(rule, picked);
         db.RulePolicies.Add(new RulePolicyRow { ProductId = "harness", Name = "Harness gate", RuleIdsJson = $"[\"{rule.Id}\"]", TagIdsJson = $"[\"{tag.Id}\"]" });
         db.RulePolicies.Add(new RulePolicyRow { ProductId = "other", Name = "Harness gate" });
+        var storyOnly = new CatalogRuleRow { ProductId = "harness", Title = "Story rule", Text = "s" };
+        var storyPolicy = new RulePolicyRow { ProductId = "harness", Name = "M2 only", RuleIdsJson = $"[\"{storyOnly.Id}\"]" };
+        db.CatalogRules.Add(storyOnly);
+        db.RulePolicies.Add(storyPolicy);
+        db.RulePolicyScopes.Add(new RulePolicyScopeRow { ProductId = "harness", PolicyId = storyPolicy.Id, ScopeKind = PolicyScopes.Story, ScopeId = "spawn-harness-DSH-M2" });
         db.WorkItemRules.Add(new WorkItemRuleRow { WorkItemId = "WI-42", RuleId = picked.Id, On = true });
         await db.SaveChangesAsync();
 
         var ws = await RuleCatalogResolver.ResolveAsync(db, "ws-3-2", default);
         Assert.NotNull(ws);
         Assert.Equal("harness", ws!.ProductId);
-        Assert.Equal("Long-running checks", Assert.Single(ws.Rules).Title);
-        Assert.Single(ws.Policies);
+        Assert.Equal(new[] { "Long-running checks", "Story rule" }, ws.Rules.Select(x => x.Title));
+        Assert.Equal("story", ws.Policies.Single(p => p.Name == "M2 only").Source);
+        Assert.Equal(new[] { "story harness:DSH-M2" }, ws.Policies.Single(p => p.Name == "M2 only").Via);
 
         var item = await RuleCatalogResolver.ResolveAsync(db, "WI-42", default);
         Assert.Equal(new[] { "Long-running checks", "Picked" }, item!.Rules.Select(x => x.Title));

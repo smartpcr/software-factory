@@ -30,10 +30,14 @@ public sealed record RuleTagSpec(
         RuleCatalogJson.ReadList(row.PatternsJson));
 }
 
-/// <summary>A catalog rule as the resolver sees it.</summary>
-public sealed record RuleSpec(string Id, string Title, string Text, bool Enabled)
+/// <summary>A catalog rule as the resolver sees it; <see cref="TagIds"/> apply it on its own wherever one matches.</summary>
+public sealed record RuleSpec(string Id, string Title, string Text, bool Enabled, IReadOnlyList<string>? TagIds = null)
 {
-    public static RuleSpec FromRow(CatalogRuleRow row) => new(row.Id, row.Title, row.Text, row.Enabled);
+    /// <summary>The rule's own tags; never null.</summary>
+    public IReadOnlyList<string> Tags => this.TagIds ?? Array.Empty<string>();
+
+    public static RuleSpec FromRow(CatalogRuleRow row) =>
+        new(row.Id, row.Title, row.Text, row.Enabled, RuleCatalogJson.ReadList(row.TagIdsJson));
 }
 
 /// <summary>A policy as the resolver sees it: its rules in prompt order and the tags that attach it.</summary>
@@ -47,8 +51,17 @@ public sealed record PolicySpec(string Id, string Name, IReadOnlyList<string> Ru
 /// What a tag is matched against: the work item's repo and category, and its
 /// text (title and description, which for a workstream carry the plan stage's
 /// steps and test scenarios, plus a standalone work item's own tags).
+/// <see cref="SpawnId"/> is the story spawn a workstream belongs to, so a
+/// policy applied to that story reaches it; null for a standalone work item.
 /// </summary>
-public sealed record RuleSubject(string WorkItemId, string? RepoId, string Category, string Text);
+public sealed record RuleSubject(string WorkItemId, string? RepoId, string Category, string Text, string? SpawnId = null);
+
+/// <summary>
+/// Phase 109 — a policy applied to a whole scope that contains the work item:
+/// <see cref="Kind"/> <c>product</c> or <c>story</c>, with the words the
+/// operator and the prompt see (<c>the whole product</c>, <c>story harness:DSH-M2</c>).
+/// </summary>
+public sealed record PolicyReach(string PolicyId, string Kind, string Label);
 
 /// <summary>The matcher's verdict on one tag, with a reason the operator can read.</summary>
 public sealed record TagMatch(bool Matched, string Reason);
@@ -61,25 +74,29 @@ public sealed record TagMatch(bool Matched, string Reason);
 public sealed record AppliedTag(string TagId, string Name, bool Applied, string Source, string Reason);
 
 /// <summary>
-/// How one policy stands on a work item. <see cref="Source"/> is <c>tag</c>
-/// (one of its tags applies, named in <see cref="Via"/>), <c>attached</c> /
-/// <c>detached</c> (the operator's choice for this item), <c>none</c> or
-/// <c>disabled</c>.
+/// How one policy stands on a work item. <see cref="Source"/> is <c>story</c>
+/// or <c>product</c> (applied to the item's whole story or product),
+/// <c>tag</c> (one of its tags applies), <c>attached</c> / <c>detached</c>
+/// (the operator's choice for this item), <c>none</c> or <c>disabled</c>.
+/// <see cref="Via"/> lists everything that brings it, in words:
+/// <c>story harness:DSH-M2</c>, <c>the whole product</c>, <c>tag full harness gate</c>.
 /// </summary>
 public sealed record PolicyChoice(string Id, string Name, bool Enabled, bool Applied, string Source, IReadOnlyList<string> Via, int RuleCount);
 
 /// <summary>
 /// How one rule stands on a work item. <see cref="Source"/> is <c>policy</c>
-/// (an applied policy contains it, named in <see cref="Via"/>), <c>attached</c>
-/// (picked on its own) / <c>detached</c> (kept out here), <c>none</c> or
-/// <c>disabled</c>. <see cref="Policies"/> names every policy that contains it.
+/// (an applied policy contains it, named in <see cref="Via"/>), <c>tag</c>
+/// (one of the rule's own tags applies, named in <see cref="ViaTags"/>),
+/// <c>attached</c> (picked on its own) / <c>detached</c> (kept out here),
+/// <c>none</c> or <c>disabled</c>. <see cref="Policies"/> names every policy
+/// that contains it.
 /// </summary>
 public sealed record RuleChoice(
     string Id, string Title, string Text, bool Enabled, bool Applied, string Source,
-    IReadOnlyList<string> Via, IReadOnlyList<string> Policies);
+    IReadOnlyList<string> Via, IReadOnlyList<string> Policies, IReadOnlyList<string> ViaTags);
 
-/// <summary>A rule in the next prompt, with why: the applied policies that contain it, or picked on its own.</summary>
-public sealed record AppliedRule(string Id, string Title, string Text, IReadOnlyList<string> Via, bool Attached);
+/// <summary>A rule in the next prompt, with why: the applied policies and the rule's own tags that bring it, or picked on its own.</summary>
+public sealed record AppliedRule(string Id, string Title, string Text, IReadOnlyList<string> Via, bool Attached, IReadOnlyList<string> ViaTags);
 
 /// <summary>Every tag's, policy's and rule's standing on a work item, and the rules in its next prompt.</summary>
 public sealed record WorkItemRules(
@@ -177,8 +194,10 @@ public static class RuleTagMatcher
 /// Resolves which policies and rules reach a work item execution or a
 /// workstream, and renders the rules as the prompt block the generator sees on
 /// every iteration. Precedence, most specific first: the operator's choice on a
-/// rule for this item, then on a policy for this item, then on a tag for this
-/// item, then the tag's matchers.
+/// rule for this item, then on a policy for this item, then a policy applied
+/// to the item's story or product, then the operator's choice on a tag for
+/// this item, then the tag's matchers. A rule also applies on its own where
+/// one of its own tags applies.
 /// </summary>
 public static class RuleCatalogResolver
 {
@@ -193,8 +212,13 @@ public static class RuleCatalogResolver
         IEnumerable<RuleSpec> rules,
         IReadOnlyDictionary<string, bool>? tagOverrides = null,
         IReadOnlyDictionary<string, bool>? policyOverrides = null,
-        IReadOnlyDictionary<string, bool>? ruleOverrides = null)
+        IReadOnlyDictionary<string, bool>? ruleOverrides = null,
+        IEnumerable<PolicyReach>? reach = null)
     {
+        var reachByPolicy = (reach ?? Array.Empty<PolicyReach>())
+            .OrderBy(r => r.Kind == PolicyScopes.Story ? 0 : 1)
+            .GroupBy(r => r.PolicyId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
         tagOverrides ??= NoOverrides;
         policyOverrides ??= NoOverrides;
         ruleOverrides ??= NoOverrides;
@@ -219,8 +243,13 @@ public static class RuleCatalogResolver
         var policyChoices = new List<PolicyChoice>();
         foreach (var policy in policyList)
         {
-            var via = policy.TagIds.Where(tagNames.ContainsKey).Select(id => tagNames[id]).Distinct().ToList();
-            var (source, applies) = Decide(policy.Enabled, policyOverrides, policy.Id, via.Count > 0, "tag");
+            var scoped = reachByPolicy.TryGetValue(policy.Id, out var r) ? r : new List<PolicyReach>();
+            var via = scoped.Select(x => x.Label)
+                .Concat(policy.TagIds.Where(tagNames.ContainsKey).Select(id => $"tag {tagNames[id]}"))
+                .Distinct()
+                .ToList();
+            var broughtBy = scoped.Count > 0 ? scoped[0].Kind : "tag";
+            var (source, applies) = Decide(policy.Enabled, policyOverrides, policy.Id, via.Count > 0, broughtBy);
             policyChoices.Add(new PolicyChoice(policy.Id, policy.Name, policy.Enabled, applies, source, via, policy.RuleIds.Count));
         }
 
@@ -233,9 +262,12 @@ public static class RuleCatalogResolver
         {
             var containing = policyList.Where(p => p.RuleIds.Contains(rule.Id)).ToList();
             var via = containing.Where(p => appliedPolicies.Contains(p.Id)).Select(p => p.Name).ToList();
-            var (source, applies) = Decide(rule.Enabled, ruleOverrides, rule.Id, via.Count > 0, "policy");
-            ruleChoices.Add(new RuleChoice(rule.Id, rule.Title, rule.Text, rule.Enabled, applies, source, via, containing.Select(p => p.Name).ToList()));
-            if (applies) reaching.Add(new AppliedRule(rule.Id, rule.Title, rule.Text, via, source == "attached"));
+            var viaTags = rule.Tags.Where(tagNames.ContainsKey).Select(id => tagNames[id]).Distinct().ToList();
+            var (source, applies) = Decide(
+                rule.Enabled, ruleOverrides, rule.Id, via.Count > 0 || viaTags.Count > 0, via.Count > 0 ? "policy" : "tag");
+            ruleChoices.Add(new RuleChoice(
+                rule.Id, rule.Title, rule.Text, rule.Enabled, applies, source, via, containing.Select(p => p.Name).ToList(), viaTags));
+            if (applies) reaching.Add(new AppliedRule(rule.Id, rule.Title, rule.Text, via, source == "attached", viaTags));
         }
 
         return new WorkItemRules(subject.WorkItemId, productId, appliedTags, policyChoices, ruleChoices, reaching);
@@ -276,7 +308,7 @@ public static class RuleCatalogResolver
     {
         var ws = await db.Workstreams.AsNoTracking()
             .Where(w => w.Id == workItemId)
-            .Select(w => new { w.Id, w.RepoId, w.Category, w.Name, w.Summary })
+            .Select(w => new { w.Id, w.RepoId, w.Category, w.Name, w.Summary, w.StorySpawnId })
             .FirstOrDefaultAsync(ct);
         var wi = await db.WorkItems.AsNoTracking()
             .Where(w => w.Id == workItemId)
@@ -288,7 +320,7 @@ public static class RuleCatalogResolver
         if (ws is not null)
         {
             var text = $"{wi?.Title ?? ws.Name}\n{(string.IsNullOrEmpty(wi?.DescriptionMd) ? ws.Summary : wi!.DescriptionMd)}";
-            subject = new RuleSubject(ws.Id, ws.RepoId, string.IsNullOrEmpty(ws.Category) ? "impl" : ws.Category, text);
+            subject = new RuleSubject(ws.Id, ws.RepoId, string.IsNullOrEmpty(ws.Category) ? "impl" : ws.Category, text, ws.StorySpawnId);
         }
         else
         {
@@ -318,28 +350,69 @@ public static class RuleCatalogResolver
     {
         var loaded = await LoadSubjectAsync(db, workItemId, ct);
         if (loaded is not { ProductId: { Length: > 0 } productId } found) return null;
+        return (await ResolveManyAsync(db, productId, new[] { found.Subject }, ct))[0];
+    }
 
+    /// <summary>
+    /// Resolves many work items of one product against its catalog, loading
+    /// the catalog, the scopes and the operator's choices once. Results are in
+    /// the order of <paramref name="subjects"/>.
+    /// </summary>
+    public static async Task<IReadOnlyList<WorkItemRules>> ResolveManyAsync(
+        ProductDbContext db, string productId, IReadOnlyList<RuleSubject> subjects, CancellationToken ct)
+    {
         var rules = (await db.CatalogRules.AsNoTracking().Where(r => r.ProductId == productId).ToListAsync(ct))
             .Select(RuleSpec.FromRow).ToList();
+        if (rules.Count == 0)
+        {
+            return subjects.Select(s => new WorkItemRules(
+                    s.WorkItemId, productId, Array.Empty<AppliedTag>(), Array.Empty<PolicyChoice>(), Array.Empty<RuleChoice>(), Array.Empty<AppliedRule>()))
+                .ToList();
+        }
+
         var policies = (await db.RulePolicies.AsNoTracking().Where(p => p.ProductId == productId).ToListAsync(ct))
             .Select(PolicySpec.FromRow).ToList();
         var tags = (await db.RuleTags.AsNoTracking().Where(t => t.ProductId == productId).ToListAsync(ct))
             .Select(RuleTagSpec.FromRow).ToList();
-        if (rules.Count == 0)
-        {
-            return new WorkItemRules(workItemId, productId, Array.Empty<AppliedTag>(), Array.Empty<PolicyChoice>(), Array.Empty<RuleChoice>(), Array.Empty<AppliedRule>());
-        }
+        var scopes = await db.RulePolicyScopes.AsNoTracking().Where(s => s.ProductId == productId).ToListAsync(ct);
+        var storyIds = scopes.Where(s => s.ScopeKind == PolicyScopes.Story).Select(s => s.ScopeId).Distinct().ToList();
+        var storyNames = storyIds.Count == 0
+            ? new Dictionary<string, string>()
+            : await db.StorySpawns.AsNoTracking().Where(s => storyIds.Contains(s.Id)).ToDictionaryAsync(s => s.Id, s => s.StoryId, ct);
 
-        var tagOverrides = await db.WorkstreamTagOverrides.AsNoTracking()
-            .Where(o => o.WorkstreamId == workItemId)
-            .ToDictionaryAsync(o => o.TagId, o => o.On, ct);
-        var policyOverrides = await db.WorkItemPolicies.AsNoTracking()
-            .Where(o => o.WorkItemId == workItemId)
-            .ToDictionaryAsync(o => o.PolicyId, o => o.On, ct);
-        var ruleOverrides = await db.WorkItemRules.AsNoTracking()
-            .Where(o => o.WorkItemId == workItemId)
-            .ToDictionaryAsync(o => o.RuleId, o => o.On, ct);
-        return Resolve(found.Subject, productId, tags, policies, rules, tagOverrides, policyOverrides, ruleOverrides);
+        var ids = subjects.Select(s => s.WorkItemId).Distinct().ToList();
+        var tagOverrides = (await db.WorkstreamTagOverrides.AsNoTracking().Where(o => ids.Contains(o.WorkstreamId)).ToListAsync(ct))
+            .ToLookup(o => o.WorkstreamId);
+        var policyOverrides = (await db.WorkItemPolicies.AsNoTracking().Where(o => ids.Contains(o.WorkItemId)).ToListAsync(ct))
+            .ToLookup(o => o.WorkItemId);
+        var ruleOverrides = (await db.WorkItemRules.AsNoTracking().Where(o => ids.Contains(o.WorkItemId)).ToListAsync(ct))
+            .ToLookup(o => o.WorkItemId);
+
+        return subjects.Select(subject => Resolve(
+                subject, productId, tags, policies, rules,
+                tagOverrides[subject.WorkItemId].ToDictionary(o => o.TagId, o => o.On),
+                policyOverrides[subject.WorkItemId].ToDictionary(o => o.PolicyId, o => o.On),
+                ruleOverrides[subject.WorkItemId].ToDictionary(o => o.RuleId, o => o.On),
+                ReachFor(subject, scopes, storyNames)))
+            .ToList();
+    }
+
+    /// <summary>The product and story scopes that contain <paramref name="subject"/>, in words.</summary>
+    public static IEnumerable<PolicyReach> ReachFor(
+        RuleSubject subject, IEnumerable<RulePolicyScopeRow> scopes, IReadOnlyDictionary<string, string> storyNames)
+    {
+        foreach (var s in scopes)
+        {
+            if (s.ScopeKind == PolicyScopes.Product)
+            {
+                yield return new PolicyReach(s.PolicyId, PolicyScopes.Product, "the whole product");
+            }
+            else if (s.ScopeKind == PolicyScopes.Story && s.ScopeId == subject.SpawnId)
+            {
+                var name = storyNames.TryGetValue(s.ScopeId, out var n) ? n : s.ScopeId;
+                yield return new PolicyReach(s.PolicyId, PolicyScopes.Story, $"story {name}");
+            }
+        }
     }
 
     /// <summary>The prompt block for the rules reaching a work item; empty when none do.</summary>
@@ -349,7 +422,7 @@ public static class RuleCatalogResolver
 
         var policyWhy = resolved.Policies.Where(p => p.Applied).ToDictionary(
             p => p.Name,
-            p => p.Source == "attached" ? "attached by the operator" : $"tag {string.Join(", ", p.Via)}",
+            p => p.Source == "attached" ? "attached by the operator" : string.Join(", ", p.Via),
             StringComparer.Ordinal);
         var sb = new StringBuilder();
         sb.AppendLine("╔══════════════════════════════════════════════════════════╗");
@@ -363,9 +436,14 @@ public static class RuleCatalogResolver
         for (var i = 0; i < resolved.Rules.Count; i++)
         {
             var rule = resolved.Rules[i];
-            var why = rule.Attached
-                ? "attached by the operator"
-                : "policy " + string.Join("; ", rule.Via.Select(v => policyWhy.TryGetValue(v, out var w) ? $"{v} ({w})" : v));
+            var reasons = new List<string>();
+            if (rule.Via.Count > 0)
+            {
+                reasons.Add("policy " + string.Join("; ", rule.Via.Select(v => policyWhy.TryGetValue(v, out var w) ? $"{v} ({w})" : v)));
+            }
+
+            if (rule.ViaTags.Count > 0) reasons.Add("tag " + string.Join(", ", rule.ViaTags));
+            var why = rule.Attached ? "attached by the operator" : string.Join("; ", reasons);
             sb.AppendLine($"{i + 1}. {rule.Title}  [{why}]");
             sb.AppendLine(rule.Text.Trim());
             sb.AppendLine();
@@ -373,6 +451,16 @@ public static class RuleCatalogResolver
 
         return sb.ToString();
     }
+}
+
+/// <summary>Phase 109 — the scopes a policy can be applied to as a whole.</summary>
+public static class PolicyScopes
+{
+    /// <summary>Every work item and workstream of the product.</summary>
+    public const string Product = "product";
+
+    /// <summary>Every workstream of one story spawn.</summary>
+    public const string Story = "story";
 }
 
 /// <summary>JSON list helpers for the catalog's <c>*Json</c> columns.</summary>

@@ -373,6 +373,11 @@ public static class PhaseMigrationCatalog
         new PhaseMigrationSpec(108, PhaseMigrationKind.Product,
             ControlTables: Array.Empty<string>(),
             ProductTables: new[] { "catalog_rules", "rule_policies", "rule_tags", "work_item_policies", "work_item_rules", "workstream_tag_overrides" }),
+        // Phase 109 — policies applied to a whole product or story. Product-only,
+        // one new table, no ordering dependency.
+        new PhaseMigrationSpec(109, PhaseMigrationKind.Product,
+            ControlTables: Array.Empty<string>(),
+            ProductTables: new[] { "rule_policy_scopes" }),
     };
 
     /// <summary>Lookup table keyed by phase number.</summary>

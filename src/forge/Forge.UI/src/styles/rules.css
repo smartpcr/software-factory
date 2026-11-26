@@ -1,5 +1,5 @@
 /* ============================================
-   RULES — Phase 108 editors (Policies page) and the per-work-item
+   RULES — Phase 108 forms (Policies page detail panel) and the per-work-item
    "Policies & rules" checklist.
 
    The checklist sits on plain app pages (work item execution) and inside the
@@ -24,40 +24,7 @@
   line-height: 1.5;
 }
 
-/* ── Modal (Policies page editors) ────────────────────────────────────── */
-.rx-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 8vh 16px 16px;
-  overflow-y: auto;
-  background: rgba(10, 10, 12, 0.45);
-}
-.rx-dialog {
-  width: min(640px, 100%);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xl, 14px);
-  box-shadow: var(--shadow-lg);
-}
-.rx-dialog-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-}
-.rx-dialog-title {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
+/* Close button in the Policies page detail panel. */
 .rx-close {
   width: 30px;
   height: 30px;
@@ -69,7 +36,7 @@
   cursor: pointer;
 }
 .rx-close:hover { border-color: var(--border-strong); }
-.rx-dialog-body { padding: 16px 20px 20px; }
+.rx-close:focus-visible { outline: 2px solid var(--rx-accent); outline-offset: 2px; }
 
 /* ── Form fields ──────────────────────────────────────────────────────── */
 .rx-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
