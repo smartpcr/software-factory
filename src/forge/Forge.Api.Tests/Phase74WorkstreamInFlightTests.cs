@@ -360,6 +360,53 @@ public sealed class Phase74WorkstreamInFlightTests
         }
     }
 
+    /// <summary>
+    /// A tick that finds a drive of the workstream already in flight in this
+    /// process (mid-iteration, or held on declared background work) skips it
+    /// quietly: no spawn-started / spawn-finished pair, no recovery resume, no
+    /// strategy call. Seen on harness:DSH-M2 stage 5.9 2026-11-27 as two or
+    /// three skip pairs a minute through a 45-minute hold.
+    /// </summary>
+    [Fact]
+    public async Task DriveImplement_DriveAlreadyInFlight_SkipsWithoutEvents()
+    {
+        var f = new WorkstreamInFlightFactory();
+        try
+        {
+            using (f.CreateClient()) { }
+
+            var (storyId, wsId) = await SeedImplementWorkstreamAsync(f, "WI-74-held");
+
+            using (var held = DeliverableLoop.TryReserveWorkItem(wsId))
+            {
+                Assert.NotNull(held);
+                using var scope = f.Services.CreateScope();
+                var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+                await orchestrator.DriveAsync(storyId);
+            }
+
+            using (var scope = f.Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var kinds = await db.TaskTranscriptEvents.AsNoTracking()
+                    .Where(e => e.WorkItemId == wsId)
+                    .Select(e => e.Kind)
+                    .ToListAsync();
+                Assert.DoesNotContain(ImplSpawnGuard.SpawnStartedKind, kinds);
+                Assert.DoesNotContain(ImplSpawnGuard.SpawnFinishedKind, kinds);
+                Assert.DoesNotContain("task.recovery.resumed", kinds);
+
+                var ws = await db.Workstreams.AsNoTracking().SingleAsync(w => w.Id == wsId);
+                Assert.Equal("active", ws.Status);
+                Assert.Null(ws.StallReason);
+            }
+        }
+        finally
+        {
+            f.Dispose();
+        }
+    }
+
     [Fact]
     public async Task DriveImplement_FilesWithoutFinalPass_DoesNotOpenPrOrMarkSuccess()
     {

@@ -2403,6 +2403,24 @@ public sealed class StorySpawnOrchestrator
                 }, ct);
             }
 
+            // A drive of this workstream is already running in this process
+            // (mid-iteration, or holding on declared background work): skip
+            // it quietly. Without this, every tick emitted a spawn-started /
+            // spawn-finished(skippedConcurrent) pair, re-ran the late agent
+            // pick (rewriting AgentsJson and counting a recovery resume) and
+            // touched the branch, only for the drive to find the work item in
+            // flight -- observed 2026-11-27 on harness:DSH-M2 stage 5.9 as two
+            // or three skip pairs a minute through a 45-minute hold. Checked
+            // after the guard so its hard-ceiling cancel of a wedged run above
+            // still fires; the cancelled run releases the work item and a
+            // later tick drives it.
+            if (DeliverableLoop.IsWorkItemInFlight(w.Id))
+            {
+                this.logger?.LogDebug(
+                    "Workstream {WsId} skipped this tick: a drive is already in flight in this process.", w.Id);
+                continue;
+            }
+
             // Engineer crew claim — assign agents LATE (Phase 49 follow-up).
             // The legacy code populated AgentsJson here at claim time,
             // but the operator observed all workstreams ending up with the
