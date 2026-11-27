@@ -1036,14 +1036,14 @@ public sealed class RealStoryGitOps : IStoryGitOps
                     "WORKTREE_FORCE_RESET merge-upstream: branch={Branch} wtPath={WtPath} "
                     + "preResetHead={Head} originSha={OriginSha} uncommittedFileCount={UncommittedCount} "
                     + "sampleUncommittedPaths={SamplePaths} "
-                    + "(about to `git reset --hard origin/{Branch}` before merging origin/{Upstream}; "
-                    + "reflog can recover within gc-grace).",
+                    + "(about to sync with origin/{Branch} before merging origin/{Upstream}; "
+                    + "unpushed commits are kept, uncommitted changes are discarded).",
                     branch, wtPath, preReset.HeadSha, originSha,
                     preReset.UncommittedCount, string.Join("|", preReset.SamplePaths),
                     branch, upstreamBranch);
             }
 
-            await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+            await this.SyncWithOriginKeepingLocalCommitsAsync(wtPath, branch, ct);
         }
         else
         {
@@ -2398,7 +2398,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
         if (lsBranchCode == 0 && !string.IsNullOrWhiteSpace(lsBranchOut))
         {
             await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
-            await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+            await this.SyncWithOriginKeepingLocalCommitsAsync(wtPath, branch, ct);
         }
 
         // 3. Attempt the merge. GIT_EDITOR=true so a merge commit doesn't
@@ -3648,6 +3648,79 @@ public sealed class RealStoryGitOps : IStoryGitOps
         // Final safety net — drop any residual unmerged/staged entries so the
         // subsequent `checkout -B` starts from a clean index.
         await this.RunGitCaptureAsync(wtPath, ct, "reset", "--hard");
+    }
+
+    /// <summary>
+    /// Brings the worktree's branch in line with <c>origin/{branch}</c>
+    /// without discarding committed work. A plain
+    /// <c>git reset --hard origin/{branch}</c> drops every commit that was
+    /// never pushed: on harness:DSH-M2 stage 5.9-e2e (2026-11-27) the agent
+    /// kept commit b0e7e45 local on the operator's answer "keep it local; do
+    /// not push yet", and the next drive after a RETRY reset it away.
+    /// <list type="bullet">
+    /// <item>At or behind origin: reset to origin, as before. Only uncommitted
+    /// changes to tracked files are discarded.</item>
+    /// <item>Ahead of origin: keep the local commits; discard only uncommitted
+    /// changes to tracked files.</item>
+    /// <item>Diverged: back up the local tip, then merge origin in (clean
+    /// merges only). On a conflict, reset to origin as before; the backup ref
+    /// keeps the local commits recoverable.</item>
+    /// </list>
+    /// Uncommitted changes are discarded in every case, as the reset always
+    /// did; callers commit work before reaching here.
+    /// </summary>
+    /// <returns>The number of local-only commits kept on the branch.</returns>
+    internal async Task<int> SyncWithOriginKeepingLocalCommitsAsync(string wtPath, string branch, CancellationToken ct)
+    {
+        var (aheadCode, aheadOut, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "rev-list", "--count", $"origin/{branch}..HEAD");
+        var localOnly = aheadCode == 0 && int.TryParse(aheadOut.Trim(), out var n) ? n : 0;
+        if (localOnly == 0)
+        {
+            await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+            return 0;
+        }
+
+        var (headCode, headOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
+        var head = headCode == 0 ? headOut.Trim() : string.Empty;
+        await this.GitAsync(wtPath, ct, "reset", "--hard", "HEAD");
+
+        var (ancestorCode, _, _) = await this.RunGitCaptureAsync(
+            wtPath, ct, "merge-base", "--is-ancestor", $"origin/{branch}", "HEAD");
+        if (ancestorCode == 0)
+        {
+            this.logger?.LogInformation(
+                "Kept {Count} unpushed commit(s) on {Branch} (head {Head}) instead of resetting to origin/{Branch}.",
+                localOnly, branch, head, branch);
+            return localOnly;
+        }
+
+        var backupRef = $"refs/forge/backup/{SanitizeBranchSlug(branch)}/unpushed-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssZ}";
+        if (!string.IsNullOrEmpty(head))
+        {
+            await this.RunGitCaptureAsync(wtPath, ct, "update-ref", backupRef, head);
+        }
+
+        var (mergeCode, _, mergeErr) = await this.RunGitCaptureAsync(
+            wtPath, ct,
+            "-c", "user.email=forge-merger@local",
+            "-c", "user.name=Forge",
+            "merge", "--no-edit", $"origin/{branch}");
+        if (mergeCode == 0)
+        {
+            this.logger?.LogInformation(
+                "Merged origin/{Branch} into {Count} unpushed commit(s) on {Branch} instead of resetting; prior tip {Head} saved at {BackupRef}.",
+                branch, localOnly, branch, head, backupRef);
+            return localOnly;
+        }
+
+        await this.RunGitCaptureAsync(wtPath, ct, "merge", "--abort");
+        this.logger?.LogWarning(
+            "UNPUSHED_COMMITS_RESET {Branch}: {Count} local commit(s) diverge from origin/{Branch} and do not merge cleanly ({Error}); "
+            + "resetting to origin. Recover them from {BackupRef} (tip {Head}).",
+            branch, localOnly, branch, mergeErr.Trim(), backupRef, head);
+        await this.GitAsync(wtPath, ct, "reset", "--hard", $"origin/{branch}");
+        return 0;
     }
 
     /// <summary>Run git, throwing on non-zero exit. Use <see cref="RunGitCaptureAsync"/> when you want to inspect the result.</summary>
