@@ -849,6 +849,91 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return sb.ToString();
     }
 
+    /// <summary>Heading of the operator answers shown to the evaluator.</summary>
+    internal const string EvaluatorAnswersHeading = "## Operator answers to this work item's questions (binding when you score)";
+
+    /// <summary>
+    /// Review rule for work the stage cannot finish on its own. Without it the
+    /// evaluator listed such items as defects every iteration until the loop
+    /// stalled "no-convergence": harness:DSH-M2 DH-S-16 (2026-11-27) scored
+    /// 74..79 for five iterations on checks that needed a release-build model
+    /// route and a closed DSH-M1, both outside the stage.
+    /// </summary>
+    internal const string ExternalBlockerReviewRule = """
+        ## Blockers outside this stage are deferred, not defects
+
+        Some items cannot be finished inside this stage: they wait on an
+        operator decision, on another stage or work item, or on code this
+        diff does not touch. Treat such an item as deferred, not as a defect,
+        only when all three of these hold:
+
+        1. Something outside the stage blocks it. Either an operator answer
+           or decision pin above defers it, or you confirmed the blocker with
+           your own tools (for example, the stage it depends on is not merged
+           yet, or the failure is in files this diff does not change).
+        2. The stage could not reasonably do it within its own scope. Work
+           the stage can do itself is never deferred.
+        3. The deliverable says plainly that the item is open, why, and what
+           it waits for. A deliverable that marks a deferred item done or
+           passed has a correctness defect; list that under
+           `Still needs improvement`.
+
+        List each deferred item under a `Deferred (outside this stage):`
+        heading, after `Still needs improvement` and before `Why this score`.
+        Use plain `- ` bullets there, never `- [ ]` checkboxes, and name what
+        each item waits for. Do not repeat a deferred item under
+        `Still needs improvement` and do not deduct points for it: score the
+        work that is within the stage's reach. Leave the heading out when
+        nothing is deferred.
+        """;
+
+    /// <summary>
+    /// What the evaluator must know about the operator's decisions before it
+    /// scores one iteration of <paramref name="workItemId"/>: the decision
+    /// pins and catalog rules, the operator's answers to this work item's
+    /// questions, and <see cref="ExternalBlockerReviewRule"/>. The generator
+    /// already receives the pins and answers; without them the evaluator kept
+    /// demanding work the operator had deferred. Read fresh each iteration.
+    /// A lookup failure is logged and the block keeps the rule alone.
+    /// </summary>
+    internal static async Task<string> BuildEvaluatorOperatorContextBlockAsync(IServiceScopeFactory scopeFactory, string workItemId, CancellationToken ct, ILogger? logger = null)
+    {
+        const string Separator = "────────────────────────────────────────────────────────────";
+        var sb = new System.Text.StringBuilder();
+        if (!string.IsNullOrEmpty(workItemId))
+        {
+            try
+            {
+                var pins = await BuildDecisionPinsBlockAsync(scopeFactory, workItemId, ct, logger);
+                using var scope = scopeFactory.CreateScope();
+                var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
+                var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+                var answers = await DeliverableLoop.BuildOperatorAnswersBlockAsync(control, db, workItemId, ct, EvaluatorAnswersHeading);
+                foreach (var block in new[] { pins, answers })
+                {
+                    if (string.IsNullOrEmpty(block)) continue;
+                    sb.AppendLine(block.TrimEnd());
+                    sb.AppendLine();
+                    sb.AppendLine(Separator);
+                    sb.AppendLine();
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                sb.Clear();
+                logger?.LogWarning(ex,
+                    "Operator pins and answers could not be loaded for the evaluator of {WorkItemId}; this review has the deferral rule only.",
+                    workItemId);
+            }
+        }
+
+        sb.AppendLine(ExternalBlockerReviewRule);
+        sb.AppendLine();
+        sb.AppendLine(Separator);
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
     /// <summary>
     /// Phase 49 follow-up -- resolve the build command the build gates
     /// (per-iter and post-pass) should run for this workstream. The
@@ -9305,6 +9390,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             var iterEvaluatorPrompt = diffHeader is null
                 ? evaluatorPrompt
                 : diffHeader + "\n" + evaluatorPrompt;
+
+            // The evaluator scores against the operator's pins and answers,
+            // and defers what only something outside the stage can unblock.
+            iterEvaluatorPrompt = await BuildEvaluatorOperatorContextBlockAsync(this.scopeFactory, workItemId, iterCt, this.logger)
+                + iterEvaluatorPrompt;
 
             // Phase 92 -- the evaluator must score against the same human
             // operator steering directives the generator was given. Refreshed

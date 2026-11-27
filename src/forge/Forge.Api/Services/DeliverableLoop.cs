@@ -2068,10 +2068,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// generator prompt. Dedupes by ExternalId taking the most-recent
     /// answered row so a re-answered question carries the latest value.
     /// Returns empty string when no answers exist (caller skips the
-    /// prepend).
+    /// prepend). The evaluator gets the same answers under its own
+    /// <paramref name="heading"/>.
     /// </summary>
     public static async Task<string> BuildOperatorAnswersBlockAsync(
-        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct)
+        ControlDbContext control, ProductDbContext db, string workItemId, CancellationToken ct,
+        string heading = "## Operator answers (apply these in this iteration)")
     {
         var rows = await db.DeliverableQuestions.AsNoTracking()
             .Where(q => q.WorkItemId == workItemId && q.Answer != null && q.Answer != string.Empty)
@@ -2083,7 +2085,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             .OrderBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine("## Operator answers (apply these in this iteration)");
+        sb.AppendLine(heading);
         foreach (var q in latestPerId)
         {
             sb.AppendLine();
@@ -2348,8 +2350,10 @@ public sealed class DeliverableLoop : IDeliverableLoop
         if (string.IsNullOrWhiteSpace(notes)) return Array.Empty<string>();
 
         // Find the "What still needs work" / "Still needs improvement"
-        // section. Stop at the next H2/H3 heading or the "Why this score"
-        // section.
+        // section. Stop at the next H2/H3 heading, the "Why this score"
+        // section, or the "Deferred (outside this stage)" list: deferred
+        // items wait on something outside the stage, so their recurrence
+        // is expected and is not a convergence loop.
         var sectionMatch = System.Text.RegularExpressions.Regex.Match(
             notes,
             @"(?ix)
@@ -2357,7 +2361,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
               [\s:*]*\n+
               (?<body>.+?)
               (?=
-                \n\s*(?:\#{1,4}\s|\*{1,2}\s*why\s+this\s+score)
+                \n\s*(?:\#{1,4}\s|\*{1,2}\s*why\s+this\s+score|\*{0,2}\s*deferred\b)
                 | \Z
               )",
             System.Text.RegularExpressions.RegexOptions.Singleline);

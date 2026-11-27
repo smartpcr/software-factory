@@ -2111,6 +2111,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + $"Review iteration {iter} for work item: **{wiTitle}**\n\n"
                     + "Start by running `git diff HEAD~1 --stat -p` to see what was changed, "
                     + "then read the modified files to verify the approach is correct.";
+                evalPrompt = await Forge.Api.Services.Stories.CrewStoryArtifactStrategy
+                    .BuildEvaluatorOperatorContextBlockAsync(this.scopeFactory, workItemId, iterCt, this.logger)
+                    + evalPrompt;
 
                 var evalContextForIter = evalContext;
                 AgentMemoryHandle? evalMemoryHandle = null;
