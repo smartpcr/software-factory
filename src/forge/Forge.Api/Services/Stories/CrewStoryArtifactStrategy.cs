@@ -7588,6 +7588,51 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
         }
 
+        // The generator never reviews its own work. The evaluator resolves
+        // to DefaultEvaluatorAgentId ?? Lead, so an unpaired crew whose lead
+        // generates also evaluated itself: 23 of 122 qa-e2e runs in
+        // November 2026 had crew-qa's lead Q2 on both sides. Pick another
+        // member of the evaluator crew instead; with none, the evaluator is
+        // unavailable and the loop stalls the iteration.
+        if (evalCrew is not null
+            && evalAgentId is not null
+            && string.Equals(evalAgentId, genAgentId, StringComparison.Ordinal))
+        {
+            var replacement = await PickIndependentEvaluatorAsync(control, db, evalCrew, genAgentId, workItemId, ct);
+            await this.taskChannel.EmitAsync(workItemId, "story.evaluator-reassigned", new
+            {
+                phase = phaseTag,
+                generatorAgentId = genAgentId,
+                fromEvaluatorAgentId = evalAgentId,
+                toEvaluatorAgentId = replacement,
+                evaluatorCrewId = evalCrew.Id,
+                reason = "evaluator resolved to the generator",
+            }, agentId: genAgentId, crewId: crew.Id, ct: ct);
+
+            evalAgentId = null;
+            evalContext = null;
+            if (replacement is not null)
+            {
+                evalCrew.DefaultEvaluatorAgentId = replacement;
+                try
+                {
+                    var (eId, eCtx, _, _) = await ResolveAgentRunConfigAsync(
+                        control, db, evalCrew, useEvaluatorRole: true, workspace, budget, ct,
+                        maxTurns: storyPoints > 0 ? storyPoints * 30 : null);
+                    evalAgentId = eId;
+                    evalContext = eCtx with { IsEvaluator = true };
+                    if (disallowedTools is { Count: > 0 })
+                    {
+                        evalContext = evalContext with { DisallowedTools = disallowedTools };
+                    }
+                }
+                catch
+                {
+                    // The replacement has no usable model. The loop stalls the iteration.
+                }
+            }
+        }
+
         // Pair-diversity gate (forge_implementation.md Phase 13e).
         // The generator and evaluator MUST run on different models so the
         // evaluator catches blind spots the generator's training distribution
@@ -9942,6 +9987,43 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         {
             logger?.LogWarning(ex, "Could not mark plan doc {WorkItem} completed after its passing verdict.", workItemId);
         }
+    }
+
+    /// <summary>
+    /// Picks an evaluator from <paramref name="evalCrew"/>'s members other than
+    /// the generator, for when the crew's default evaluator is the generator
+    /// itself. Keeps the evaluator of an in-flight loop (see
+    /// <see cref="StickyEvaluator"/>), else takes the least recently active
+    /// member. Paused agents are skipped. Returns null when no other member
+    /// exists.
+    /// </summary>
+    internal static async Task<string?> PickIndependentEvaluatorAsync(
+        ControlDbContext control, ProductDbContext db, CrewRow evalCrew, string generatorAgentId, string workItemId, CancellationToken ct)
+    {
+        var members = await control.CrewMembers.AsNoTracking()
+            .Where(m => m.CrewId == evalCrew.Id && m.AgentId != generatorAgentId)
+            .Select(m => m.AgentId)
+            .ToListAsync(ct);
+        var paused = await control.Agents.AsNoTracking()
+            .Where(a => members.Contains(a.Id) && a.State == "paused")
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+        var roster = members.Except(paused, StringComparer.Ordinal).Distinct(StringComparer.Ordinal).ToList();
+        if (roster.Count == 0)
+        {
+            return null;
+        }
+
+        var sticky = await StickyEvaluator.ResolveAsync(control, db, workItemId, generatorAgentId, roster, ct);
+        if (sticky is not null)
+        {
+            return sticky;
+        }
+
+        var lastActive = await BusyAgentsHelper.LoadLastActiveAsync(control, roster, ct);
+        var (picked, _) = PairDiversityResolver.PickEvaluator(
+            roster, Array.Empty<string>(), defaultEvalAgentId: null, generatorAgentId, seed: 0, lastActiveByAgent: lastActive);
+        return picked;
     }
 
     /// <summary>
