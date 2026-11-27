@@ -527,7 +527,9 @@ public class Phase26BuildTestGateTests
         await RunGitAsync(repoDir, "commit", "-m", "test change for build gate");
         await RunGitAsync(repoDir, "checkout", "main");
 
-        var f = new ForgeWebApplicationFactory();
+        // The pipeline runs only after a passing review: a second member
+        // evaluates on its own model, answered by EvaluatorPassesFactory.
+        var f = new EvaluatorPassesFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
@@ -538,13 +540,18 @@ public class Phase26BuildTestGateTests
         control.Crews.Add(new CrewRow
         {
             Id = "p26-crew", Name = "P26 Crew",
-            Lead = "p26-lead", Model = "local-stub",
+            Lead = "p26-lead", Model = "local-stub", EvaluatorModel = EvaluatorPassesFactory.EvaluatorModel,
             ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
             MaxConcurrent = 5, ScheduleEnabled = false,
         });
         control.CrewMembers.Add(new CrewMemberRow
         {
             CrewId = "p26-crew", AgentId = "p26-agent",
+            AddedAt = DateTimeOffset.UtcNow,
+        });
+        control.CrewMembers.Add(new CrewMemberRow
+        {
+            CrewId = "p26-crew", AgentId = "p26-reviewer",
             AddedAt = DateTimeOffset.UtcNow,
         });
 
@@ -578,7 +585,7 @@ public class Phase26BuildTestGateTests
         await worker.RunOnceAsync(default);
 
         // local-stub finishes fast; RunAgentAsync is Task.Run, so wait.
-        // The deliverable loop runs gen → eval (auto-pass for standalone crew)
+        // The deliverable loop runs gen → eval (the test evaluator passes)
         // then the build/test gate + push pipeline. Poll for a terminal
         // pipeline event instead of a fixed sleep — under parallel test
         // load, a 15s fixed delay caused intermittent flakes where the

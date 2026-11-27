@@ -511,7 +511,15 @@ public sealed record EvaluatorRunOutput(
     long? CacheWriteTokens = null,
     long? ReasoningTokens = null,
     long? ConversationTokens = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    /// <summary>
+    /// Set when no independent evaluator could run (none configured, or the
+    /// only candidate is the generator itself). The loop then ends the
+    /// iteration as <c>stalled</c> instead of scoring it, so unreviewed work
+    /// never passes on its own; the operator configures an evaluator and
+    /// retries, or accepts the work.
+    /// </summary>
+    string? UnavailableReason = null);
 
 /// <summary>Final outcome of <see cref="IDeliverableLoop.RunAsync"/>.</summary>
 public sealed record DeliverableLoopResult(
@@ -552,6 +560,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// 64 KB is far above any legitimate critique while keeping rows small.
     /// </summary>
     private const int MaxNotesChars = 64 * 1024;
+
+    /// <summary>
+    /// <see cref="DeliverableRow.FailureKind"/> and pair-assignment reason for
+    /// an iteration that ended because no independent evaluator could run.
+    /// </summary>
+    public const string EvaluatorUnavailableKind = "evaluator-unavailable";
 
     private readonly ControlDbContext control;
     private readonly ProductDbContext db;
@@ -1312,6 +1326,13 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
+            if (!string.IsNullOrWhiteSpace(eval.UnavailableReason))
+            {
+                return await this.StallWithoutEvaluatorAsync(
+                    request, iter, gen, eval.UnavailableReason!, pinnedEvaluator, workItemRow?.PairAttemptCount ?? 1,
+                    pairAssignmentId, rowIds, totalCost + gen.CostUsd, ct);
+            }
+
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText, request.WorkItemPoints);
 
             // 2026-05-20 — cap the evaluator Notes before they are persisted
@@ -2715,6 +2736,75 @@ public sealed class DeliverableLoop : IDeliverableLoop
         row.TotalCostUsd += iterCostUsd;
         row.FinalScore = latestScore; // running tip; final value persists when stamped
         await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Ends the loop when no independent evaluator could review the
+    /// iteration. Before this, both callers returned a synthetic 95 "pass"
+    /// and the unreviewed work merged (harness:DSH-M2 stage 5.9-e2e,
+    /// 2026-11-27: a sloppy-reassigned QA attempt ran on a standalone crew,
+    /// the queue path never resolved an evaluator, and the PR merged on
+    /// $0 of evaluation). The iteration now lands as <c>stalled</c>, with
+    /// the reason in the notes. The generator's work stays on the branch and
+    /// the deliverable row exists, so the operator can configure an evaluator
+    /// and Retry (which resumes at the next iteration), or ACCEPT the work.
+    /// </summary>
+    private async Task<DeliverableLoopResult> StallWithoutEvaluatorAsync(
+        DeliverableLoopRequest request,
+        int iter,
+        GeneratorRunOutput gen,
+        string reason,
+        string? evaluatorAgentId,
+        int pairAttempt,
+        long pairAssignmentId,
+        List<long> rowIds,
+        decimal totalCost,
+        CancellationToken ct)
+    {
+        var note = $"NO EVALUATOR: {reason}\n\n"
+            + "This iteration was not reviewed, so it cannot pass. Configure an evaluator "
+            + "for the crew (pair it with another crew, or give it a second member or a "
+            + "DefaultEvaluatorAgentId that is not the generator), then Retry; or ACCEPT the work.";
+        var row = new DeliverableRow
+        {
+            WorkItemId = request.WorkItemId,
+            CrewId = request.CrewId,
+            GeneratorAgentId = request.GeneratorAgentId,
+            EvaluatorAgentId = evaluatorAgentId,
+            Iter = iter,
+            PairAttempt = pairAttempt,
+            Score = 0,
+            DimsJson = "{}",
+            Verdict = "stalled",
+            Notes = note,
+            GeneratorSummary = GeneratorSummaryExtractor.Extract(gen.OutputText ?? string.Empty),
+            ReasoningText = gen.ReasoningText,
+            GenCostUsd = gen.CostUsd,
+            EvalCostUsd = 0m,
+            FailureKind = EvaluatorUnavailableKind,
+            FailureReason = reason,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        this.db.Deliverables.Add(row);
+        await this.control.SaveChangesAsync(ct); await this.db.SaveChangesAsync(ct);
+        rowIds.Add(row.Id);
+
+        await this.UpdatePairAssignmentTotalsAsync(
+            pairAssignmentId, iter, gen.InputTokens, gen.OutputTokens, gen.CostUsd, latestScore: 0, ct);
+        await this.StampPairAssignmentAsync(
+            pairAssignmentId, AgentPairAssignmentOutcomes.Cancelled, sloppyReason: EvaluatorUnavailableKind, finalScore: 0, ct);
+
+        await this.EmitAsync(request.WorkItemId, "task.iteration.stalled-evaluator", new
+        {
+            iter,
+            reason,
+            generatorAgentId = request.GeneratorAgentId,
+            evaluatorAgentId,
+            genCostUsd = gen.CostUsd,
+            totalCostUsd = totalCost,
+        }, ct);
+
+        return new DeliverableLoopResult("stalled", iter, FinalScore: 0, rowIds, totalCost);
     }
 
     /// <summary>

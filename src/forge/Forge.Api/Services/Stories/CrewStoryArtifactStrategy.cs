@@ -7536,9 +7536,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             genContext = genContext with { DisallowedTools = disallowedTools };
         }
 
-        // Evaluator is best-effort -- when crew has no evaluator wiring, the
-        // loop's null delegate path returns an auto-pass score so we still
-        // exit after one generator iteration.
+        // When the crew has no evaluator wiring, the evaluator delegate
+        // reports it as unavailable and the loop stalls the iteration for
+        // the operator; unreviewed work never passes on its own.
         string? evalAgentId = null;
         AgentContext? evalContext = null;
         string? evalCrewId = null;
@@ -7584,7 +7584,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
             catch
             {
-                // Crew has no evaluator agent / model. Loop will auto-pass.
+                // Crew has no evaluator agent / model. The loop stalls the iteration.
             }
         }
 
@@ -9021,11 +9021,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         {
             if (string.IsNullOrEmpty(evalAgentId) || evalContext is null)
             {
-                // No evaluator configured -- auto-pass so the loop exits after
-                // one generator iteration.
+                // No evaluator could be resolved: the loop stalls the
+                // iteration rather than passing unreviewed work.
                 return new EvaluatorRunOutput(
-                    "{\"score\":95,\"verdict\":\"pass\",\"notes\":\"No evaluator configured; auto-pass.\"}",
-                    0m);
+                    string.Empty,
+                    0m,
+                    UnavailableReason: $"no evaluator could be resolved for crew '{evalCrewId ?? crew.Id}'.");
             }
 
             // Phase 56 -- empty-diff guard. Before any LLM cost is incurred,

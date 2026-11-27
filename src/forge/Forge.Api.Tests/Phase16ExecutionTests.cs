@@ -39,9 +39,9 @@ public class Phase16ExecutionTests
         return Fence + "json\n{ \"score\": " + score + n + " }\n" + Fence;
     }
 
-    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db)> BootAsync()
+    private static async Task<(ForgeWebApplicationFactory f, IServiceScope scope, ProductDbContext db)> BootAsync(ForgeWebApplicationFactory? factory = null)
     {
-        var f = new ForgeWebApplicationFactory();
+        var f = factory ?? new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* trigger boot + migration */ }
         var scope = f.Services.CreateScope();
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
@@ -1918,25 +1918,31 @@ public class Phase16ExecutionTests
         await RunGitAsync(repoDir, "commit", "-m", "initial seed");
         await RunGitAsync(repoDir, "push", "-u", "origin", "main");
 
-        var (f, scope, db) = await BootAsync();
+        // Delivery runs only after a passing review: a second member
+        // evaluates on its own model, answered by EvaluatorPassesFactory.
+        var (f, scope, db) = await BootAsync(new EvaluatorPassesFactory());
         var control = scope.ServiceProvider.GetRequiredService<ControlDbContext>();
         try
         {
             var product = await control.Products.FirstAsync();
             var workItemId = $"WI-PUSH-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
 
-            // Crew (standalone — no evaluator, so local-stub score
-            // will cause the loop to pass in a single iteration).
+            // Standalone crew: one member generates, the other evaluates.
             control.Crews.Add(new CrewRow
             {
                 Id = "push-crew", Name = "Push Crew",
-                Lead = "push-lead", Model = "local-stub",
+                Lead = "push-lead", Model = "local-stub", EvaluatorModel = EvaluatorPassesFactory.EvaluatorModel,
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
             });
             control.CrewMembers.Add(new CrewMemberRow
             {
                 CrewId = "push-crew", AgentId = "push-agent",
+                AddedAt = DateTimeOffset.UtcNow,
+            });
+            control.CrewMembers.Add(new CrewMemberRow
+            {
+                CrewId = "push-crew", AgentId = "push-reviewer",
                 AddedAt = DateTimeOffset.UtcNow,
             });
 

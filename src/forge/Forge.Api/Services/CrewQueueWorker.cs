@@ -1522,6 +1522,26 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     ? routedEvaluatorAgentId
                     : crew.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
             }
+            else
+            {
+                // A standalone crew evaluates from its own roster: the claim
+                // already picked a member other than the generator
+                // (ResolveDiverseEvaluatorAsync), and the story path does the
+                // same (evalCrew = crew when unpaired). Before 2026-11-27 this
+                // branch was missing, so every standalone-crew task (QA,
+                // Review) skipped evaluation and auto-passed at 95.
+                evalCrew = crew;
+                evaluatorCrewId = crew.Id;
+                evaluatorAgentId = !string.IsNullOrEmpty(routedEvaluatorAgentId)
+                    ? routedEvaluatorAgentId
+                    : crew.DefaultEvaluatorAgentId;
+            }
+
+            // The generator never reviews its own work.
+            if (string.Equals(evaluatorAgentId, agentId, StringComparison.Ordinal))
+            {
+                evaluatorAgentId = null;
+            }
 
             // (3) Run the deliverable loop (generator ↔ evaluator iterations).
             var loop = scope.ServiceProvider.GetRequiredService<IDeliverableLoop>();
@@ -1907,10 +1927,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 if (string.IsNullOrEmpty(evaluatorAgentId) || evalCrew is null)
                 {
-                    // No evaluator configured — auto-pass with perfect score.
+                    // No independent evaluator: the loop stalls the iteration
+                    // rather than passing unreviewed work.
                     return new EvaluatorRunOutput(
-                        "{\"score\": 95, \"verdict\": \"pass\", \"notes\": \"No evaluator configured; auto-pass.\"}",
-                        0m);
+                        string.Empty,
+                        0m,
+                        UnavailableReason: $"crew '{crewId}' has no evaluator other than the generator '{agentId}'.");
                 }
 
                 var evalAgent = await control.Agents.AsNoTracking()
