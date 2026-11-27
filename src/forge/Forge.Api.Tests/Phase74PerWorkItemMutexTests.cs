@@ -117,6 +117,119 @@ public class Phase74PerWorkItemMutexTests : IDisposable
         Assert.NotEqual(DeliverableLoop.SkippedConcurrentVerdict, resultAFinal.FinalVerdict);
     }
 
+    /// <summary>
+    /// A drive reserves its workstream before touching the worktree. Another
+    /// flow (the orchestrator's next tick) cannot reserve it, so it changes
+    /// nothing; the reservation is free again once the drive disposes it.
+    /// Seen on harness:DSH-M2 stage 5.9 2026-11-27: a concurrent tick merged
+    /// the base branch into a held iteration's worktree and scrubbed .forge/.
+    /// </summary>
+    [Fact]
+    public async Task Reservation_KeepsOtherFlowsOutUntilDisposed()
+    {
+        var drive = DeliverableLoop.TryReserveWorkItem("ws-held");
+        Assert.NotNull(drive);
+        Assert.True(DeliverableLoop.IsWorkItemInFlight("ws-held"));
+
+        Assert.Null(await InSeparateFlow(() => DeliverableLoop.TryReserveWorkItem("ws-held")));
+        var otherWorkItem = await InSeparateFlow(() => DeliverableLoop.TryReserveWorkItem("ws-other"));
+        Assert.NotNull(otherWorkItem);
+        otherWorkItem!.Dispose();
+
+        drive!.Dispose();
+        drive.Dispose(); // a second dispose must not over-release the mutex
+        Assert.False(DeliverableLoop.IsWorkItemInFlight("ws-held"));
+
+        var next = await InSeparateFlow(() => DeliverableLoop.TryReserveWorkItem("ws-held"));
+        Assert.NotNull(next);
+        next!.Dispose();
+        Assert.False(DeliverableLoop.IsWorkItemInFlight("ws-held"));
+    }
+
+    /// <summary>
+    /// The orchestrator's outer drive and the strategy's producer it calls both
+    /// reserve; the inner reservation is a no-op and leaves the outer held.
+    /// </summary>
+    [Fact]
+    public void Reservation_IsReentrantWithinOneFlow()
+    {
+        using var outer = DeliverableLoop.TryReserveWorkItem("ws-nested");
+        Assert.NotNull(outer);
+
+        var inner = DeliverableLoop.TryReserveWorkItem("ws-nested");
+        Assert.NotNull(inner);
+        inner!.Dispose();
+
+        Assert.True(DeliverableLoop.IsWorkItemInFlight("ws-nested"));
+    }
+
+    /// <summary>
+    /// RunAsync inside the reserving flow runs its loop (it must not refuse its
+    /// own drive); RunAsync from another flow is skipped-concurrent.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_RunsInTheReservingFlowAndSkipsOthers()
+    {
+        var dbPath = Path.Combine(this.testRoot, "forge.db");
+        await BootstrapAsync(dbPath);
+
+        using var drive = DeliverableLoop.TryReserveWorkItem("ws-drive");
+        Assert.NotNull(drive);
+
+        var ran = 0;
+        var own = await RunOnceAsync(dbPath, "ws-drive", () => Interlocked.Increment(ref ran));
+        Assert.NotEqual(DeliverableLoop.SkippedConcurrentVerdict, own.FinalVerdict);
+        Assert.Equal(1, ran);
+        Assert.True(DeliverableLoop.IsWorkItemInFlight("ws-drive")); // still the drive's
+
+        var other = await InSeparateFlow(() => RunOnceAsync(dbPath, "ws-drive", () => Interlocked.Increment(ref ran)));
+        Assert.Equal(DeliverableLoop.SkippedConcurrentVerdict, other.FinalVerdict);
+        Assert.Equal(1, ran);
+    }
+
+    /// <summary>Runs <paramref name="work"/> in a flow that does not inherit this one's reservations.</summary>
+    private static Task<T> InSeparateFlow<T>(Func<T> work)
+    {
+        using (ExecutionContext.SuppressFlow())
+        {
+            return Task.Run(work);
+        }
+    }
+
+    private static Task<T> InSeparateFlow<T>(Func<Task<T>> work)
+    {
+        using (ExecutionContext.SuppressFlow())
+        {
+            return Task.Run(work);
+        }
+    }
+
+    private static async Task<DeliverableLoopResult> RunOnceAsync(string dbPath, string workItemId, Action onGenerate)
+    {
+        await using var ctl = BuildControl(dbPath);
+        await using var prod = BuildProduct(dbPath);
+        var loop = new DeliverableLoop(ctl, prod, channel: null);
+        return await loop.RunAsync(new DeliverableLoopRequest(
+            WorkItemId: workItemId,
+            CrewId: "crew-x",
+            GeneratorAgentId: "agent-g",
+            EvaluatorAgentId: "agent-e",
+            Generator: (iter, evalNotes, ct) =>
+            {
+                onGenerate();
+                return Task.FromResult(new GeneratorRunOutput(
+                    OutputText: "one run",
+                    CostUsd: 0m,
+                    InputTokens: 1,
+                    OutputTokens: 1,
+                    FailureReason: "test short-circuit",
+                    FailureKind: GeneratorFailureKinds.Other));
+            },
+            Evaluator: (iter, genText, ct) =>
+                throw new InvalidOperationException("evaluator should not run when gen failed"),
+            WorkItemPoints: 1), CancellationToken.None);
+    }
+
     [Fact]
     public async Task TwoConcurrentRunsDifferentWorkItems_BothProceed()
     {

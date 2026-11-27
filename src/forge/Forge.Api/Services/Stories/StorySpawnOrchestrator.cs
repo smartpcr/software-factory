@@ -3420,6 +3420,13 @@ public sealed class StorySpawnOrchestrator
         StorySpawnRow spawn, WorkstreamRow w, RepoRow? repo,
         string baseBranch, IHubContext<ForgeHub>? hub, CancellationToken ct)
     {
+        // Own the workstream for the whole drive -- the gen/eval loop AND the
+        // commit, base-branch merge and PR that follow -- before anything
+        // touches its worktree. A run already in flight owns the worktree;
+        // the caller records this as a skipped-concurrent no-op.
+        using var reservation = DeliverableLoop.TryReserveWorkItem(w.Id)
+            ?? throw new WorkstreamInFlightException(w.Id);
+
         // docs/forge/e2e.md Stage 5.1 — qa-e2e workstreams take a
         // shorter path: they don't need target discovery (no impl files
         // to edit), don't run the impl gen↔eval loop directly (the QA

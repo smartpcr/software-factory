@@ -595,6 +595,88 @@ public sealed class DeliverableLoop : IDeliverableLoop
     public const string SkippedConcurrentVerdict = "skipped-concurrent";
 
     /// <summary>
+    /// The work-item mutexes the current async flow already holds through
+    /// <see cref="TryReserveWorkItem"/>, so <see cref="RunAsync"/> inside that
+    /// flow runs without taking the (non-reentrant) mutex a second time.
+    /// </summary>
+    private static readonly AsyncLocal<System.Collections.Immutable.ImmutableHashSet<string>?> ReservedInFlow = new();
+
+    /// <summary>
+    /// Takes the per-<c>workItemId</c> mutex for a whole drive, before the
+    /// drive touches the worktree, and holds it until the returned handle is
+    /// disposed. Returns null when another run holds it: the caller must then
+    /// change nothing (no worktree reset, no upstream merge, no scratch
+    /// cleanup) because the in-flight run owns the worktree.
+    /// <para>
+    /// Observed 2026-11-27 on harness:DSH-M2 stage 5.9: while an iteration was
+    /// held on background work, the orchestrator re-drove the workstream every
+    /// 30 s. Each drive prepared the worktree and merged the base branch into it
+    /// before <see cref="RunAsync"/> found the mutex held, so a base-branch
+    /// update merged into the live worktree and the merge's scratch scrub
+    /// deleted the agent's <c>.forge/</c> notes and wait declaration.
+    /// </para>
+    /// <see cref="RunAsync"/> called later in the same async flow recognises
+    /// the reservation and does not refuse its own drive.
+    /// </summary>
+    public static IDisposable? TryReserveWorkItem(string? workItemId)
+    {
+        var key = workItemId ?? string.Empty;
+
+        // Re-entrant within one async flow: the orchestrator's outer drive
+        // reserves, and the strategy's producer it calls reserves again.
+        if (ReservedInFlow.Value?.Contains(key) == true)
+        {
+            return NoReservation.Instance;
+        }
+
+        var mutex = WorkItemMutexes.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        if (!mutex.Wait(0))
+        {
+            return null;
+        }
+
+        var held = ReservedInFlow.Value ?? System.Collections.Immutable.ImmutableHashSet.Create<string>(StringComparer.Ordinal);
+        ReservedInFlow.Value = held.Add(key);
+        return new WorkItemReservation(mutex, key);
+    }
+
+    /// <summary>True when some run holds the mutex for <paramref name="workItemId"/>.</summary>
+    public static bool IsWorkItemInFlight(string? workItemId)
+        => WorkItemMutexes.TryGetValue(workItemId ?? string.Empty, out var mutex) && mutex.CurrentCount == 0;
+
+    /// <summary>A nested reservation in a flow that already holds the mutex; disposing it does nothing.</summary>
+    private sealed class NoReservation : IDisposable
+    {
+        public static readonly NoReservation Instance = new();
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>A held work-item mutex; disposing it releases the mutex once.</summary>
+    private sealed class WorkItemReservation(SemaphoreSlim mutex, string key) : IDisposable
+    {
+        private int disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref this.disposed, 1) != 0)
+            {
+                return;
+            }
+
+            // Drop only this key, so other reservations the flow holds stay marked.
+            if (ReservedInFlow.Value is { } held)
+            {
+                ReservedInFlow.Value = held.Remove(key);
+            }
+
+            try { mutex.Release(); } catch (SemaphoreFullException) { /* already released */ }
+        }
+    }
+
+    /// <summary>
     /// Phase 38 (Layer A.3) — map a work item's story points to a per-loop
     /// iteration cap. Bigger work earns more attempts before the loop
     /// stalls; tiny work still gets a 5-iter floor so the gen↔eval pair has
@@ -745,6 +827,13 @@ public sealed class DeliverableLoop : IDeliverableLoop
         // CopilotSessionPool entry. Acquired here, released in `finally`
         // after the loop body returns or throws.
         var mutexKey = request.WorkItemId ?? string.Empty;
+
+        // The drive that called us already holds the mutex (TryReserveWorkItem).
+        if (ReservedInFlow.Value?.Contains(mutexKey) == true)
+        {
+            return await this.RunAsyncCore(request, ct).ConfigureAwait(false);
+        }
+
         var mutex = WorkItemMutexes.GetOrAdd(mutexKey, _ => new SemaphoreSlim(1, 1));
         var acquired = await mutex.WaitAsync(TimeSpan.Zero, ct).ConfigureAwait(false);
         if (!acquired)

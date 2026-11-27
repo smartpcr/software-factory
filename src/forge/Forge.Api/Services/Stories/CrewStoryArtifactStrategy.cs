@@ -3992,6 +3992,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
+        // Own the workstream for the whole drive BEFORE touching its worktree.
+        // A run already in flight (mid-iteration, or held on declared
+        // background work) owns the worktree: preparing it or merging the
+        // base branch into it here would reset it and scrub the agent's
+        // .forge/ scratch under the live iteration.
+        using var reservation = DeliverableLoop.TryReserveWorkItem(workstream.Id)
+            ?? throw new WorkstreamInFlightException(workstream.Id);
+
         // Phase 45 follow-up -- engineer agent works directly in the
         // workstream branch's git worktree (not a scratch sandbox under
         // src/.story-artifacts/). This lets the agent edit existing repo
@@ -5666,6 +5674,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // locally (hollow self-contained test, capped ~78 by the evaluator) or
         // `git clone` the repo into the scratch (1100-file pollution → stall). Both
         // failure modes are removed by checking out the real worktree here.
+        //
+        // Own the workstream for the whole drive BEFORE touching its worktree:
+        // a run already in flight owns it (see ProduceWorkstreamChangesAsync).
+        using var reservation = DeliverableLoop.TryReserveWorkItem(workstream.Id)
+            ?? throw new WorkstreamInFlightException(workstream.Id);
+
         var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
         var baseBranch = string.IsNullOrEmpty(spawn.BaseBranch) ? "main" : spawn.BaseBranch;
         var worktreeSlug = await this.ComputeWorkstreamWorktreeSlugAsync(workstream, ct);
